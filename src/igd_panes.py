@@ -94,11 +94,25 @@ def values(store):
     return got if isinstance(got, dict) else {}
 
 
+def _seal():
+    try:
+        import igd_seal
+        return igd_seal
+    except ImportError:
+        return None
+
+
 def value(store, key):
     s = SETTINGS.get(key)
     if s is None:
         raise KeyError(key)
-    return values(store).get(key, s.get("default"))
+    v = values(store).get(key, s.get("default"))
+    # A secret is kept sealed (1.7.0, otp's seal) and handed out open; "" where this key did not seal it.
+    if s.get("kind") == "secret" and isinstance(v, str) and v:
+        S = _seal()
+        if S is not None and S.is_sealed(v):
+            v = S.unseal_or(store, v, None, "")
+    return v
 
 
 def view(store, secret_set=None):
@@ -186,6 +200,10 @@ def save(store, changes):
         v, err = check(key, raw)
         if err:
             raise ValueError(err)
+        if s.get("kind") == "secret" and isinstance(v, str) and v:
+            S = _seal()
+            if S is not None:
+                v = S.seal(store, v)
         if saved.get(key, s.get("default")) != v:
             saved[key] = v
             changed.setdefault(s["module"], {})[key] = v

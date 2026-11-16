@@ -86,8 +86,8 @@ KEY_HELP = {
     "firewall": "iptables: fake-igd's own chain FAKE-IGD-IN, jumped to first from INPUT, lets in what fake-igd needs (as otp's OTP-IN)",
     "firewall_ssh": "the chain lets SSH (tcp 22) in from anywhere - keep a rule of your own if you switch it off",
     "firewall_icmp": "the chain lets ping (ICMP) in",
-    "upgrade_url": "where new versions are looked for: a GitHub folder, a web page with links, or one package's address (https)",
-    "upgrade_check": "look at upgrade_url once a day (upnp upgrade check asks at any time)",
+    "upgrade_url": "Where new versions are looked for: a GitHub folder, a web page with links, or one package's address (https)",
+    "upgrade_check": "Look for a new version every day - a newer one is offered under Settings → Upgrades, never put in by itself (upnp upgrade check asks at any time)",
 }
 ALLOWED_VALUES = {"mode": ("active", "passive"), "mapping_response": ("accept", "reject"),
                   "log_level": ("DEBUG", "INFO", "WARNING", "ERROR")}
@@ -101,7 +101,7 @@ SETTING_GROUPS = [
     ("Notifications (ntfy)", ["ntfy_url", "ntfy_token", "ntfy_user", "ntfy_password", "ntfy_priority",
                               "ntfy_tags", "ntfy_ca_file", "notify_on_renew", "notify_other_router"]),
     ("Logs and state", ["log_level", "log_file", "request_log", "state_dir"]),
-    ("Web pages and firewall", ["site_name", "web_allow", "session_idle_minutes", "api_port",
+    ("Web pages and firewall", ["site_name", "web_allow", "api_port",
                                 "firewall", "firewall_ssh", "firewall_icmp"]),
     ("Upgrades", ["upgrade_url", "upgrade_check"]),
 ]
@@ -1978,6 +1978,8 @@ def build_parser():
             "  status             how the last upgrade went\n"
             "  follow             follow one going on, with its progress bar\n"
             "  log                what install.sh said the last time\n"
+            "  after [ID]         what is to be done by hand after an update (ID: mark it done)\n"
+            "  check --downgrade / online VERSION --downgrade   going back to an older version\n"
             "A package must be signed by a release key this machine trusts (/opt/fake-igd/release-keys),\n"
             "every file must be the one signed, and it must not be older than what is installed -\n"
             "going back is only by hand: sudo upnp upgrade file OLDER.tar.gz --downgrade.\n"
@@ -1989,12 +1991,12 @@ def build_parser():
             "  sudo upnp upgrade file /root/fake-igd-1.4.2.tar.gz\n"
             "  upnp upgrade follow\n"
             "the web: https://SERVER/admin/ → Settings → Upgrades", aliases=("up",))
-    s.add_argument("what", nargs="?", choices=("check", "online", "file", "status", "follow", "log"),
-                   metavar="check|online|file|status|follow|log")
+    s.add_argument("what", nargs="?", choices=("check", "online", "file", "status", "follow", "log", "after"),
+                   metavar="check|online|file|status|follow|log|after")
     s.add_argument("version", nargs="?", metavar="VERSION|PATH", help="the version (online) or the package (file)")
     s.add_argument("--yes", "-y", action="store_true", help="do not ask")
     s.add_argument("--no-follow", action="store_true", help="ask root and leave - upnp upgrade follow later")
-    s.add_argument("--downgrade", action="store_true", help="file: put an older version in (root, by hand)")
+    s.add_argument("--downgrade", action="store_true", help="file/online: put an older version in; check: list the older ones")
     s.add_argument("--quiet", "-q", action="store_true", help="do not print what is new")
     s.add_argument("--json", action="store_true", help="JSON output (check, status)")
     s.add_argument("-n", "--lines", type=int, default=400, help="log: how many lines (default 400)")
@@ -2010,6 +2012,11 @@ def build_parser():
             "  del NAME                  take an account away (never the last full admin)\n"
             "  sessions                  who is signed in now\n"
             "  end ID                    end one sign-in\n"
+            "  must-change NAME          a new password asked for at its next sign-in\n"
+            "  off NAME / on NAME        switch an account off (it may not sign in) and on again\n"
+            "  reset-2fa NAME            the second step (the app's code) taken away - set up again at sign-in\n"
+            "  lockouts                  the names and addresses held back by wrong passwords\n"
+            "  clear [NAME|ADDRESS]      let them try again at once (all of them without one)\n"
             "The password: --password - asks for it twice, --password @env takes UPNP_PASSWORD;\n"
             "without it one is made and printed once.",
             "examples:\n"
@@ -2017,8 +2024,10 @@ def build_parser():
             "  sudo upnp user add bob --role readonly --password -\n"
             "  sudo upnp user passwd admin\n"
             "  sudo upnp user list", aliases=("users",))
-    s.add_argument("what", nargs="?", choices=("list", "add", "passwd", "role", "note", "del", "sessions", "end"),
-                   metavar="list|add|passwd|role|note|del|sessions|end")
+    s.add_argument("what", nargs="?", choices=("list", "add", "passwd", "role", "note", "must-change", "off", "on",
+                                               "disable", "enable", "reset-2fa", "del", "sessions", "end",
+                                               "lockouts", "clear", "lockouts-clear", "unlock"),
+                   metavar="list|add|passwd|role|note|must-change|off|on|reset-2fa|del|sessions|end|lockouts|clear")
     s.add_argument("name", nargs="?", metavar="NAME|ID")
     s.add_argument("--role", choices=("fulladmin", "readonly"))
     s.add_argument("--password", metavar="-|@env", help="'-' asks for it, '@env' reads UPNP_PASSWORD")

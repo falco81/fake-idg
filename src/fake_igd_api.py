@@ -70,7 +70,7 @@ NAMES = {
     "notify_interval_seconds": "SSDP announcements every", "site_name": "Name of this installation",
     "api_port": "Port of the pages' API", "session_idle_minutes": "Sign-in ends after idle",
     "web_allow": "Who may reach the pages", "firewall": "Firewall (iptables, FAKE-IGD-IN)",
-    "firewall_ssh": "Let SSH in", "firewall_icmp": "Let ping in", "upgrade_url": "Where new versions are",
+    "firewall_ssh": "Let SSH in", "firewall_icmp": "Let ping in", "upgrade_url": "Where new versions are looked for",
     "upgrade_check": "Look for a new version every day",
 }
 CHOICE_WORDS = {
@@ -322,7 +322,7 @@ def status_view():
         s = d["service"]
         problems = []
         if s["state"] != "active":
-            problems.append("fake-igd.service is %s - nothing on the network is answered (Settings → About, or "
+            problems.append("fake-igd.service is %s - nothing on the network is answered (Settings → The service, or "
                             "sudo upnp start)" % s["state"])
         for o in d.get("other_igd") or []:
             problems.append("Another UPnP router is on the network: %s - switch UPnP off on it, or the PS5 may ask "

@@ -678,9 +678,11 @@ install_pages() {
         cp -a "$NGINX_CONF" "$nbak"
         said="$("$VENV/bin/python" -I "$SOURCE_DIR/deploy/nginx_additions.py" "$NGINX_CONF" "$SOURCE_DIR/deploy/nginx-fake-igd.conf" || true)"
         if nginx -t >/dev/null 2>&1; then
+            FACT_NGINX_ADD=ok
             if [[ -n "$said" ]]; then good "$NGINX_CONF brought up to this version: $said (its copy: $nbak)"
             else rm -f "$nbak"; fi
         else
+            FACT_NGINX_ADD=failed
             cp -a "$nbak" "$NGINX_CONF"
             warn "nginx did not take the additions ($said), so $NGINX_CONF is as it was"
         fi
@@ -747,6 +749,7 @@ open_firewall() {
             [[ -n "$WITH_WEB" ]] && firewall-cmd --quiet --permanent --zone="$z" --add-service=https --add-service=http
         done
         firewall-cmd --quiet --reload
+        FACT_FIREWALL=firewalld
         good "firewalld: 1900/udp, $HTTP_PORT/tcp${WITH_WEB:+, http and https} open in: $zones"
         return 0
     fi
@@ -770,6 +773,7 @@ open_firewall() {
             return 0
         fi
     fi
+    FACT_FIREWALL=iptables
     /usr/bin/python3 -I "$OPT_DIR/fake_igd_web.py" --apply | sed 's/^/    /' || warn "the chain could not be put in place - sudo upnp firewall --status"
     note "INPUT → FAKE-IGD-IN (ACCEPT only: loopback, answers, SSH, ping, 1900/udp, $HTTP_PORT/tcp${WITH_WEB:+, 80/443 from web_allow})"
     note "→ the rest of INPUT as it was. sudo upnp firewall --status · --off takes it away"
@@ -830,6 +834,24 @@ does_it_work() {
     fi
 }
 
+# What root found and the API cannot see itself (otp 1.0.258): which install.sh put root's parts in, what
+# nginx and the firewall made of it - for Settings -> Upgrades -> To be done by hand. Root's, readable by
+# all, no secret in it. And how far back this machine may go (otp's downgrade-floor): never lowered.
+root_facts_write() {
+    [[ -d "$OPT_DIR" && ! -L "$OPT_DIR" ]] || return 0
+    FACT_VERSION="$VERSION" FACT_KIND="${DO_UPGRADE:+upgrade}" FACT_NGINX_ADD="$FACT_NGINX_ADD" \
+        FACT_FIREWALL="$FACT_FIREWALL" "$VENV/bin/python" -I "$SOURCE_DIR/deploy/root_facts.py" "$OPT_DIR/root-facts.json" \
+        || warn "$OPT_DIR/root-facts.json could not be written"
+    chown root:root "$OPT_DIR/root-facts.json" 2>/dev/null || true
+    local floor=1.4.0 was=""
+    [[ -L "$OPT_DIR/downgrade-floor" ]] && rm -f "$OPT_DIR/downgrade-floor"
+    [[ -f "$OPT_DIR/downgrade-floor" ]] && was="$(head -c 32 "$OPT_DIR/downgrade-floor" | tr -cd '0-9.')"
+    if [[ -n "$was" ]] && ver_ge "$was" "$floor"; then floor="$was"; fi
+    printf '%s\n' "$floor" > "$OPT_DIR/downgrade-floor"
+    chown root:root "$OPT_DIR/downgrade-floor"; chmod 0644 "$OPT_DIR/downgrade-floor"
+    return 0
+}
+
 pages_there() { [[ -f "$NGINX_CONF" || -d "$WEB_DIR" ]]; }
 
 base_packages() {
@@ -887,6 +909,8 @@ OLD_VERSION=""
 [[ -f "$OPT_DIR/VERSION" ]] && OLD_VERSION=$(cat "$OPT_DIR/VERSION")
 ADDED_KEYS=""
 ADDED_USER=""
+FACT_NGINX_ADD=""
+FACT_FIREWALL=""
 
 if [[ -z "$FORCE" ]]; then
     [[ "$OS_MAJOR" == "9" && " $OS_FAMILY " =~ (rhel|almalinux|centos|rocky) ]] \
@@ -940,6 +964,7 @@ if [[ -n "$DO_UPGRADE" ]]; then
         first_account
     fi
     open_firewall
+    root_facts_write
     rm -rf "$UPGRADE_OLD"
     does_it_work
     step "Done"
@@ -995,6 +1020,7 @@ if [[ -n "$WITH_WEB" ]]; then
     first_account
 fi
 open_firewall
+root_facts_write
 does_it_work
 
 step "Done"

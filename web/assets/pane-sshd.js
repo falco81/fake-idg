@@ -186,6 +186,7 @@
   var ACCTS = {names: null, at: 0, waiting: []};
   function accounts(cb) {
     if (ACCTS.names && Date.now() - ACCTS.at < 60000) { cb(ACCTS.names); return; }
+    if (!ADMIN) { cb([]); return; }     /* the accounts are a full administrator's to read (no 403 for a viewer) */
     ACCTS.waiting.push(cb);
     if (ACCTS.waiting.length > 1) return;
     var done = function (names) {
