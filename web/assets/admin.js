@@ -15,6 +15,10 @@ var LIVE = true, SERIAL = STATUS ? STATUS.serial : '', PANE = 'answer';
 var SETTINGS = null, DIRTY = {}, PENDING = {};
 var PAGE = {requests: 0, events: 0};
 var RAIL = {pinned: false, open: null, shut: null};
+/* The panes of Settings (1.6.0): each its own pane-NAME.js says how it is drawn -
+   PANE_LOAD.NAME() when it is shown, PANE_TICK.NAME() with every live update while it is. */
+var PANE_LOAD = window.PANE_LOAD || {}, PANE_TICK = window.PANE_TICK || {};
+window.PANE_LOAD = PANE_LOAD; window.PANE_TICK = PANE_TICK;
 
 function roleWords(role) { return role === 'fulladmin' ? 'full admin' : 'read only'; }
 function roleTone(role) { return role === 'fulladmin' ? 'violet' : 'dim'; }
@@ -119,6 +123,9 @@ function tick() {
     if (TAB === 'overview') paintCards();
     if (TAB === 'log' && moved) loadLog(false);
     if (TAB === 'settings' && PANE === 'upgrade') loadUpgrade();
+    if (TAB === 'settings' && typeof PANE_TICK[PANE] === 'function') {
+      try { PANE_TICK[PANE](s); } catch (e) { /* the next tick */ }
+    }
   }).catch(function (e) {
     if (e && e.busy) return;
     var o = $('offline');
@@ -648,9 +655,13 @@ function showPane(name) {
   if (name === 'upgrade') loadUpgrade();
   if (name === 'about') drawAbout();
   if (name === 'mdns') loadAvahiPane();
+  if (typeof PANE_LOAD[name] === 'function') {
+    try { PANE_LOAD[name](); } catch (e) { oops(e); }
+  }
   markDirtyCount();
 }
 document.querySelectorAll('#ctl-nav button[data-pane]').forEach(function (b) {
+  if (!$('pane-' + b.dataset.pane)) b.hidden = true;
   b.onclick = function () { showPane(b.dataset.pane); };
 });
 function pinRail(on) {
@@ -746,8 +757,30 @@ function drawSettings() {
     host.appendChild(grid);
   });
   if (SETTINGS.error) toast('config.json: ' + SETTINGS.error, 'bad');
+  applyOnlyWhen();
   explainWhatWasDrawn($('tab-settings'));
   markDirtyCount();
+}
+/* A setting asleep while the one it depends on says so (otp's applyOnlyWhen): greyed, and said why. */
+function applyOnlyWhen() {
+  var rules = (SETTINGS && SETTINGS.only_when) || {};
+  Object.keys(rules).forEach(function (key) {
+    var item = document.querySelector('.set-item[data-key="' + key + '"]');
+    var master = $('set-' + rules[key][0]);
+    if (!item || !master) return;
+    var now = master._get ? (master._get() ? 'true' : 'false') : String(master.value);
+    var want = String(rules[key][1]);
+    var live = want === '*' ? !!now.trim() : now === want;
+    item.classList.toggle('asleep', !live);
+    var says = item.querySelector('.asleep-why');
+    if (says) says.remove();
+    if (!live) {
+      var other = settingByKey(rules[key][0]) || {};
+      (item.querySelector('.set-tail') || item).appendChild(el('div', 'says asleep-why', want === '*'
+        ? 'Not in use until ' + other.name + ' is filled in.'
+        : (other.bool ? 'Not in use while ' + other.name + ' is off.' : 'Not in use while ' + other.name + ' is not “' + want + '”.')));
+    }
+  });
 }
 function readValue(s) {
   var input = $('set-' + s.key);
@@ -790,6 +823,11 @@ function settingItem(s) {
   } else if (s.choices) {
     input = selectBox(s.choices.map(function (c) { return [c, (s.choice_words && s.choice_words[c]) || c]; }), s.value);
     if (s.choice_words) item.classList.add('wide');
+  } else if (s.tall) {
+    item.classList.add('tall');
+    input = el('textarea');
+    input.value = s.value === null || s.value === undefined ? '' : String(s.value);
+    input.rows = 4;
   } else if (typeof s.min === 'number') {
     input = el('input');
     input.type = 'number';
@@ -815,6 +853,7 @@ function settingItem(s) {
   return item;
 }
 function markDirty(item, s) {
+  setTimeout(applyOnlyWhen, 0);
   var now = readValue(s);
   var was = s.bool ? (s.value === true ? '1' : '0') : (s.secret ? '' : (s.value === null || s.value === undefined ? '' : String(s.value)));
   var changed = s.secret ? now !== '' : was !== String(now);

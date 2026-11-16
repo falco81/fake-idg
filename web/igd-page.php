@@ -15,7 +15,7 @@ if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME'])
     exit;
 }
 
-const IGD_VERSION = '1.5.1';
+const IGD_VERSION = '1.5.2';
 
 header('Cache-Control: no-cache, no-store, must-revalidate');
 header('Pragma: no-cache');
@@ -70,7 +70,7 @@ function igd_guard_post(): void
 {
     $told = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
     $kind = strtolower((string) ($_SERVER['CONTENT_TYPE'] ?? ''));
-    $big = ($_GET['api'] ?? '') === 'upgrade-package';
+    $big = in_array(($_GET['api'] ?? ''), ['upgrade-package', 'carry-import', 'backup-restore', 'tls-upload'], true);
     if ($told > ($big ? 96 : 1) * 1024 * 1024) {
         http_response_code(413);
         header('Content-Type: application/json; charset=utf-8');

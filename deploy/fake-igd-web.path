@@ -1,12 +1,15 @@
 # /etc/systemd/system/fake-igd-web.path (1.4.0, otp's otp-web.path)
 #
 # What the pages ask of root: fake-igd.service restarted after a change of a
-# setting it uses, nginx's allow list and the firewall (FAKE-IGD-IN) put in place.
+# setting it uses, nginx's allow list and the firewall (FAKE-IGD-IN) put in place,
+# and (1.6.0) every pane's ask - a file of its own in web/ask/, one module of
+# root's for each kind (/opt/fake-igd/root_*.py).
 [Unit]
-Description=fake-igd - a restart, nginx's allow list or the firewall, asked for on the pages
+Description=fake-igd - what the pages ask of root
 
 [Path]
 PathExists=/var/lib/fake-igd/web/apply.ask
+DirectoryNotEmpty=/var/lib/fake-igd/web/ask
 Unit=fake-igd-web.service
 TriggerLimitIntervalSec=0
 

@@ -398,7 +398,103 @@ def apply(restart=False):
     return said
 
 
+# ---- the panes' asks (1.6.0): a queue of files, one module of root's for each kind ----------
+ASK_DIR = os.path.join(WEB_DIR, "ask")
+KIND_RE = re.compile(r"^([a-z][a-z0-9]{0,30})-([0-9]{10,16}-[0-9a-f]{8})\.json\Z")
+
+
+def root_module(kind):
+    """deploy/root_KIND.py beside this file (installed beside it in /opt/fake-igd) - root's alone."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, "root_%s.py" % kind)
+    st = os.lstat(path)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
+        raise Refused("%s is not root's alone - not run" % path)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("root_%s" % kind, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def write_kind_result(kind, d):
+    d["at"] = time.time()
+    d["kind"] = kind
+    try:
+        dfd = os.open(WEB_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return
+    try:
+        name = ".result-%s.%d" % (kind, os.getpid())
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640, dir_fd=dfd)
+        with os.fdopen(fd, "w") as f:
+            json.dump(d, f, default=str)
+        try:
+            import grp
+            os.chown(name, 0, grp.getgrnam("fake-igd").gr_gid, dir_fd=dfd)
+        except (KeyError, OSError):
+            pass
+        os.replace(name, "result-%s.json" % kind, src_dir_fd=dfd, dst_dir_fd=dfd)
+    finally:
+        os.close(dfd)
+
+
+def serve_queue():
+    """Every ask in web/ask/, oldest first: taken out of the folder, then done by its module."""
+    try:
+        dfd = os.open(ASK_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return 0
+    try:
+        for _round in range(50):
+            names = sorted(n for n in os.listdir(dfd) if KIND_RE.match(n))
+            junk = [n for n in os.listdir(dfd) if not KIND_RE.match(n) and not n.startswith(".")]
+            for n in junk:                       # nothing else stays there to start this again and again
+                try:
+                    os.unlink(n, dir_fd=dfd)
+                except OSError:
+                    pass
+            if not names:
+                break
+            for n in names:
+                kind, ident = KIND_RE.match(n).groups()
+                try:
+                    fd = os.open(n, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
+                    with os.fdopen(fd, "rb") as f:
+                        raw = f.read(4 * 1024 * 1024) if stat.S_ISREG(os.fstat(f.fileno()).st_mode) else b""
+                except OSError:
+                    raw = b""
+                try:
+                    os.unlink(n, dir_fd=dfd)
+                except OSError:
+                    pass
+                try:
+                    ask = json.loads(raw.decode("utf-8") or "{}")
+                except ValueError:
+                    ask = {}
+                payload = ask.get("payload") if isinstance(ask, dict) else None
+                try:
+                    mod = root_module(kind)
+                    got = mod.serve(payload if isinstance(payload, dict) else {}, ask) or {}
+                    if not isinstance(got, dict):
+                        got = {"said": [str(got)]}
+                    got.setdefault("ok", True)
+                except Refused as e:
+                    got = {"ok": False, "said": [str(e)]}
+                except Exception as e:                      # noqa: BLE001 - said, never lost
+                    got = {"ok": False, "said": ["%s broke: %s" % (kind, e)]}
+                got["id"] = ident
+                got["by"] = str((ask or {}).get("by") or "")[:80] if isinstance(ask, dict) else ""
+                write_kind_result(kind, got)
+    finally:
+        os.close(dfd)
+    return 0
+
+
 def serve():
+    serve_queue()
     try:
         dfd = os.open(WEB_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError:
@@ -447,6 +543,12 @@ def main(argv):
     if os.geteuid() != 0:
         print("fake_igd_web.py: run as root")
         return 1
+    if argv[:1] == ["--kind"] and len(argv) >= 2:
+        # A module's part by hand (install.sh, tests): --kind NAME [JSON]
+        payload = json.loads(argv[2]) if len(argv) > 2 else {}
+        got = root_module(argv[1]).serve(payload, {"by": "the command line"}) or {}
+        print(json.dumps(got, indent=1, default=str))
+        return 0 if got.get("ok", True) else 1
     if argv[:1] == ["--apply"]:
         for ln in apply(restart="--restart" in argv):
             print(ln)

@@ -66,6 +66,12 @@ if (isset($_GET['api'])) {
         'password' => '/api/auth/passwd',
         'mdns' => '/api/mdns',
     ];
+    /* The panes of Settings (1.6.0): ?api=a-b-c is /api/a/b/c - the API says what it answers, and
+       a GET never reaches what only a POST does there. */
+    if (!isset($reads[$what]) && !isset($writes[$what]) && preg_match('/^[a-z0-9]+(-[a-z0-9]+){0,5}\z/', $what)) {
+        $reads[$what] = '/api/' . str_replace('-', '/', $what);
+        $writes[$what] = $reads[$what];
+    }
     if ($post) {
         if (!isset($writes[$what])) {
             http_response_code(404);
@@ -73,7 +79,7 @@ if (isset($_GET['api'])) {
             echo json_encode(['ok' => false, 'error' => 'unknown endpoint']);
             exit;
         }
-        igd_relay($writes[$what], 'POST', sent_json(), $what === 'upgrade' ? 330.0 : 90.0);
+        igd_relay($writes[$what], 'POST', sent_json(), in_array($what, ['upgrade', 'acme', 'osup', 'backup', 'carry'], true) ? 330.0 : 90.0);
         exit;
     }
     if (!isset($reads[$what])) {
@@ -566,6 +572,8 @@ tar xzf fake-igd-X.Y.Z.tar.gz && cd fake-igd-X.Y.Z && ./install.sh --upgrade</pr
     </div>
   </div>
 
+<?php foreach (glob(__DIR__ . '/panes/*.php') ?: [] as $igd_pane) { include $igd_pane; } ?>
+
   <div class="ctl-pane" id="pane-about" hidden>
     <div class="ctl-head"><h2 class="ctl-title">About</h2></div>
     <div class="card full"><div id="about-state"></div></div>
@@ -599,5 +607,8 @@ var STATUS = <?= $initial ? json_encode($initial, JSON_UNESCAPED_UNICODE | JSON_
 </script>
 <script nonce="<?= h($nonce) ?>" src="/assets/core.js?v=<?= h(IGD_VERSION) ?>"></script>
 <script nonce="<?= h($nonce) ?>" src="/assets/admin.js?v=<?= h(IGD_VERSION) ?>"></script>
+<?php foreach (glob(dirname(__DIR__) . '/assets/pane-*.js') ?: [] as $igd_js): ?>
+<script nonce="<?= h($nonce) ?>" src="/assets/<?= h(basename($igd_js)) ?>?v=<?= h(IGD_VERSION) ?>-<?= (int) @filemtime($igd_js) ?>"></script>
+<?php endforeach; ?>
 </body>
 </html>

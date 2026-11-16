@@ -309,9 +309,15 @@ install_program() {
     install -m 0755 "$SOURCE_DIR/src/$APP.py" "$OPT_DIR/$APP.py"
     install -m 0755 "$SOURCE_DIR/src/upnp.py" "$OPT_DIR/upnp.py"
     install -m 0755 "$SOURCE_DIR/src/fake_igd_api.py" "$OPT_DIR/fake_igd_api.py"
+    # Every module of the package (1.5.2): a list here missed a new one (igd_panes, 1.5.1).
     local m
-    for m in upnp_console upnp_mdns upnp_admin igd_store igd_online; do
-        install -m 0644 "$SOURCE_DIR/src/$m.py" "$OPT_DIR/$m.py"
+    for m in "$SOURCE_DIR"/src/*.py; do
+        case "$(basename "$m")" in fake-igd.py|upnp.py|fake_igd_api.py) continue;; esac
+        install -m 0644 "$m" "$OPT_DIR/$(basename "$m")"
+    done
+    # ...and none that a version before shipped and this one does not (an old pane's API).
+    for m in "$OPT_DIR"/api_*.py; do
+        [[ -f "$m" && ! -f "$SOURCE_DIR/src/$(basename "$m")" ]] && rm -f "$m"
     done
     install -m 0755 "$SOURCE_DIR/uninstall.sh" "$OPT_DIR/uninstall.sh"
     install -m 0755 "$SOURCE_DIR/install.sh" "$OPT_DIR/install.sh"
@@ -438,6 +444,15 @@ install_upgrader() {
     step "Upgrades from the pages and upnp upgrade"
     install -m 0755 -o root -g root "$SOURCE_DIR/deploy/fake_igd_upgrade.py" "$OPT_DIR/fake_igd_upgrade.py"
     install -m 0755 -o root -g root "$SOURCE_DIR/deploy/fake_igd_web.py" "$OPT_DIR/fake_igd_web.py"
+    # root's part of each pane (1.6.0): root's alone, exactly the package's
+    local rm_
+    for rm_ in "$OPT_DIR"/root_*.py; do
+        [[ -f "$rm_" && ! -f "$SOURCE_DIR/deploy/$(basename "$rm_")" ]] && rm -f "$rm_"
+    done
+    for rm_ in "$SOURCE_DIR"/deploy/root_*.py; do
+        [[ -f "$rm_" ]] && install -m 0644 -o root -g root "$rm_" "$OPT_DIR/$(basename "$rm_")"
+    done
+    install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$STATE_DIR/web/ask"
     install -d -m 0755 -o root -g root "$OPT_DIR/release-keys"
     local k
     for k in "$SOURCE_DIR"/deploy/release-keys/*.pub; do
@@ -585,6 +600,12 @@ install_pages() {
     install -m 0644 "$SOURCE_DIR/web/igd-page.php" "$SOURCE_DIR/web/igd-api.php" "$SOURCE_DIR/web/healthz.php" \
         "$SOURCE_DIR/web/.user.ini" "$WEB_DIR/"
     install -m 0644 "$SOURCE_DIR/web/admin/index.php" "$WEB_DIR/admin/"
+    # the panes of Settings (1.6.0): exactly the package's
+    rm -rf "$WEB_DIR/admin/panes"
+    if compgen -G "$SOURCE_DIR/web/admin/panes/*.php" >/dev/null; then
+        install -d -m 0755 "$WEB_DIR/admin/panes"
+        install -m 0644 "$SOURCE_DIR"/web/admin/panes/*.php "$WEB_DIR/admin/panes/"
+    fi
     # Only the files of this version (an old one's left behind would be served).
     find "$WEB_DIR/assets" -maxdepth 1 -type f -delete 2>/dev/null || true
     install -m 0644 "$SOURCE_DIR"/web/assets/* "$WEB_DIR/assets/"

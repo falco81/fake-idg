@@ -2,6 +2,15 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.5.2 (2026-11-16)
+
+- **The upgrade to 1.5.1 did not start** (`No module named 'igd_panes'`): install.sh put in the
+  program's modules by a list, and the new one was not on it - the version before was put back by
+  itself, as it should. Every module of the package is put in now, and none an older version left behind.
+- The base for the panes of Settings (each one's markup, script, API and root's part in files of its
+  own), root's asks in a queue of their own (`/var/lib/fake-igd/web/ask/`, `fake-igd-web.path`
+  watches it) - nothing new on the pages yet.
+
 ## 1.5.1 (2026-11-16)
 
 - mDNS: when avahi-browse ends with an error, the error is said on the page - it was shown as a network
