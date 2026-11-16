@@ -650,7 +650,6 @@ function showPane(name) {
   document.querySelectorAll('.ctl-pane').forEach(function (p) { p.hidden = p.id !== 'pane-' + name; });
   writeHash();
   if (name === 'people') loadUsers();
-  if (name === 'web') loadRoot();
   if (name === 'service') drawService();
   if (name === 'upgrade') loadUpgrade();
   if (name === 'about') drawAbout();
@@ -1094,29 +1093,6 @@ function avahiWait(id) {
   setTimeout(again, 1200);
 }
 
-/* ---- what root did (nginx, the firewall, a restart) ------------------------ */
-function loadRoot() {
-  api('root-result').then(function (d) {
-    var r = d.result || {}, host = $('fw-state');
-    clear(host);
-    if (!r.at) { host.appendChild(el('p', 'muted', 'Root has not been asked anything from these pages yet.')); return; }
-    host.appendChild(el('p', 'muted small', ago(r.at) + (r.ok ? '' : ' - with trouble')));
-    var ul = el('ul', 'tight');
-    (r.said || []).forEach(function (s) { ul.appendChild(el('li', /refused|not|would/.test(s) ? 'warn' : '', s)); });
-    host.appendChild(ul);
-    var tools = $('fw-tools');
-    clear(tools);
-    if (ADMIN) {
-      var again = cmdButton('Put it in place again', 'refresh', 'small');
-      again.onclick = function () {
-        busy(again, true);
-        api('apply', {}).then(function () { toast('asked root - a moment', 'good'); setTimeout(loadRoot, 3500); })
-          .catch(oops).then(function () { busy(again, false); });
-      };
-      tools.appendChild(again);
-    }
-  }).catch(oops);
-}
 
 /* ---- the service ------------------------------------------------------------ */
 function drawService() {

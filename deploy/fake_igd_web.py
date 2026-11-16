@@ -114,9 +114,16 @@ def nginx_allow(cfg):
     if not os.path.isfile(NGINX_CONF) or os.path.islink(NGINX_CONF):
         return "no %s here" % NGINX_CONF
     allow = cfg.get("web_allow", DEFAULT_ALLOW)
-    lines = ["        allow %s;" % n for n in nets(allow)] if allow else ["        allow all;"]
-    if allow and not lines:
-        lines = ["        # nothing in web_allow is an IPv4 address or network - only this machine"]
+    # IPv4 and IPv6 alike (1.6.0): nginx takes both; only the firewall's chain is per family.
+    both = []
+    for one in allow if isinstance(allow, list) else []:
+        try:
+            both.append(str(ipaddress.ip_network(str(one).strip(), strict=False)))
+        except ValueError:
+            continue
+    lines = ["        allow %s;" % n for n in both] if allow else ["        allow all;"]
+    if allow and not both:
+        lines = ["        # nothing in web_allow is an address or a network - only this machine"]
     with open(NGINX_CONF, encoding="utf-8") as f:
         text = f.read()
     new, n = re.subn(r"(# ADMIN-ALLOW-BEGIN[^\n]*\n)(.*?)(\n[ \t]*# ADMIN-ALLOW-END)",
@@ -143,63 +150,322 @@ def nginx_allow(cfg):
         raise Refused("nginx -t refused the new allow list, the file was put back: %s" % t.stdout.strip()[-300:])
     os.unlink(keep)
     subprocess.run(["systemctl", "reload", "nginx"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return "nginx: the pages may be reached from %s" % (", ".join(nets(allow)) if allow else "everybody")
+    return "nginx: the pages may be reached from %s" % (", ".join(both) if allow else "everybody")
 
 
-# ---- iptables: FAKE-IGD-IN ---------------------------------------------------------
-def chain_rules(cfg):
-    """The lines of the chain, as iptables-save writes them (without the table's frame)."""
-    rules = ["-A %s -i lo -j ACCEPT" % CHAIN,
+# ---- iptables / ip6tables: FAKE-IGD-IN ---------------------------------------------
+# As otp's OTP-IN (1.6.0): the chain starts with what no rule may shut out (loopback, answers to
+# what this machine asked, IPv6's neighbour discovery), then the rules of your own in their order
+# (kept in firewall-rules.json beside config.json, written by root alone), then what fake-igd's
+# functions need - each of those can be switched off. For IPv4 and, where ip6tables is there,
+# IPv6 (UPnP is IPv4 only; SSH, ping and the pages are not).
+IP6T_FILE = os.environ.get("FAKE_IGD_IP6TABLES_FILE", "/etc/sysconfig/ip6tables")
+FW_RULES = os.environ.get("FAKE_IGD_FW_RULES", os.path.join(os.path.dirname(CONFIG), "firewall-rules.json"))
+FW_FILES = {4: IPT_FILE, 6: IP6T_FILE}
+FW_TOOLS = {4: ("iptables", "iptables-restore", "iptables-save"),
+            6: ("ip6tables", "ip6tables-restore", "ip6tables-save")}
+FW_PROTOS = ("tcp", "udp", "icmp", "vrrp", "any")
+FW_ACTIONS = ("accept", "drop", "reject")
+# What can be switched off: ssh and icmp are config.json's firewall_ssh / firewall_icmp (as before),
+# the rest are kept in firewall-rules.json ("off").
+FW_OPTIONAL = ("ssh", "icmp", "dhcpv6", "upnp", "pages")
+FW_OFF_KEYS = ("dhcpv6", "upnp", "pages")
+FW_MOST_RULES = 100
+NOTE_RE = re.compile(r"[^A-Za-z0-9 ._:/@()+,-]")
+RULE_ID_RE = re.compile(r"^[A-Za-z0-9]{1,24}\Z")
+PORT_RE = re.compile(r"^([0-9]{1,5})(?:-([0-9]{1,5}))?\Z")
+
+
+def nets_of(values, fam):
+    """The addresses and networks of a list that are IPv`fam`, as iptables writes them."""
+    out = []
+    for one in values if isinstance(values, list) else []:
+        try:
+            n = ipaddress.ip_network(str(one).strip(), strict=False)
+        except ValueError:
+            continue
+        if n.version == fam and str(n) not in out:
+            out.append(str(n))
+    return out
+
+
+def fw_rule_checked(x):
+    """A rule of somebody's, as it is kept - every value checked against the one shape it may have."""
+    if not isinstance(x, dict):
+        raise Refused("a firewall rule is not an object")
+    try:
+        fam = int(x.get("family") or 0)
+    except (TypeError, ValueError):
+        fam = -1
+    if fam not in (0, 4, 6):
+        raise Refused("a rule is for IPv4, IPv6 or both")
+    proto = str(x.get("proto") or "any")
+    if proto not in FW_PROTOS:
+        raise Refused("the protocol is one of %s" % ", ".join(FW_PROTOS))
+    port = re.sub(r"\s", "", str(x.get("port") or ""))
+    if port:
+        if proto not in ("tcp", "udp"):
+            raise Refused("a port is for TCP or UDP")
+        parts = port.split(",")
+        for p in parts:
+            m = PORT_RE.match(p)
+            if not m or not 1 <= int(m.group(1)) <= 65535 or \
+                    (m.group(2) and not int(m.group(1)) <= int(m.group(2)) <= 65535):
+                raise Refused("%s is not a port or a range (80, 8000-8100, 80,443)" % p[:20])
+        if sum(2 if "-" in p else 1 for p in parts) > 15:
+            raise Refused("fifteen ports at most in one rule (a range counts as two)")
+    raw = x.get("sources")
+    if raw is None:
+        raw = x.get("source") or ""
+    if isinstance(raw, str):
+        raw = [s for s in re.split(r"[\s,;]+", raw) if s]
+    if not isinstance(raw, list):
+        raise Refused("the sources are a list of addresses or networks")
+    if len(raw) > 20:
+        raise Refused("twenty addresses or networks at most in one rule")
+    srcs = []
+    for s in raw:
+        try:
+            n = ipaddress.ip_network(str(s).strip(), strict=False)
+        except ValueError:
+            raise Refused("%s is not an address or a network" % str(s)[:60])
+        if fam and n.version != fam:
+            raise Refused("%s is not an IPv%d address" % (n, fam))
+        if str(n) not in srcs:
+            srcs.append(str(n))
+    if srcs and not fam and len({ipaddress.ip_network(s).version for s in srcs}) == 1:
+        fam = ipaddress.ip_network(srcs[0]).version
+    iface = str(x.get("iface") or "").strip()
+    if iface and not IFACE_RE.match(iface):
+        raise Refused("%s is not the name of an interface" % iface[:20])
+    action = str(x.get("action") or "accept")
+    if action not in FW_ACTIONS:
+        raise Refused("a rule accepts, drops or rejects")
+    note = NOTE_RE.sub("", str(x.get("note") or ""))[:80].strip()
+    rid = str(x.get("id") or "")
+    if not RULE_ID_RE.match(rid):
+        rid = "r" + os.urandom(5).hex()
+    return {"id": rid, "family": fam, "proto": proto, "port": port, "sources": srcs, "iface": iface,
+            "action": action, "note": note, "disabled": x.get("disabled") is True}
+
+
+def fw_rules_checked(rules):
+    if not isinstance(rules, list):
+        raise Refused("the rules are a list")
+    if len(rules) > FW_MOST_RULES:
+        raise Refused("%d rules at most" % FW_MOST_RULES)
+    out, seen = [], set()
+    for x in rules:
+        r = fw_rule_checked(x)
+        while r["id"] in seen:
+            r["id"] = (r["id"] + "x")[-24:]
+        seen.add(r["id"])
+        out.append(r)
+    return out
+
+
+def load_fw_conf(path=None):
+    """firewall-rules.json: {"rules": [...], "off": [...]} - each rule checked again as it is read."""
+    conf = {"rules": [], "off": []}
+    try:
+        with open(path or FW_RULES, encoding="utf-8") as f:
+            got = json.load(f)
+    except (OSError, ValueError):
+        return conf
+    if not isinstance(got, dict):
+        return conf
+    for x in (got.get("rules") if isinstance(got.get("rules"), list) else [])[:FW_MOST_RULES]:
+        try:
+            conf["rules"].append(fw_rule_checked(x))
+        except Refused:
+            continue
+    conf["off"] = [k for k in FW_OFF_KEYS if k in (got.get("off") if isinstance(got.get("off"), list) else [])]
+    for k in ("at", "by"):
+        if isinstance(got.get(k), (str, int, float)):
+            conf[k] = got[k]
+    return conf
+
+
+def write_fw_conf(conf, path=None):
+    """Root's alone, the API's group may read it (the pages show the rules)."""
+    path = path or FW_RULES
+    body = {"rules": fw_rules_checked(conf.get("rules") or []),
+            "off": [k for k in FW_OFF_KEYS if k in (conf.get("off") or [])],
+            "at": time.time(), "by": str(conf.get("by") or "")[:80]}
+    fd, tmp = tempfile.mkstemp(prefix=".firewall-rules.", dir=os.path.dirname(path))
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(body, f, indent=1)
+        f.write("\n")
+    os.chmod(tmp, 0o640)
+    try:
+        import grp
+        os.chown(tmp, 0, grp.getgrnam("fake-igd").gr_gid)
+    except (KeyError, OSError):
+        pass
+    os.replace(tmp, path)
+    return body
+
+
+def fw_rule_lines(r, fam):
+    """A rule of somebody's as the lines of the chain for IPv`fam` (none when it is not for it)."""
+    if r.get("disabled") or (r["family"] and r["family"] != fam):
+        return []
+    srcs = [s for s in r["sources"] if ipaddress.ip_network(s).version == fam]
+    if r["sources"] and not srcs:
+        return []
+    out = []
+    for s in srcs or [None]:
+        a = ["-A", CHAIN]
+        if r["iface"]:
+            a += ["-i", r["iface"]]
+        if s:
+            a += ["-s", s]
+        if r["proto"] != "any":
+            a += ["-p", "ipv6-icmp" if (r["proto"] == "icmp" and fam == 6) else r["proto"]]
+        if r["port"]:
+            if "," in r["port"]:
+                a += ["-m", "multiport", "--dports", r["port"].replace("-", ":")]
+            else:
+                a += ["-m", r["proto"], "--dport", r["port"].replace("-", ":")]
+        a += ["-m", "comment", "--comment", "\"fake-igd: %s\"" % (r["note"] or "a rule of yours")]
+        a += ["-j", r["action"].upper()]
+        out.append(" ".join(a))
+    return out
+
+
+def builtin(cfg, conf=None, pages_here=None):
+    """What fake-igd lets in by itself: [{key, title, why, fixed, on, lines {4, 6}, rules}] - the
+    first one (loopback and answers) always, ahead of the rules of your own; the rest after them."""
+    conf = conf if conf is not None else load_fw_conf()
+    off = conf.get("off") or []
+
+    def show(fam, proto, port="", source="", iface=""):
+        return {"family": fam, "proto": proto, "port": port, "source": source, "iface": iface}
+
+    def c(words):
+        return "-m comment --comment \"fake-igd: %s\"" % words
+
+    items = []
+    base6 = ["-A %s -i lo -j ACCEPT" % CHAIN,
              "-A %s -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT" % CHAIN]
-    if flag(cfg.get("firewall_ssh"), True):
-        rules.append("-A %s -p tcp -m tcp --dport 22 -m comment --comment \"fake-igd: ssh\" -j ACCEPT" % CHAIN)
-    if flag(cfg.get("firewall_icmp"), True):
-        rules.append("-A %s -p icmp -m comment --comment \"fake-igd: ping\" -j ACCEPT" % CHAIN)
+    base6 += ["-A %s -p ipv6-icmp -m icmp6 --icmpv6-type %d %s -j ACCEPT" % (CHAIN, t, c("neighbour discovery"))
+              for t in (133, 134, 135, 136)]
+    items.append({"key": "base", "title": "Loopback and answers", "fixed": True, "on": True,
+                  "why": "the machine itself (lo), answers to connections it opened (DNS, ntfy, upgrades), and "
+                         "IPv6's neighbour discovery - ahead of every rule, so none can shut them out",
+                  "lines": {4: ["-A %s -i lo -j ACCEPT" % CHAIN,
+                                "-A %s -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT" % CHAIN],
+                            6: base6},
+                  "rules": [dict(show(0, "any", iface="lo"), words="everything on lo"),
+                            dict(show(0, "any"), words="answers (ESTABLISHED, RELATED)"),
+                            dict(show(6, "icmp"), words="ICMPv6 133-136 (neighbour discovery)")]})
+    items.append({"key": "ssh", "title": "SSH", "fixed": False, "on": flag(cfg.get("firewall_ssh"), True),
+                  "why": "to manage the machine - turned off, take care to keep a rule of your own for it",
+                  "lines": {f: ["-A %s -p tcp -m tcp --dport 22 %s -j ACCEPT" % (CHAIN, c("ssh"))] for f in (4, 6)},
+                  "rules": [show(4, "tcp", "22"), show(6, "tcp", "22")]})
+    items.append({"key": "icmp", "title": "ICMP / ICMPv6", "fixed": False, "on": flag(cfg.get("firewall_icmp"), True),
+                  "why": "ping; IPv6 cannot work without ICMPv6 (neighbour discovery is let in above all the same)",
+                  "lines": {4: ["-A %s -p icmp %s -j ACCEPT" % (CHAIN, c("ping"))],
+                            6: ["-A %s -p ipv6-icmp %s -j ACCEPT" % (CHAIN, c("ping"))]},
+                  "rules": [show(4, "icmp"), show(6, "icmp")]})
+    items.append({"key": "dhcpv6", "title": "DHCPv6 client", "fixed": False, "on": "dhcpv6" not in off,
+                  "why": "answers of a DHCPv6 server, for an address given that way",
+                  "lines": {4: [], 6: ["-A %s -s fe80::/10 -p udp -m udp --dport 546 %s -j ACCEPT"
+                                       % (CHAIN, c("dhcpv6 client"))]},
+                  "rules": [show(6, "udp", "546", "fe80::/10")]})
     http = port(cfg.get("http_port"), 5000)
     want = ifaces(cfg.get("interfaces"))
     skip = [i for i in ifaces(cfg.get("exclude_interfaces", ["lo"])) if i != "lo"]
+    up = []
     # Excluded interfaces first, back to INPUT: one "! -i" per rule only, so they are sent back.
     for i in skip:
-        rules.append("-A %s -i %s -p udp -m udp --dport 1900 -j RETURN" % (CHAIN, i))
-        rules.append("-A %s -i %s -p tcp -m tcp --dport %d -j RETURN" % (CHAIN, i, http))
+        up.append("-A %s -i %s -p udp -m udp --dport 1900 -j RETURN" % (CHAIN, i))
+        up.append("-A %s -i %s -p tcp -m tcp --dport %d -j RETURN" % (CHAIN, i, http))
     for i in (want or [None]):
         on = (" -i %s" % i) if i else ""
-        rules.append("-A %s%s -p udp -m udp --dport 1900 -m comment --comment \"fake-igd: ssdp\" -j ACCEPT"
-                     % (CHAIN, on))
-        rules.append("-A %s%s -p tcp -m tcp --dport %d -m comment --comment \"fake-igd: description and soap\" "
-                     "-j ACCEPT" % (CHAIN, on, http))
+        up.append("-A %s%s -p udp -m udp --dport 1900 %s -j ACCEPT" % (CHAIN, on, c("ssdp")))
+        up.append("-A %s%s -p tcp -m tcp --dport %d %s -j ACCEPT" % (CHAIN, on, http, c("description and soap")))
     # answers to `upnp test` from this machine (SSDP answers come from port 1900 of whoever answers)
-    rules.append("-A %s -p udp -m udp --sport 1900 -m addrtype --dst-type LOCAL -m comment "
-                 "--comment \"fake-igd: answers to upnp test\" -j ACCEPT" % CHAIN)
-    allow = cfg.get("web_allow", DEFAULT_ALLOW)
-    if os.path.isfile(NGINX_CONF):
-        srcs = nets(allow) if allow else [None]
-        for s in srcs:
-            rules.append("-A %s%s -p tcp -m multiport --dports 80,443 -m comment --comment \"fake-igd: the pages\" "
-                         "-j ACCEPT" % (CHAIN, (" -s %s" % s) if s else ""))
+    up.append("-A %s -p udp -m udp --sport 1900 -m addrtype --dst-type LOCAL %s -j ACCEPT"
+              % (CHAIN, c("answers to upnp test")))
+    items.append({"key": "upnp", "title": "UPnP (SSDP and SOAP)", "fixed": False, "on": "upnp" not in off,
+                  "why": "what a PS5 asks fake-igd: SSDP 1900/udp and the description and SOAP port, on the "
+                         "interfaces it answers on - turned off, fake-igd hears nothing (IPv4 only)",
+                  "lines": {4: up, 6: []},
+                  "rules": [show(4, "udp", "1900", iface=i or "") for i in (want or [None])] +
+                           [show(4, "tcp", str(http), iface=i or "") for i in (want or [None])] +
+                           [dict(show(4, "udp"), words="UDP from port 1900 (answers to upnp test)")],
+                  "skip": skip})
+    pages = {4: [], 6: []}
+    shown = []
+    if (os.path.isfile(NGINX_CONF) if pages_here is None else pages_here):
+        allow = cfg.get("web_allow", DEFAULT_ALLOW)
+        for f in (4, 6):
+            srcs = nets_of(allow, f) if allow else [None]
+            for s in srcs:
+                pages[f].append("-A %s%s -p tcp -m multiport --dports 80,443 %s -j ACCEPT"
+                                % (CHAIN, (" -s %s" % s) if s else "", c("the pages")))
+                shown.append(show(f, "tcp", "80,443", s or ""))
+    items.append({"key": "pages", "title": "HTTP / HTTPS", "fixed": False, "on": "pages" not in off,
+                  "why": "these pages - from everybody, or from the networks of “Who may reach the pages”",
+                  "lines": pages, "rules": shown})
+    return items
+
+
+def chain_rules(cfg, fam=4, conf=None):
+    """The lines of the chain for IPv`fam`, as iptables-save writes them (without the table's frame)."""
+    conf = conf if conf is not None else load_fw_conf()
+    items = builtin(cfg, conf)
+    rules = list(items[0]["lines"][fam])
+    for r in conf.get("rules") or []:
+        rules += fw_rule_lines(r, fam)
+    for it in items[1:]:
+        if it["on"]:
+            rules += it["lines"][fam]
     return rules
 
 
-def have_iptables():
-    return bool(shutil.which("iptables")) and bool(shutil.which("iptables-restore"))
+def have_iptables(fam=4):
+    return bool(shutil.which(FW_TOOLS[fam][0])) and bool(shutil.which(FW_TOOLS[fam][1]))
 
 
-def fw_live(cfg):
-    body = "*filter\n:%s - [0:0]\n%s\nCOMMIT\n" % (CHAIN, "\n".join(chain_rules(cfg)))
-    run(["iptables-restore", "--test", "--noflush"], body)
-    run(["iptables-restore", "--noflush"], body)
-    if subprocess.run(["iptables", "-C", "INPUT", "-j", CHAIN], stdout=subprocess.DEVNULL,
+def fw_families():
+    return [f for f in (4, 6) if have_iptables(f)]
+
+
+def fw_backend():
+    if shutil.which("firewall-cmd") and subprocess.run(["firewall-cmd", "--state"], stdout=subprocess.DEVNULL,
+                                                       stderr=subprocess.DEVNULL).returncode == 0:
+        return "firewalld"
+    return "iptables" if have_iptables() else ""
+
+
+def fw_live_fam(cfg, fam, conf):
+    tool, restore, _save = FW_TOOLS[fam]
+    body = "*filter\n:%s - [0:0]\n%s\nCOMMIT\n" % (CHAIN, "\n".join(chain_rules(cfg, fam, conf)))
+    run([restore, "--test", "--noflush"], body)
+    run([restore, "--noflush"], body)
+    if subprocess.run([tool, "-C", "INPUT", "-j", CHAIN], stdout=subprocess.DEVNULL,
                       stderr=subprocess.DEVNULL).returncode != 0:
-        run(["iptables", "-I", "INPUT", "1", "-j", CHAIN])
+        run([tool, "-I", "INPUT", "1", "-j", CHAIN])
     else:
         # First in INPUT, always: put back to the top when something was put before it.
-        first = run(["iptables", "-S", "INPUT"]).stdout.splitlines()
+        first = run([tool, "-S", "INPUT"]).stdout.splitlines()
         rules = [x for x in first if x.startswith("-A INPUT")]
         if rules and rules[0] != "-A INPUT -j %s" % CHAIN:
-            while subprocess.run(["iptables", "-D", "INPUT", "-j", CHAIN], stdout=subprocess.DEVNULL,
+            while subprocess.run([tool, "-D", "INPUT", "-j", CHAIN], stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL).returncode == 0:
                 pass
-            run(["iptables", "-I", "INPUT", "1", "-j", CHAIN])
+            run([tool, "-I", "INPUT", "1", "-j", CHAIN])
+
+
+def fw_live(cfg, conf=None):
+    conf = conf if conf is not None else load_fw_conf()
+    done = []
+    for fam in fw_families():
+        fw_live_fam(cfg, fam, conf)
+        done.append(fam)
+    return done
 
 
 def old_live_off():
@@ -217,11 +483,35 @@ def old_live_off():
 
 
 def fw_live_off():
-    while subprocess.run(["iptables", "-D", "INPUT", "-j", CHAIN], stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL).returncode == 0:
-        pass
-    subprocess.run(["iptables", "-F", CHAIN], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["iptables", "-X", CHAIN], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for fam in (4, 6):
+        tool = FW_TOOLS[fam][0]
+        if not shutil.which(tool):
+            continue
+        while subprocess.run([tool, "-D", "INPUT", "-j", CHAIN], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL).returncode == 0:
+            pass
+        subprocess.run([tool, "-F", CHAIN], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run([tool, "-X", CHAIN], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def fw_saved_now():
+    """The filter tables as they are live, to go back to when a change fails half way."""
+    out = {}
+    for fam in fw_families():
+        save = FW_TOOLS[fam][2]
+        if shutil.which(save):
+            r = subprocess.run([save, "-t", "filter"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               universal_newlines=True)
+            if r.returncode == 0:
+                out[fam] = r.stdout
+    return out
+
+
+def fw_put_live_back(saved):
+    for fam, text in saved.items():
+        if text.strip():
+            subprocess.run([FW_TOOLS[fam][1]], input=text, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           universal_newlines=True)
 
 
 def file_strip(text):
@@ -240,15 +530,15 @@ def file_strip(text):
     return out
 
 
-def file_with(text, cfg):
-    """/etc/sysconfig/iptables with the chain's lines in its filter table - or without them (cfg None)."""
+def file_with(text, cfg, fam=4, conf=None):
+    """/etc/sysconfig/iptables (ip6tables) with the chain's lines in its filter table - or without them (cfg None)."""
     lines = file_strip(text)
-    if cfg is not None:
+    if cfg is not None and fam == 4:
         lines = [x for x in lines if not OLD_RE.match(x)]
     if cfg is None:
         return "\n".join(lines) + "\n"
     ours = ["%s begin - fake-igd keeps these lines (upnp firewall, the pages); do not change them" % MARK,
-            ":%s - [0:0]" % CHAIN, "-A INPUT -j %s" % CHAIN] + chain_rules(cfg) + ["%s end" % MARK]
+            ":%s - [0:0]" % CHAIN, "-A INPUT -j %s" % CHAIN] + chain_rules(cfg, fam, conf) + ["%s end" % MARK]
     try:
         top = lines.index("*filter")
     except ValueError:
@@ -260,72 +550,151 @@ def file_with(text, cfg):
     return "\n".join(lines[:at] + ours + lines[at:]) + "\n"
 
 
-def fw_file(cfg):
-    if not os.path.exists(IPT_FILE):
+def fw_file_fam(cfg, fam, conf):
+    path = FW_FILES[fam]
+    if not os.path.exists(path):
+        if cfg is None:
+            return ""
         return "%s is not there (iptables-services not installed?) - the chain is live, not kept over a reboot" \
-               % IPT_FILE
-    if os.path.islink(IPT_FILE) or not os.path.isfile(IPT_FILE):
-        return "%s is not a plain file - left as it is" % IPT_FILE
-    with open(IPT_FILE, encoding="utf-8") as f:
+               % path
+    if os.path.islink(path) or not os.path.isfile(path):
+        return "%s is not a plain file - left as it is" % path
+    with open(path, encoding="utf-8") as f:
         text = f.read()
-    new = file_with(text, cfg)
+    new = file_with(text, cfg, fam, conf)
     if new == text:
-        return "%s: as it was" % IPT_FILE
+        return "%s: as it was" % path
     done = "the chain's lines taken out" if cfg is None else "kept over a reboot"
-    t = subprocess.run(["iptables-restore", "--test"], input=new, stdout=subprocess.PIPE,
+    t = subprocess.run([FW_TOOLS[fam][1], "--test"], input=new, stdout=subprocess.PIPE,
                        stderr=subprocess.STDOUT, universal_newlines=True)
     if t.returncode != 0:
-        raise Refused("%s would not load with the chain in it (iptables-restore --test): %s - left as it was"
-                      % (IPT_FILE, t.stdout.strip()[:300]))
-    st = os.stat(IPT_FILE)
-    fd, tmp = tempfile.mkstemp(prefix=".iptables.", dir=os.path.dirname(IPT_FILE))
+        raise Refused("%s would not load with the chain in it (%s --test): %s - left as it was"
+                      % (path, FW_TOOLS[fam][1], t.stdout.strip()[:300]))
+    st = os.stat(path)
+    fd, tmp = tempfile.mkstemp(prefix=".iptables.", dir=os.path.dirname(path))
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(new)
     os.chmod(tmp, stat.S_IMODE(st.st_mode))
-    os.replace(tmp, IPT_FILE)
+    os.replace(tmp, path)
     if shutil.which("restorecon"):
-        subprocess.run(["restorecon", IPT_FILE], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return "%s: %s" % (IPT_FILE, done)
+        subprocess.run(["restorecon", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return "%s: %s" % (path, done)
+
+
+def fw_file(cfg, conf=None):
+    """Both files (iptables, and ip6tables where it is there); what was done, in one line."""
+    conf = conf if conf is not None or cfg is None else load_fw_conf()
+    said = [fw_file_fam(cfg, 4, conf)]
+    if have_iptables(6) or os.path.isfile(IP6T_FILE):
+        said.append(fw_file_fam(cfg, 6, conf))
+    return "; ".join(s for s in said if s)
+
+
+def fw_file_snapshot():
+    out = {}
+    for fam, path in FW_FILES.items():
+        if os.path.isfile(path) and not os.path.islink(path):
+            with open(path, encoding="utf-8") as f:
+                out[path] = f.read()
+    return out
+
+
+def fw_file_put_back(snap):
+    for path, text in snap.items():
+        try:
+            with open(path, encoding="utf-8") as f:
+                if f.read() == text:
+                    continue
+            st = os.stat(path)
+            fd, tmp = tempfile.mkstemp(prefix=".iptables.", dir=os.path.dirname(path))
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.chmod(tmp, stat.S_IMODE(st.st_mode))
+            os.replace(tmp, path)
+        except OSError:
+            pass
 
 
 def firewall(cfg):
     if not have_iptables():
         return ["iptables is not installed - nothing done"]
     if not flag(cfg.get("firewall"), False):
-        live = subprocess.run(["iptables", "-S", CHAIN], stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL).returncode == 0
-        if not live and not (os.path.isfile(IPT_FILE) and CHAIN in open(IPT_FILE, encoding="utf-8").read()):
+        live = any(subprocess.run([FW_TOOLS[f][0], "-S", CHAIN], stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL).returncode == 0 for f in fw_families())
+        kept = False
+        for path in FW_FILES.values():
+            try:
+                with open(path, encoding="utf-8") as f:
+                    kept = kept or CHAIN in f.read()
+            except OSError:
+                pass
+        if not live and not kept:
             return ["firewall: off"]
         fw_live_off()
-        said = fw_file(None) if os.path.isfile(IPT_FILE) else ""
+        said = fw_file(None)
         return ["firewall: off - %s and its jump taken away" % CHAIN] + ([said] if said else [])
-    fw_live(cfg)
-    said = ["firewall: %s in place, first in INPUT (%d rules)" % (CHAIN, len(chain_rules(cfg)))]
-    old = old_live_off()
-    if old:
-        said.append("firewall: %d rule(s) of fake-igd 1.3 taken out of INPUT (--comment fake-igd) - "
-                    "%s does what they did" % (old, CHAIN))
-    return said + [fw_file(cfg)]
+    conf = load_fw_conf()
+    # As it was, live and in the files, to go back to when anything fails half way (as otp's):
+    # never a machine left half done.
+    was_live, was_file = fw_saved_now(), fw_file_snapshot()
+    try:
+        fams = fw_live(cfg, conf)
+        counts = ", ".join("IPv%d: %d rules" % (f, len(chain_rules(cfg, f, conf))) for f in fams)
+        said = ["firewall: %s in place, first in INPUT (%s)" % (CHAIN, counts)]
+        old = old_live_off()
+        if old:
+            said.append("firewall: %d rule(s) of fake-igd 1.3 taken out of INPUT (--comment fake-igd) - "
+                        "%s does what they did" % (old, CHAIN))
+        said.append(fw_file(cfg, conf))
+    except BaseException:
+        fw_put_live_back(was_live)
+        fw_file_put_back(was_file)
+        raise
+    return said
+
+
+def fw_full(fam):
+    """The whole filter table as iptables-save shows it (as otp's): every chain, counters left out."""
+    save = FW_TOOLS[fam][2]
+    if not shutil.which(save):
+        return []
+    got = subprocess.run([save, "-t", "filter"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                         universal_newlines=True)
+    out = []
+    for line in got.stdout.split("\n"):
+        line = re.sub(r"^\[\d+:\d+\]\s+", "", line.strip())
+        if not line or line.startswith("#") or line in ("*filter", "COMMIT"):
+            continue
+        out.append(re.sub(r" \[\d+:\d+\]$", "", line))
+    return out[:1500]
 
 
 def fw_status():
-    out = {"iptables": have_iptables(), "chain": False, "first": False, "file": False, "rules": []}
+    out = {"iptables": have_iptables(), "chain": False, "first": False, "file": False, "rules": [],
+           "ip6tables": have_iptables(6), "chain6": False, "first6": False, "file6": False, "rules6": [],
+           "backend": fw_backend(), "full": {}, "full_at": time.time()}
+    for fam, sfx in ((4, ""), (6, "6")):
+        if not have_iptables(fam):
+            continue
+        tool = FW_TOOLS[fam][0]
+        r = subprocess.run([tool, "-S", CHAIN], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           universal_newlines=True)
+        out["chain" + sfx] = r.returncode == 0
+        out["rules" + sfx] = [x for x in r.stdout.splitlines() if x.startswith("-A")]
+        first = subprocess.run([tool, "-S", "INPUT"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               universal_newlines=True).stdout.splitlines()
+        first = [x for x in first if x.startswith("-A INPUT")]
+        out["first" + sfx] = bool(first) and first[0] == "-A INPUT -j %s" % CHAIN
+        try:
+            with open(FW_FILES[fam], encoding="utf-8") as f:
+                out["file" + sfx] = CHAIN in f.read()
+        except OSError:
+            pass
+        out["full"][str(fam)] = fw_full(fam)
     if not out["iptables"]:
         return out
-    r = subprocess.run(["iptables", "-S", CHAIN], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                       universal_newlines=True)
-    out["chain"] = r.returncode == 0
-    out["rules"] = [x for x in r.stdout.splitlines() if x.startswith("-A")]
-    first = subprocess.run(["iptables", "-S", "INPUT"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                           universal_newlines=True).stdout.splitlines()
-    first = [x for x in first if x.startswith("-A INPUT")]
-    out["first"] = bool(first) and first[0] == "-A INPUT -j %s" % CHAIN
-    try:
-        with open(IPT_FILE, encoding="utf-8") as f:
-            out["file"] = CHAIN in f.read()
-    except OSError:
-        pass
-    out["service"] = subprocess.run(["systemctl", "is-active", "--quiet", "iptables"]).returncode == 0
+    out["service"] = subprocess.run(["systemctl", "is-active", "--quiet", "iptables"],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
     return out
 
 

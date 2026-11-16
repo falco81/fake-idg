@@ -178,7 +178,7 @@ def settings_view():
         out.append(s)
     panes = {}
     for group, keys in U.SETTING_GROUPS:
-        panes[PANE_OF_GROUP.get(group, group)] = keys
+        panes[PANE_OF_GROUP.get(group, group)] = list(keys)
     more, more_panes = PN.view(STORE[0])
     out += more
     for pane, keys in more_panes.items():
