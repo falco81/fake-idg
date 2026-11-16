@@ -417,16 +417,36 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     </div>
     <div class="ctl-group">fake-igd</div>
     <button type="button" data-pane="answer" data-icon="router" title="Whether it answers like a UPnP router, what it says to AddPortMapping, whom it answers, the public IP it reports.">How it answers</button>
-    <button type="button" data-pane="network" data-icon="net" title="The port of the description and SOAP, the interfaces it listens on and leaves out, how often it looks again.">Network</button>
+    <button type="button" data-pane="network" data-icon="net" title="The port of the description and SOAP, the interfaces it listens on and leaves out, how often it looks again.">UPnP network</button>
     <button type="button" data-pane="ntfy" data-icon="bell" title="A notification to a phone for every new port - ntfy.sh or your own ntfy server.">Notifications (ntfy)</button>
     <button type="button" data-pane="logs" data-icon="log" title="How much the log says, and where the logs and the state are.">Logs and state</button>
     <button type="button" data-pane="mdns" data-icon="wifi" title="avahi-daemon on this server: the reflector, the interfaces, the filters - every key of avahi-daemon.conf fake-igd knows - and the daemon started, stopped or restarted.">mDNS reflector (avahi)</button>
     <div class="ctl-group">Access</div>
     <button type="button" data-pane="people" data-icon="person" title="Who may open these pages, what each of them may do, and who is signed in right now.">Accounts</button>
-    <button type="button" data-pane="web" data-icon="wall" title="Who may reach these pages, how long a sign-in lasts, and the machine's firewall (iptables, the chain FAKE-IGD-IN).">Pages and firewall</button>
+    <button type="button" data-pane="tls" data-icon="lock" title="The certificate of these pages, and how TLS is spoken.">Certificates and TLS</button>
+    <button type="button" class="fulladmin-only" data-pane="acme" data-icon="lock" title="The certificates ordered from Let's Encrypt (or another ACME CA) and renewed by themselves.">Automatic certificates</button>
+    <button type="button" data-pane="web" data-icon="wall" title="Who may reach these pages, and the machine's firewall (iptables, the chain FAKE-IGD-IN) - what fake-igd needs opens by itself, your own rules beside it.">Firewall and access</button>
+    <button type="button" class="fulladmin-only" data-pane="sshd" data-icon="shield" title="How the SSH server lets people in - root, passwords, the port - and the notice shown before and after signing in.">SSH server and notices</button>
+    <button type="button" class="fulladmin-only" data-pane="sshkeys" data-icon="key" title="The keys that may sign in over SSH - as root or as a user who may sign in here: made here, added or taken away.">SSH keys</button>
+    <button type="button" class="fulladmin-only" data-pane="osusers" data-icon="people" title="The users of this machine's own system: root shown, the others made, given a password or sudo, locked or taken away.">Local users</button>
     <div class="ctl-group">Server</div>
-    <button type="button" class="fulladmin-only" data-pane="service" data-icon="power" title="fake-igd.service restarted, and what root last did for these pages.">The service</button>
+    <button type="button" class="fulladmin-only" data-pane="net" data-icon="ethernet" title="This machine's addresses, gateway, DNS servers, host name and IPv6 - each interface.">Network</button>
+    <button type="button" class="fulladmin-only" data-pane="proxy" data-icon="globe" title="An HTTP proxy, for what you switch on: the new versions, the system updates, ACME, notifications.">Proxy</button>
+    <button type="button" class="fulladmin-only" data-pane="time" data-icon="clock" title="The clock of this machine: chrony, its time servers, how far off it is, the time zone.">Time</button>
+    <button type="button" class="fulladmin-only" data-pane="service" data-icon="router" title="fake-igd.service restarted, and what root last did for these pages.">The service</button>
+    <button type="button" class="fulladmin-only" data-pane="power" data-icon="power" title="Restart or switch off this machine.">Restart and power off</button>
+    <button type="button" class="fulladmin-only" data-pane="disks" data-icon="chart" title="The disks, and how much the system journal and fake-igd's own logs may take.">Disks and logs</button>
+    <div class="ctl-group">Data</div>
+    <button type="button" data-pane="db" data-icon="db" title="The database: how big it is, copies of it, how long things are kept.">The database</button>
+    <button type="button" class="fulladmin-only" data-pane="backup" data-icon="archive" title="Backups of everything to another machine - FTP, FTPS, SFTP, SCP, SMB or a folder - locked with a password, on a schedule, and putting one back.">Backups</button>
+    <button type="button" class="fulladmin-only" data-pane="carry" data-icon="download" title="Everything that makes this installation what it is, as one file to carry to another machine.">Export and import</button>
     <div class="ctl-group">Monitoring and updates</div>
+    <button type="button" class="fulladmin-only" data-pane="mail" data-icon="mail" title="How fake-igd sends mail: a mail server, or straight to the recipient's.">Mail</button>
+    <button type="button" class="fulladmin-only" data-pane="mailq" data-icon="list" title="Every mail sent and what became of it: sent, waiting for another try, failed.">Outgoing mail</button>
+    <button type="button" class="fulladmin-only" data-pane="alerts" data-icon="bell" title="A mail when something is wrong, and a report of the week by mail.">Alerts and reports</button>
+    <button type="button" class="fulladmin-only" data-pane="monitor" data-icon="pulse" title="Prometheus asks this machine for its metrics; SNMPv3.">Monitoring</button>
+    <button type="button" class="fulladmin-only" data-pane="siem" data-icon="log" title="Every event, every sign-in and every port asked for to a syslog server or a SIEM - UDP, TCP or TLS; JSON, CEF or RFC 5424.">Syslog and SIEM</button>
+    <button type="button" class="fulladmin-only" data-pane="osup" data-icon="download" title="The operating system's packages updated; a restart offered when one is needed.">System updates</button>
     <button type="button" data-pane="upgrade" data-icon="up" title="A new version from the web or as a package, checked and put in by root.">Upgrades<b class="count rail-n" id="up-badge"></b></button>
     <button type="button" data-pane="about" data-icon="info" title="Version, what is running.">About</button>
   </nav>
@@ -494,19 +514,6 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
       <div id="us-table"></div>
     </div>
     <div class="card full fulladmin-only"><h2>Signed in now</h2><div id="se-table"></div></div>
-  </div>
-
-  <div class="ctl-pane" id="pane-web" hidden>
-    <div class="ctl-head"><h2 class="ctl-title">Pages and firewall</h2>
-      <p class="ctl-lede">Who may reach these pages (nginx's allow list), and the machine's firewall - as
-        otp's: a chain of fake-igd's own, <span class="mono">FAKE-IGD-IN</span>, jumped to first from
-        INPUT, with ACCEPT rules only. Anything it does not match goes on to the rules that were there
-        before; fake-igd never changes those. Root puts it in place when it is saved.</p></div>
-    <div class="card full"><div id="sect-web"></div></div>
-    <div class="card full">
-      <h2>What root did last <span class="right" id="fw-tools"></span></h2>
-      <div id="fw-state"><p class="muted">…</p></div>
-    </div>
   </div>
 
   <div class="ctl-pane" id="pane-service" hidden>

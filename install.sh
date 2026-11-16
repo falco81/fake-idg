@@ -597,8 +597,9 @@ allow_lines() {         # allow_lines "a,b" -> nginx allow lines, or the default
 install_pages() {
     step "The web pages (nginx, php-fpm)"
     install -d -m 0755 "$WEB_DIR" "$WEB_DIR/admin" "$WEB_DIR/assets"
-    install -m 0644 "$SOURCE_DIR/web/igd-page.php" "$SOURCE_DIR/web/igd-api.php" "$SOURCE_DIR/web/healthz.php" \
-        "$SOURCE_DIR/web/.user.ini" "$WEB_DIR/"
+    # every page of the package (1.6.0: acme.php too), none an older one left behind
+    find "$WEB_DIR" -maxdepth 1 -type f -name '*.php' -delete 2>/dev/null || true
+    install -m 0644 "$SOURCE_DIR"/web/*.php "$SOURCE_DIR/web/.user.ini" "$WEB_DIR/"
     install -m 0644 "$SOURCE_DIR/web/admin/index.php" "$WEB_DIR/admin/"
     # the panes of Settings (1.6.0): exactly the package's
     rm -rf "$WEB_DIR/admin/panes"
