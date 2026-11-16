@@ -197,7 +197,7 @@ function mailqStateTag(st) {
   return el('span', 'tag ' + w[1], w[0]);
 }
 function loadMailq(quiet) {
-  if (!quiet) { mailqWatch(true); holdTheTallOnes(); }
+  if (!quiet) mailqWatch(true);
   apiLatest('mailq', 'mailq&q=' + encodeURIComponent($('mq-q').value) + '&state=' + $('mq-state').value
       + '&limit=' + MQ.per + '&offset=' + MQ.page * MQ.per).then(function (d) {
     var c = d.counts || {};
@@ -315,6 +315,7 @@ function mailqPeek(qid) {
   }).catch(oops);
 }
 $('mq-q').addEventListener('input', debounce(function () { MQ.page = 0; loadMailq(); }, 300));
+searchButtons($('mq-q'), function () { MQ.page = 0; loadMailq(); }, ['mq-state']);
 $('mq-state').onchange = function () { MQ.page = 0; loadMailq(); };
 $('mq-retry-all').onclick = function () { mailqDo('retry_all'); };
 $('mq-drop-sent').onclick = function () {

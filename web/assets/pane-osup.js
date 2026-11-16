@@ -4,7 +4,7 @@
 
 var OU = {d: null, poll: null, hide: false, reboot: 'ask', what: 'all', asked: 0, away: 0};
 try { OU.hide = localStorage.getItem('fake-igd-ou-hide') === '1'; } catch (e) { /* only a convenience */ }
-var OU_STATE = {running: ['going on', 'info'], done: ['done', 'good'], failed: ['failed', 'bad']};
+var OU_STATE = {running: ['going on', 'info'], done: ['done', 'ok'], failed: ['failed', 'crit']};
 
 function upBar(pc, kind, words, wide) {
   var box = el('div', 'going up-bar' + (wide ? ' wide' : '') + (kind ? ' ' + kind : ''));
@@ -92,7 +92,8 @@ function drawOsup(live) {
     var res = d.root || {};
     if (res.ok === false && res.at && Date.now() / 1000 - res.at < 600) host.appendChild(noI18n(el('p', 'note bad', 'Root said: ' + (res.said || []).join('; '))));
     /* A restart the update left to do. */
-    if (d.reboot && !plan.rebooting) {
+    var rebooting = plan.rebooting && Date.now() / 1000 - plan.rebooting < 900;
+    if (d.reboot && !rebooting) {
       var rb = el('div', 'card full notice warn ou-reboot');
       rb.appendChild(el('h2', '', (d.node || 'This server') + ' needs a restart'));
       rb.appendChild(el('p', 'note', 'A new kernel or libraries are in that only a restart brings into use. For a minute or two the PS5 gets no answer, and these pages are away.'));
@@ -106,7 +107,7 @@ function drawOsup(live) {
       rb.appendChild(go);
       host.appendChild(rb);
     }
-    if (plan.rebooting) host.appendChild(el('p', 'note', 'Restarting - asked ' + ago(plan.rebooting) + '.'));
+    if (rebooting) host.appendChild(el('p', 'note', 'Restarting - asked ' + ago(plan.rebooting) + '.'));
     /* What this server has waiting. */
     var grid = el('div', 'pw-grid');
     var c = el('div', 'card pw-node');
@@ -115,7 +116,7 @@ function drawOsup(live) {
     hd.appendChild(noI18n(el('b', '', d.node || '')));
     hd.appendChild(el('span', 'tag info', 'this page'));
     if (looking) hd.appendChild(el('span', 'tag info', 'looking…'));
-    else if (ck.at && ck.state === 'done') hd.appendChild(el('span', 'tag ' + (ck.count ? 'warn' : 'good'), ck.count ? num(ck.count) + ' waiting' : 'up to date'));
+    else if (ck.at && ck.state === 'done') hd.appendChild(el('span', 'tag ' + (ck.count ? 'warn' : 'ok'), ck.count ? num(ck.count) + ' waiting' : 'up to date'));
     if (ck.reboot_now || (ck.reboot_after && ck.count)) hd.appendChild(el('span', 'pw-break'));
     if (ck.reboot_now) hd.appendChild(el('span', 'tag warn', 'restart needed'));
     else if (ck.reboot_after && ck.count) hd.appendChild(el('span', 'tag info', 'restart after the update'));

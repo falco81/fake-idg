@@ -66,7 +66,7 @@ function drawAlerts() {
       probs.forEach(function (p) {
         var it = el('div', 'al-item ' + (p.level === 'bad' ? 'bad' : 'warn'));
         var top = el('div', 'al-top');
-        top.appendChild(el('span', 'tag ' + (p.level === 'bad' ? 'bad' : 'warn'), p.level === 'bad' ? 'down' : 'warning'));
+        top.appendChild(el('span', 'tag ' + (p.level === 'bad' ? 'crit' : 'warn'), p.level === 'bad' ? 'down' : 'warning'));
         top.appendChild(noI18n(el('b', '', p.title)));
         if (p.sent) top.appendChild(el('span', 'tag info', 'mailed'));
         it.appendChild(top);
@@ -188,7 +188,7 @@ function alLog() {
       tr.appendChild(noI18n(el('td', 'small', e.subject || '')));
       tr.appendChild(noI18n(el('td', 'small', (e.to || []).join(', '))));
       var st = el('td');
-      st.appendChild(el('span', 'tag ' + (e.ok ? 'good' : (e.queued === 'waiting' ? 'warn' : 'bad')), e.ok ? 'sent' : (e.queued === 'waiting' ? 'waiting' : 'not sent')));
+      st.appendChild(el('span', 'tag ' + (e.ok ? 'ok' : (e.queued === 'waiting' ? 'warn' : 'crit')), e.ok ? 'sent' : (e.queued === 'waiting' ? 'waiting' : 'not sent')));
       if (!e.ok && e.said) explain(st, e.said);
       tr.appendChild(st);
       return tr;

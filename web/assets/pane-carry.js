@@ -9,21 +9,6 @@
     a.click();
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   }
-  function loadCarry() {
-    var host = $('ex-what');
-    if (!host || !ADMIN) return;
-    api('carry').then(function (d) {
-      clear(host);
-      var w = d.what || {};
-      host.appendChild(peekFacts([
-        ['Settings of config.json', num(w.config)], ['Settings saved on these pages', num(w.settings)],
-        ['Accounts', num(w.users)], ['Destinations of the backups', num(w.backup_targets)],
-        ['avahi-daemon.conf', w.avahi ? 'in it' : 'not readable here'], ['fake-igd', d.version]
-      ]));
-      host.appendChild(el('p', 'btnhelp', 'On the command line the same file is read by nothing else: carry it to the other machine and use Import a file… there.'));
-    }).catch(oops);
-  }
-  PANE_LOAD.carry = loadCarry;
 
   if ($('ex-plain')) $('ex-plain').onclick = function () {
     api('carry', {action: 'export'}).then(function (d) { saveFile(d.name, JSON.stringify(d.config, null, 2)); toast(d.name, 'good'); }).catch(oops);

@@ -5,7 +5,7 @@
         the receiving side does not take at once (greylisting's "try again later", a server away, a full
         mailbox) waits and is tried again by itself; what it refuses for good is shown as failed. What a mail
         held is never kept once it went.</p></div>
-    <div class="card full mq-held" data-hold>
+    <div class="card full held mq-held">
       <div class="mq-chips" id="mq-chips"></div>
       <div class="btnrow filters" style="margin-top:12px">
         <input type="search" id="mq-q" placeholder="an address, what the server said… (to:*@example.cz, state:waiting, kind:alert…)" style="flex:1;min-width:260px">

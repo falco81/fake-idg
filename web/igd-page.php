@@ -70,7 +70,7 @@ function igd_guard_post(): void
 {
     $told = (int) ($_SERVER['CONTENT_LENGTH'] ?? 0);
     $kind = strtolower((string) ($_SERVER['CONTENT_TYPE'] ?? ''));
-    $big = in_array(($_GET['api'] ?? ''), ['upgrade-package', 'carry-import', 'backup-restore', 'tls-upload'], true);
+    $big = in_array(($_GET['api'] ?? ''), ['upgrade-package', 'carry-import', 'backup-restore', 'tls-upload', 'db-upload'], true);
     if ($told > ($big ? 96 : 1) * 1024 * 1024) {
         http_response_code(413);
         header('Content-Type: application/json; charset=utf-8');

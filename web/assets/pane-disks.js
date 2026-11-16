@@ -73,7 +73,6 @@
       var state = !r.at ? (d.waiting ? ['warn', 'being put in', 'warn'] : ['dim', 'not asked yet', 'dim'])
         : (r.ok && d.current ? ['ok', 'as set', 'ok'] : (r.ok || d.waiting ? ['warn', 'being put in', 'warn'] : ['bad', 'failed', 'crit']));
       var c = nodeCard(n, state[0], state[1], state[2]);
-      c.style.gridColumn = '1 / -1';
       var lim = 85;
       var worst = (d.disks || []).reduce(function (m, dk) { return Math.max(m, dk.pct || 0); }, 0);
       nodeBig(c, num(worst) + ' %', 'the fullest disk');
@@ -96,7 +95,7 @@
         ['Asked', r.at ? ago(r.at) : '']
       ]));
       var words = rootSays(r);
-      if (words) c.appendChild(noI18n(el('div', 'si-said small' + (r.ok ? ' muted' : ' bad'), words)));
+      if (words && r.at && !r.ok) c.appendChild(noI18n(el('div', 'si-said small', words)));
       if (ADMIN) {
         var row2 = el('div', 'btnrow');
         var again = cmdButton('Put in and look again', 'refresh', 'small');

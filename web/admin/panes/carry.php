@@ -14,6 +14,5 @@
         <button class="btn cmd admin-only" id="ex-load" data-icon="upload">Import a file…</button>
         <input type="file" id="ex-file" accept=".json" hidden>
       </div>
-      <div id="ex-what" style="margin-top:14px"></div>
     </div>
   </div>

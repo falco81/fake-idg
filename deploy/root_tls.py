@@ -12,6 +12,10 @@ the ask is trusted - every value is checked against the one shape it may have.
             keep_before: the files there now are kept as fake-igd.pem.before-acme (Automatic
             certificates' "Back to the one before").
   put_back  the certificate from before ACME put back as it was (its key with it).
+  acme_http {names}: the port-80 server made ready for the CA's HTTP-01 challenge - the
+            location /.well-known/acme-challenge/ → acme.php put in where it is missing (a
+            fake-igd.conf of an older version), the names ordered added to its server_name, so
+            that nginx gives a request for any of them to fake-igd (as otp's acme_into).
   policy    {protocols, ciphers, prefer, dh, hsts}: ssl_protocols, ssl_ciphers,
             ssl_prefer_server_ciphers, ssl_dhparam (an RFC 7919 group, or made here) and the
             Strict-Transport-Security header in fake-igd.conf's server on 443.
@@ -293,6 +297,67 @@ def apply(writes, said):
     return ok
 
 
+ACME_LOCATION = """    # A certificate by ACME (Settings → Automatic certificates): the CA's HTTP-01
+    # challenge answered on port 80 by acme.php, which asks fake-igd-api for the
+    # answer while an order waits. Open to anybody - the CA asks from the internet.
+    # Everything else goes to HTTPS.
+    location ^~ /.well-known/acme-challenge/ {
+        if ($http_content_type ~* "multipart") { return 403; }
+        limit_req     zone=igd_all burst=20 nodelay;
+        fastcgi_pass  @SOCK@;
+        fastcgi_param SCRIPT_FILENAME @ROOT@/acme.php;
+        include       fastcgi_params;
+        fastcgi_read_timeout 10s;
+    }
+"""
+NAME_RE = re.compile(r"^(?=.{1,253}\Z)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z][A-Za-z0-9-]{1,62}\Z")
+
+
+def acme_http_text(text, names):
+    """fake-igd.conf with its port-80 server ready for HTTP-01 (the text unchanged when it is)."""
+    where = server_block(text, "80")
+    if not where:
+        raise Refused("%s has no server listening on 80" % NGINX_CONF)
+    block = text[where[0]:where[1]]
+    new = block
+    if "acme-challenge" not in new:
+        sock = re.search(r"(?m)^\s*fastcgi_pass\s+(unix:[^;\s]+);", text)
+        main = server_block(text, "443")
+        root = re.search(r"(?m)^\s*root\s+([^;\s]+);", text[main[0]:main[1]] if main else text)
+        loc = ACME_LOCATION.replace("@SOCK@", sock.group(1) if sock else "unix:/run/php-fpm/fake-igd.sock") \
+            .replace("@ROOT@", (root.group(1) if root else "/var/www/fake-igd").rstrip("/"))
+        m = re.search(r"(?m)^[ \t]*location\s+/\s*\{", new)
+        if not m:
+            raise Refused("the port-80 server of %s has no location / to put the ACME one before" % NGINX_CONF)
+        new = new[:m.start()] + loc + new[m.start():]
+    m = re.search(r"(?m)^(\s*server_name\s+)([^;#]*);", new)
+    if m and names:
+        have = m.group(2).split()
+        want = have + [n for n in names if n not in have]
+        if want != have:
+            new = new[:m.start()] + m.group(1) + " ".join(want) + ";" + new[m.end():]
+    return text[:where[0]] + new + text[where[1]:]
+
+
+def do_acme_http(payload, said):
+    names = payload.get("names")
+    if not isinstance(names, list) or len(names) > 100 or \
+            any(not isinstance(n, str) or not NAME_RE.match(n) for n in names):
+        raise Refused("the names are full DNS names, 100 at most")
+    try:
+        with open(NGINX_CONF, encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        raise Refused("%s cannot be read: %s" % (NGINX_CONF, e))
+    new = acme_http_text(text, [n.lower() for n in names])
+    if new == text:
+        said.append("port 80 answers the CA for %s already" % (", ".join(names) or "these pages"))
+        return True
+    ok = apply([(NGINX_CONF, new, 0o644)], said)
+    said.insert(0, "port 80 answers the CA's HTTP-01 for %s" % (", ".join(names) or "these pages"))
+    return ok
+
+
 # ---- the actions -------------------------------------------------------------------------------
 def do_put(payload, said):
     main = pem_set(payload.get("cert"), payload.get("key"), payload.get("chain"))
@@ -393,13 +458,15 @@ def do_policy(payload, said):
 def serve(payload, ask=None):
     said = []
     act = payload.get("action") if isinstance(payload, dict) else None
-    if act not in ("put", "put_back", "policy"):
+    if act not in ("put", "put_back", "policy", "acme_http"):
         return {"ok": False, "action": str(act)[:20], "said": ["no such action"]}
     try:
         if act == "put":
             ok = do_put(payload, said)
         elif act == "put_back":
             ok = do_put_back(said)
+        elif act == "acme_http":
+            ok = do_acme_http(payload, said)
         else:
             ok = do_policy(payload, said)
     except Refused as e:

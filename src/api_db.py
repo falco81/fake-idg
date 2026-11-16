@@ -42,10 +42,10 @@ SETTINGS = [
     {"key": "db_copy_daily", "name": "A copy of the database every day", "kind": "bool", "default": True,
      "says": "A copy of the database once a day, into <code>/var/lib/fake-igd/backups</code> - made by "
              "SQLite's own backup, so it is whole even while the API writes to it."},
-    {"key": "db_copy_at", "name": "At", "kind": "text", "default": "03:30", "check": _hhmm,
-     "says": "When, as <code>HH:MM</code> on this machine's clock.", "only_when": ("db_copy_daily", True)},
     {"key": "db_copy_keep", "name": "Copies kept", "kind": "int", "default": 14, "min": 1, "max": 365,
      "says": "How many of those copies are kept; the oldest goes first. A copy made by hand counts too."},
+    {"key": "db_copy_at", "name": "At", "kind": "text", "default": "03:30", "check": _hhmm,
+     "says": "When, as <code>HH:MM</code> on this machine's clock."},
     {"key": "events_keep_days", "name": "Keep the events (days)", "kind": "int", "default": 365,
      "min": 0, "max": 36500,
      "says": "How long the events are kept. 0 keeps them for ever (fake-igd still keeps no more than the "

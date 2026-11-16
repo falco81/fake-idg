@@ -652,6 +652,35 @@ def due(ctx, names=None):
     return ""
 
 
+def http80(ctx, names, say=None, wait=60):
+    """Port 80 made ready for HTTP-01 by root (root_tls.py acme_http): the location to acme.php
+    where an older fake-igd.conf lacks it, the names in its server_name. Waited for when `wait`."""
+    plain = [n for n in names if not n.startswith("*.")]
+    done = _meta(ctx.store, "acme:http80") or {}
+    if done.get("ok") and done.get("names") == plain:
+        return True
+    T = _tls()
+    ident = ctx.ask_root({"action": "acme_http", "names": plain}, kind="tls")
+    T.set_meta(ctx.store, "tls:asked", {"id": ident, "at": time.time(), "action": "acme_http",
+                                        "by": (ctx.me or {}).get("name", "")})
+    if say:
+        say("asked root to make port 80 ready for the CA (%s)" % ", ".join(plain))
+    end = time.time() + wait
+    while time.time() < end:
+        res = ctx.root_result("tls")
+        if res.get("id") == ident:
+            _set(ctx.store, "acme:http80", {"names": plain, "ok": bool(res.get("ok")), "at": time.time()})
+            if not res.get("ok"):
+                raise AcmeError("root could not make port 80 ready: %s" % ((res.get("said") or ["?"])[-1]))
+            if say:
+                say((res.get("said") or ["port 80 is ready"])[0])
+            return True
+        time.sleep(1)
+    if say and wait:
+        say("root has not answered in %d s (is fake-igd-web.path active?) - the CA is asked anyway" % wait)
+    return False
+
+
 def say_work(text):
     WORK["says"] = str(text)[:300]
 
@@ -674,6 +703,8 @@ def order(ctx, names, by):
                 raise AcmeError("%s is not a name a CA gives a certificate for (a full DNS name)" % n)
             if n.startswith("*.") and c.get("acme_challenge") != "dns-01":
                 raise AcmeError("%s: a wildcard is given by DNS-01 only" % n)
+        if c.get("acme_challenge") != "dns-01":
+            http80(ctx, names, say)
         a = Acme(ctx, c)
         kinds = CERT_KEYS.get(str(c.get("acme_key") or "dual")) or ("ec",)
         was = state(ctx.store)
@@ -1495,6 +1526,14 @@ def on_saved(ctx, changed):
     """Switched on, or the names or the CA changed: looked at within the minute."""
     if any(k in changed for k in ("acme", "acme_names", "acme_ca", "acme_url", "acme_key", "acme_challenge")):
         LAST["look"] = 0.0
+    if ctx.setting("acme") and ctx.setting("acme_challenge") != "dns-01" and \
+            any(k in changed for k in ("acme", "acme_names", "acme_challenge")):
+        names = names_of(ctx)
+        if names:
+            try:
+                http80(ctx, names, wait=0)
+            except (AcmeError, ValueError):
+                pass
     if changed.get("acme") is True and not care(ctx.store):
         # Switched on: ACME looks after the certificate again (as otp's "Look after it").
         care_set(ctx, True, (ctx.me or {}).get("name", ""), "switched on")

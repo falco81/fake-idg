@@ -118,7 +118,7 @@
       var st = el('div', 'cert-state');
       var bad = r.state === 'failed' || r.state === 'late';
       st.appendChild(el('span', 'dot ' + (bad ? 'crit' : (r.state === 'done' ? 'ok' : 'warn'))));
-      var what = {put: 'the certificate', policy: 'the TLS settings', put_back: 'the certificate from before ACME'}[r.action] || 'it';
+      var what = {put: 'the certificate', policy: 'the TLS settings', put_back: 'the certificate from before ACME', acme_http: 'the ACME location of port 80'}[r.action] || 'it';
       st.appendChild(el('span', '', r.state === 'failed' ? 'root could not put ' + what + ' in: ' + ((r.said || []).slice(-1)[0] || '')
         : (r.state === 'done' ? what + ' in place - ' + ((r.said || [])[0] || '') + ' (' + ago(r.at) + ')'
           : (r.state === 'late' ? (r.said || [])[0] : what + ' being put in…'))));
