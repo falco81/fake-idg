@@ -43,6 +43,7 @@ function upgradeSend(file) {
 function upHideBar(go) {
   var row = el('div', 'actions hide-row');
   var b = cmdButton('Hide this', 'close', 'small');
+  b.classList.add('hide-this');
   b.onclick = function (e) {
     if (e) e.stopPropagation();
     busy(b, true);

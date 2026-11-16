@@ -15,6 +15,38 @@
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   }
 
+  /* The name the browser reached these pages by - when it is a DNS name, not an address. */
+  function reachedAs() {
+    var h = String(location.hostname || '').toLowerCase().replace(/\.$/, '');
+    if (!h || h === 'localhost' || /^[0-9.]+$/.test(h) || h.indexOf(':') >= 0 || h.indexOf('.') < 0) return '';
+    return h;
+  }
+  /* Does a list of names (a certificate's, or server_name's) name this host - wildcards too? */
+  function names(list, h) {
+    return (list || []).some(function (n) {
+      n = String(n || '').toLowerCase();
+      if (n === h) return true;
+      return n.indexOf('*.') === 0 && h.split('.').slice(1).join('.') === n.slice(2);
+    });
+  }
+  function uniq(list) {
+    var out = [];
+    list.forEach(function (x) { x = String(x || '').trim(); if (x && x !== '_' && out.indexOf(x) < 0) out.push(x); });
+    return out;
+  }
+  /* "Add its names to nginx's server_name" - asked when a certificate goes in (default yes). */
+  function addNamesBox(body) {
+    var lab = el('label', 'check small');
+    var cb = el('input'); cb.type = 'checkbox'; cb.checked = true; cb.id = 'tcs-add';
+    lab.appendChild(cb);
+    lab.appendChild(el('span', '', 'Add its names to nginx\'s server_name where they are missing (nginx -t first; put back when it says no)'));
+    var row = el('div', '');
+    row.style.marginTop = '10px';
+    row.appendChild(lab);
+    body.appendChild(row);
+  }
+  function addNames() { var cb = $('tcs-add'); return !!(cb && cb.checked); }
+
   function loadTls() {
     if (TLS.out) return;
     TLS.out = true;
@@ -41,11 +73,17 @@
     var card = el('section', 'cert-card');
     var head = el('header', 'cert-h');
     var title = el('div', 'cert-title');
+    var reached = reachedAs();
     title.appendChild(el('span', 'cert-target', 'This server'));
-    title.appendChild(noI18n(el('b', '', d.host || '–')));
+    title.appendChild(noI18n(el('b', '', reached || (info && info.cn) || d.host || '–')));
     title.appendChild(el('span', 'tag dim', 'this one'));
     var where = (d.names || []).concat(d.ips || []);
     title.appendChild(el('span', 'cert-for', 'the certificate answered on ' + (where.length ? where.join(', ') : 'every name and address of this server')));
+    /* The machine's own host name, said as the machine's - not one of the certificate's names. */
+    var mach = el('span', 'cert-for');
+    mach.appendChild(document.createTextNode('this machine: '));
+    mach.appendChild(noI18n(el('span', 'mono', d.machine || d.host || '?')));
+    title.appendChild(mach);
     head.appendChild(title);
     var days = info ? daysLeft(info.not_after) : null;
     head.appendChild(el('span', 'tag ' + certTone(days), days === null ? 'no certificate' :
@@ -88,10 +126,15 @@
       });
       b.appendChild(kv);
       card.appendChild(b);
+      /* The name the browser came by, not named (otp says so for a node's name too). */
+      if (reached && !names([info.cn].concat(info.san || []), reached))
+        card.appendChild(el('p', 'note warn', 'You reached these pages as ' + reached + ' - the certificate does not name it (it names ' + (uniq([info.cn].concat(info.san || [])).join(', ') || 'nothing') + '): the browser warns. Self-signed or a new request, below, starts from it.'));
     } else {
       card.appendChild(el('p', 'note', cur && cur.error ? 'nginx\'s certificate does not read: ' + cur.error
         : 'There is no certificate in nginx\'s file yet.'));
     }
+    if (reached && (d.names || []).length && !names(d.names, reached))
+      card.appendChild(el('p', 'note warn', 'nginx\'s server_name does not name ' + reached + ' (it has ' + d.names.join(', ') + ') - a certificate put in here can add it.'));
     /* How TLS is spoken, as chips. */
     var pol = d.policy || {};
     var chips = el('div', 'cert-chips');
@@ -223,6 +266,7 @@
       var pw = secretBox('', 'only for a PFX or a key with a passphrase', 'mono');
       pw.id = 'tu-pw';
       body.appendChild(formField('Password', pw, 'Used here to open it, and not kept.'));
+      addNamesBox(body);
       body.appendChild(el('div', 'said', '')).id = 'tu-said';
     }, [{words: 'Cancel', close: true},
         {words: 'Put it in', cls: 'primary', icon: 'save', go: function (b) {
@@ -232,7 +276,7 @@
           if (!pfx.length && !/-----BEGIN /.test(pem)) { toast('choose the files first, or paste the PEM', 'bad'); return; }
           busy(b, true);
           api('tls', {action: 'tls_upload', cert: pem, pfx: pfx.length ? pfx[0].pfx : '',
-                      password: (($('tu-pw') || {}).value) || ''}).then(function (x) {
+                      password: (($('tu-pw') || {}).value) || '', add_names: addNames()}).then(function (x) {
             toast(x.message, 'good'); closeModal(); drawTls(x);
           }).catch(function (e) { $('tu-said').className = 'said bad'; $('tu-said').textContent = e.message; }).then(function () { busy(b, false); });
         }}], 'medium');
@@ -240,12 +284,17 @@
 
   function certSubjectFields(body, d, withDays) {
     var g = el('div', 'formgrid');
-    var names = (d.names || []).slice();
-    var cn = textBox(names.shift() || d.host || '', 'igd.example.cz', 'mono'); cn.id = 'tcs-cn';
-    var other = textBox(withDays ? names.concat(d.ips || []).join(', ') : names.join(', '), 'igd.example.cz, 192.0.2.11', 'mono'); other.id = 'tcs-names';
+    /* The name the browser came by first, then the certificate's own, then server_name's; the
+       other names all of them and this machine's IPv4 addresses - once each. */
+    var info = ((d.cert || {}).info) || {};
+    var dnsOnly = function (x) { return x && !/^[0-9.]+$/.test(x) && x.indexOf(':') < 0; };
+    var all = uniq([reachedAs(), info.cn].concat(info.san || [], d.names || []).filter(dnsOnly).map(function (x) { return String(x).toLowerCase(); }));
+    var first = all.shift() || d.host || '';
+    var cn = textBox(first, 'igd.example.cz', 'mono'); cn.id = 'tcs-cn';
+    var other = textBox(uniq(all.concat(d.ips || [])).join(', '), 'igd.example.cz, 192.0.2.11', 'mono'); other.id = 'tcs-names';
     var kind = selectBox([['rsa2048', 'RSA 2048'], ['rsa3072', 'RSA 3072'], ['rsa4096', 'RSA 4096'], ['ec', 'EC P-256']], 'rsa2048'); kind.id = 'tcs-kind';
     g.appendChild(formField('The name (CN)', cn, 'What people type in the browser.'));
-    g.appendChild(formField('Other names', other, withDays ? 'More names or addresses it is good for, by commas - nginx\'s server_name and this machine\'s IPv4 addresses to begin with.' : 'More names or addresses it is good for, by commas.'));
+    g.appendChild(formField('Other names', other, 'More names or addresses it is good for, by commas - the name these pages were reached by, the certificate\'s, nginx\'s server_name and this machine\'s IPv4 addresses to begin with.'));
     g.appendChild(formField('The key', kind));
     var org = textBox('', 'Krajský úřad'); org.id = 'tcs-org';
     g.appendChild(formField('Organisation', org));
@@ -304,10 +353,11 @@
     modal('A self-signed certificate for these pages', function (body) {
       body.appendChild(el('p', 'note warn', 'Browsers warn about a self-signed certificate until it is trusted by hand. Good for a test, or until the real one comes.'));
       certSubjectFields(body, d, true);
+      addNamesBox(body);
     }, [{words: 'Cancel', close: true},
         {words: 'Make it and put it in', cls: 'primary', icon: 'key', go: function (b) {
           busy(b, true);
-          api('tls', Object.assign({action: 'tls_selfsigned'}, certSubjectValues())).then(function (x) {
+          api('tls', Object.assign({action: 'tls_selfsigned', add_names: addNames()}, certSubjectValues())).then(function (x) {
             toast(x.message, 'good'); closeModal(); drawTls(x);
           }).catch(oops).then(function () { busy(b, false); });
         }}], 'medium');

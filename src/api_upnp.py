@@ -261,7 +261,10 @@ def _step(steps, what, fn):
     try:
         ok, said, val = fn()
     except Exception as e:                               # noqa: BLE001 - a step that broke is a failed step
-        ok, said, val = False, str(getattr(e, "reason", e)) or e.__class__.__name__, None
+        vm = getattr(e, "verify_message", "")
+        said = ("the certificate is not trusted: %s - a server of your own authority? Add it below" % vm) if vm \
+            else (str(getattr(e, "reason", "") or e) or e.__class__.__name__)
+        ok, val = False, None
     steps.append({"what": what, "ok": bool(ok), "said": said, "ms": int((time.time() - t0) * 1000)})
     return ok, val
 
@@ -563,6 +566,22 @@ def _ntfy_done(ctx, me, steps, t0, ok, said):
     return {"sent": ok, "said": said, "steps": steps, "took_ms": took}
 
 
+def _write_ca(path, certs):
+    folder = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".ntfy-ca-", dir=folder)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(c["pem"] for c in certs) + "\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def ntfy_post(ctx):
     me = ctx.need("fulladmin")
     b = ctx.body()
@@ -575,6 +594,23 @@ def ntfy_post(ctx):
     if a is None:
         raise ValueError("the API cannot save config.json from here")
     path = _ca_path()
+    if b.get("mode") == "drop" and b.get("fingerprint"):
+        fp = str(b.get("fingerprint") or "").lower()
+        cur = str(ctx.cfg.get("ntfy_ca_file") or "")
+        if not cur or os.path.abspath(cur) != os.path.abspath(path):
+            raise ValueError("the CA file was set by hand (%s) - it is changed on the server" % cur)
+        with open(path, encoding="utf-8") as f:
+            have = certs_of(f.read())
+        keep = [c for c in have if c["fingerprint"] != fp]
+        if len(keep) == len(have):
+            raise ValueError("no such certificate here")
+        if keep:
+            _write_ca(path, keep)
+            gone = [c for c in have if c["fingerprint"] == fp][0]
+            ctx.event("%s took a certificate of the ntfy server's authority out (%s)" % (me["name"], gone["subject"]),
+                      kind="notify")
+            return {"message": "taken out - %d kept" % len(keep)}
+        b = {"mode": "drop"}
     if b.get("mode") == "drop":
         was = str(ctx.cfg.get("ntfy_ca_file") or "")
         a.settings_save({"ntfy_ca_file": ""}, me["name"], ctx.addr)
@@ -603,19 +639,7 @@ def ntfy_post(ctx):
             have = []
     seen = {c["fingerprint"] for c in have}
     keep = have + [c for c in new if c["fingerprint"] not in seen]
-    folder = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(prefix=".ntfy-ca-", dir=folder)
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write("\n".join(c["pem"] for c in keep) + "\n")
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+    _write_ca(path, keep)
     if cur != path:
         a.settings_save({"ntfy_ca_file": path}, me["name"], ctx.addr)
     added = len(keep) - len(have)

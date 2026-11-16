@@ -10,7 +10,7 @@
   }
   function whenOf(t) { var ms = Date.parse(t || ''); return isNaN(ms) ? (t || '–') : dayWords(new Date(ms)); }
   function certTable(list) {
-    return listTable(['It is', 'Signed by', 'Good from', 'Good until', 'Fingerprint (SHA-256)'], list, function (c) {
+    return listTable(['It is', 'Signed by', 'Good from', 'Good until', 'Fingerprint (SHA-256)', ''], list, function (c) {
       var tr = el('tr');
       tr.appendChild(noI18n(el('td', '', c.subject || '–')));
       var by = el('td');
@@ -29,6 +29,20 @@
       });
       fp.title = hex.replace(/(..)(?=.)/g, '$1:');
       tr.appendChild(fp);
+      var tools = el('td', 'rowtools');
+      if (ADMIN && NT.d && NT.d.ca_ours) {
+        var x = iconButton('trash', 'Take this certificate out');
+        x.onclick = function () {
+          confirmThen('Take this certificate out', '<b>' + htmlText(c.subject || 'this certificate')
+            + '</b> is no longer trusted for the ntfy server. The others stay.', 'Take it out', function () {
+              api('upnp-ntfy', {action: 'ca', mode: 'drop', fingerprint: c.fingerprint}).then(function (r) {
+                toast(r.message, 'good'); load(); loadSettings(!Object.keys(DIRTY).length);
+              }).catch(oops);
+            });
+        };
+        tools.appendChild(x);
+      }
+      tr.appendChild(tools);
       return tr;
     }, 'plain', {own: true});
   }

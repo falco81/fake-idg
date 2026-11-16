@@ -20,6 +20,7 @@ Python 3.9, the standard library. Every path can be pointed elsewhere for a test
 FAKE_IGD_SYSTEMCTL, FAKE_IGD_NGINX_BIN, FAKE_IGD_PHP_FPM, UPNP_CONSOLE_FLAG, UPNP_CONSOLE_PROFILE.
 """
 import glob
+import json
 import os
 import re
 import shutil
@@ -31,6 +32,8 @@ NGINX = os.environ.get("FAKE_IGD_NGINX_BIN") or "nginx"
 PHP_FPM = os.environ.get("FAKE_IGD_PHP_FPM") or ""
 CONSOLE_FLAG = os.environ.get("UPNP_CONSOLE_FLAG", "/etc/upnp-console-login")
 CONSOLE_PROFILE = os.environ.get("UPNP_CONSOLE_PROFILE", "/etc/profile.d/zz-upnp-console.sh")
+WEB_DIR = os.path.join(os.environ.get("FAKE_IGD_STATE", "/var/lib/fake-igd"), "web")
+ANSWERS_KEPT = 20
 USER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]{0,31}\Z")
 
 # The units and what may be done to each - the same list as the API's (api_about.UNITS).
@@ -181,12 +184,59 @@ def console_set(on, users):
     return {"ok": got_on == on, "said": said, "do": "console", "console": {"on": got_on, "users": got_users}}
 
 
+def answers_before():
+    """The answers root gave before this one: the last result (written by fake_igd_web.py after each
+    ask) and the ones it carried. Several asks served in one go each overwrite result-service.json,
+    so each result carries the ones before it, and the API finds the answer to every ask. Read as
+    data only - never followed through a link, never more than 256 kB - and checked shape by shape."""
+    try:
+        fd = os.open(os.path.join(WEB_DIR, "result-service.json"), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return []
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return []
+        raw = os.read(fd, 256 * 1024)
+    finally:
+        os.close(fd)
+    try:
+        last = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        return []
+    if not isinstance(last, dict):
+        return []
+    out = []
+    for x in (last.get("answers") if isinstance(last.get("answers"), list) else []) + [last]:
+        if not isinstance(x, dict) or not re.match(r"^[0-9]{10,16}-[0-9a-f]{8}\Z", str(x.get("id") or "")):
+            continue
+        said = x.get("said") if isinstance(x.get("said"), list) else []
+        try:
+            at = float(x.get("at") or 0)
+        except (TypeError, ValueError):
+            at = 0.0
+        out.append({"id": str(x["id"]), "ok": x.get("ok") is True, "said": [str(w)[:400] for w in said[:12]],
+                    "now": str(x.get("now") or "")[:80], "at": at})
+    seen, keep = set(), []
+    for x in reversed(out):
+        if x["id"] not in seen:
+            seen.add(x["id"])
+            keep.append(x)
+    return list(reversed(keep))[-ANSWERS_KEPT:]
+
+
 def serve(payload, ask=None):
-    if not isinstance(payload, dict):
-        raise Refused("the ask is not an object")
-    do = payload.get("do")
-    if do == "console":
-        return console_set(payload.get("on"), payload.get("users"))
-    if do in DONE:
-        return unit_do(do, payload.get("unit"))
-    raise Refused("restart, stop, start, reload or console")
+    before = answers_before()
+    try:
+        if not isinstance(payload, dict):
+            raise Refused("the ask is not an object")
+        do = payload.get("do")
+        if do == "console":
+            got = console_set(payload.get("on"), payload.get("users"))
+        elif do in DONE:
+            got = unit_do(do, payload.get("unit"))
+        else:
+            raise Refused("restart, stop, start, reload or console")
+    except (Refused, OSError) as e:
+        got = {"ok": False, "said": ["refused: %s" % e]}
+    got["answers"] = before
+    return got

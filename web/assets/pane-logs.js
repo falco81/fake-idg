@@ -62,23 +62,26 @@
       }
       c.appendChild(row2);
       grid.appendChild(c);
+      host.appendChild(grid);
       /* Every file, where it is (the settings below say where; this says what is there). */
-      var fc = el('div', 'card ntp-node');
-      var fh = el('div', 'pw-head');
-      fh.appendChild(el('b', '', 'The files'));
+      var fc = el('div', 'card full');
+      var fh = el('h2', '', 'The files');
+      fh.appendChild(el('span', 'right muted small', d.state.path ? 'the state folder: ' + d.state.path : ''));
       fc.appendChild(fh);
-      fc.appendChild(listTable(['What', 'Where', 'Size', 'Written'], d.files || [], function (x) {
+      fc.appendChild(listTable(['What', 'Where', {words: 'Size', cls: 'num'}, {words: 'Lines', cls: 'num'}, 'Written'], d.files || [], function (x) {
         var tr = el('tr');
         var w = el('td', '', x.what);
         if (x.says) explain(w, x.says);
         tr.appendChild(w);
-        tr.appendChild(noI18n(el('td', 'mono small', x.path)));
+        var where = noI18n(el('td', 'mono small', x.path));
+        where.style.wordBreak = 'break-all';
+        tr.appendChild(where);
         tr.appendChild(el('td', 'num ' + (x.there ? '' : 'bad'), x.there ? bytes(x.size || 0) : 'not there'));
-        tr.appendChild(el('td', 'muted small', x.at ? ago(x.at) : '–'));
+        tr.appendChild(el('td', 'num muted', x.lines === null || x.lines === undefined ? '' : num(x.lines)));
+        tr.appendChild(x.at ? stampCell(x.at, 'muted small') : el('td', 'muted', '–'));
         return tr;
       }, 'plain'));
-      grid.appendChild(fc);
-      host.appendChild(grid);
+      host.appendChild(fc);
     }, live, function () { explainWhatWasDrawn(real); });
   }
   PANE_LOAD.logs = load;

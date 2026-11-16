@@ -386,7 +386,11 @@ def copies(path=CONF):
             st = os.stat(os.path.join(folder, n))
         except OSError:
             continue
-        out.append({"name": n, "at": st.st_mtime, "size": st.st_size, "stamp": m.group(1)})
+        try:                                 # when it was kept (its name), not the file's own time (copy2)
+            at = time.mktime(time.strptime(m.group(1), "%Y%m%d-%H%M%S"))
+        except (ValueError, OverflowError):
+            at = st.st_mtime
+        out.append({"name": n, "at": at, "size": st.st_size, "stamp": m.group(1)})
     return sorted(out, key=lambda c: c["stamp"], reverse=True)
 
 

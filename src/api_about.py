@@ -286,7 +286,7 @@ def journal(units, n):
 LATELY_KEY = "service:lately"
 LATELY_MOST = 40
 DONE_WORDS = {"restart": "restarted", "stop": "stopped", "start": "started", "reload": "reloaded",
-              "console": "the console at login set"}
+              "console": "set"}
 
 
 def lately_load(store):
@@ -310,10 +310,21 @@ def lately_settle(ctx):
     r = ctx.root_result("service")
     changed = False
     rid = str(r.get("id") or "")
+    # every answer of the last run of the queue: the last result and the ones it carries
+    got = {str(a.get("id")): a for a in (r.get("answers") or []) if isinstance(a, dict)}
     for x in rows:
         if x.get("state") != "asked":
             continue
-        if rid and x.get("id") == rid:
+        if x.get("id") in got and x.get("id") != rid:
+            a = got[x["id"]]
+            x.update({"state": "done" if a.get("ok") else "failed", "ok": bool(a.get("ok")),
+                      "said": [str(s)[:400] for s in (a.get("said") or [])][:12],
+                      "now": a.get("now") or "", "done_at": a.get("at")})
+            ctx.event("root: %s %s - %s" % (x.get("unit") or x.get("do"), "done" if a.get("ok") else "FAILED",
+                                            "; ".join(x["said"])[:600]),
+                      "info" if a.get("ok") else "warn", kind="service")
+            changed = True
+        elif rid and x.get("id") == rid:
             x.update({"state": "done" if r.get("ok") else "failed", "ok": bool(r.get("ok")),
                       "said": [str(s)[:400] for s in (r.get("said") or [])][:12],
                       "now": r.get("now") or "", "done_at": r.get("at")})
@@ -359,7 +370,8 @@ def lately_view(rows):
         one = {"id": x.get("id"), "title": what_words(x), "how": how, "who": x.get("by") or "", "at": x.get("at"),
                "done_at": x.get("done_at"), "said": x.get("said") or [], "unit": x.get("unit") or "",
                "do": x.get("do"), "state": st, "now": x.get("now") or ""}
-        if not x.get("seen"):
+        # a band: what waits for root, what failed, and the last answer - until marked done
+        if not x.get("seen") and (st in ("asked", "failed", "unknown") or not done):
             bands.append(one)
         done.append(one)
     return bands[:6], done

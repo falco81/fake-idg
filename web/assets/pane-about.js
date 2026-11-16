@@ -61,12 +61,23 @@ function aboutDoc(name, title) {
   var box = $('modal-box');
   if (box) box.className = 'box large';
 }
+/* **bold** and `code` of a line, as elements - text only, never HTML. */
+function aboutInline(tag, cls, text) {
+  var e = noI18n(el(tag, cls));
+  String(text).split(/(\*\*[^*]+\*\*|`[^`]+`)/).forEach(function (part) {
+    if (!part) return;
+    if (/^\*\*[^*]+\*\*$/.test(part)) e.appendChild(el('b', '', part.slice(2, -2)));
+    else if (/^`[^`]+`$/.test(part)) e.appendChild(el('code', '', part.slice(1, -1)));
+    else e.appendChild(document.createTextNode(part));
+  });
+  return e;
+}
 /* Markdown as plain elements: headings, lists, code blocks, paragraphs - text only, never HTML. */
 function aboutMarkdown(text) {
   var out = el('div', 'about-doc');
   var lines = String(text).split('\n'), i = 0, para = [], list = null;
   var flush = function () {
-    if (para.length) { out.appendChild(noI18n(el('p', 'note', para.join(' ')))); para = []; }
+    if (para.length) { out.appendChild(aboutInline('p', 'note', para.join(' '))); para = []; }
     list = null;
   };
   while (i < lines.length) {
@@ -81,17 +92,17 @@ function aboutMarkdown(text) {
       continue;
     }
     var h = ln.match(/^(#{1,4})\s+(.*)$/);
-    if (h) { flush(); out.appendChild(noI18n(el(h[1].length <= 2 ? 'h3' : 'h4', h[1].length <= 2 ? 'sw-h' : '', h[2]))); i++; continue; }
+    if (h) { flush(); out.appendChild(aboutInline(h[1].length <= 2 ? 'h3' : 'h4', h[1].length <= 2 ? 'sw-h' : '', h[2])); i++; continue; }
     var li = ln.match(/^\s*[-*]\s+(.*)$/);
     if (li) {
-      if (para.length) { out.appendChild(noI18n(el('p', 'note', para.join(' ')))); para = []; }
+      if (para.length) { out.appendChild(aboutInline('p', 'note', para.join(' '))); para = []; }
       if (!list) { list = el('ul', 'tight'); out.appendChild(list); }
-      list.appendChild(noI18n(el('li', '', li[1])));
+      list.appendChild(aboutInline('li', '', li[1]));
       i++;
       continue;
     }
     if (!ln.trim()) { flush(); i++; continue; }
-    if (list && /^\s{2,}/.test(ln)) { list.lastChild.textContent += ' ' + ln.trim(); i++; continue; }
+    if (list && /^\s{2,}/.test(ln)) { var more = aboutInline('span', '', ' ' + ln.trim()); while (more.firstChild) list.lastChild.appendChild(more.firstChild); i++; continue; }
     list = null;
     para.push(ln.trim());
     i++;

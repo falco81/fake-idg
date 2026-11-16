@@ -23,12 +23,14 @@
       var d = UN.d, s = d.service || {};
       var on = s.state === 'active';
       var lis = d.listening || [];
-      var grid = P.grid();
-      var c = P.card(d, on && lis.length ? 'ok' : (on ? 'warn' : (s.state === 'unknown' ? 'dim' : 'bad')),
-                     on ? (lis.length ? 'listening' : 'listening nowhere') : P.svcWords(s), on && lis.length ? 'ok' : (on ? 'warn' : 'crit'));
-      P.big(c, num(lis.length), lis.length === 1 ? 'interface listened on' : 'interfaces listened on');
       var ssdp = (d.sockets || []).filter(function (x) { return x.proto === 'udp' && x.port === 1900; });
       var http = (d.sockets || []).filter(function (x) { return x.proto === 'tcp' && x.port === d.http_port; });
+      var good = on && lis.length && ssdp.length && http.length;
+      var grid = P.grid();
+      var c = P.card(d, good ? 'ok' : (on ? 'warn' : (s.state === 'unknown' ? 'dim' : 'bad')),
+                     !on ? P.svcWords(s) : (good ? 'listening' : (!lis.length ? 'listening nowhere' : 'a port is not open')),
+                     good ? 'ok' : (on ? 'warn' : 'crit'));
+      P.big(c, num(lis.length), lis.length === 1 ? 'interface listened on' : 'interfaces listened on');
       var addrs = function (l) { return l.map(function (x) { return (x.addr.indexOf(':') >= 0 ? '[' + x.addr + ']' : x.addr) + ':' + x.port; }).join(', '); };
       c.appendChild(P.facts([
         ['SSDP (udp 1900)', ssdp.length ? addrs(ssdp) : 'nobody listens', true, ssdp.length ? '' : (on ? 'bad' : '')],
@@ -46,9 +48,7 @@
           tr.appendChild(noI18n(el('td', 'mono', x.name)));
           tr.appendChild(noI18n(el('td', 'mono', x.ipv4)));
           var td = el('td');
-          var a = noI18n(el('a', 'mono', x.url));
-          a.href = x.url; a.target = '_blank'; a.rel = 'noopener';
-          td.appendChild(a);
+          td.appendChild(noI18n(el('span', 'mono small', x.url)));
           var cp = iconButton('copy', 'Copy the address');
           cp.onclick = function () { copyText(x.url, cp, 'copied'); };
           td.appendChild(cp);

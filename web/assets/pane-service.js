@@ -35,11 +35,11 @@ function drawService(d, live) {
   $('sv-said').textContent = num(up) + ' of ' + num(units.length) + ' running' + (d.waiting ? ' · ' + num(d.waiting) + ' asked of root' : '');
   liveFill($('sv-units'), function (host) {
     if (d.error) host.appendChild(el('p', 'note bad', 'systemctl could not be asked: ' + d.error));
-    host.appendChild(listTable(['Unit', 'State', 'Since', {words: 'Restarts', cls: 'num'}, {words: 'Memory', cls: 'num'}, 'At boot', ''], units, function (u) {
+    host.appendChild(listTable(['Unit', 'State', 'Since', 'At boot', {words: 'Restarts', cls: 'num'}, {words: 'Memory', cls: 'num'}, ''], units, function (u) {
       var tr = el('tr', 'clickable');
       var nm = el('td');
       nm.appendChild(noI18n(el('b', '', u.unit)));
-      if (u.unit === 'fake-igd-api.service') { nm.appendChild(document.createTextNode(' ')); nm.appendChild(el('span', 'tag info', 'this page')); }
+      if (u.unit === 'fake-igd-api.service') { nm.appendChild(document.createTextNode(' ')); nm.appendChild(el('span', 'tag info', 'these pages')); }
       nm.appendChild(el('span', 'sub', u.what));
       tr.appendChild(nm);
       var st = el('td');
@@ -55,14 +55,14 @@ function drawService(d, live) {
       var since = el('td', 'muted', u.since ? ago(u.since) : '–');
       if (u.since) explain(since, (u.state === 'active' ? 'Running since ' : 'Not running since ') + stamp(u.since) + '.');
       tr.appendChild(since);
-      var rs = el('td', 'num' + (u.restarts ? ' warn' : ''), u.restarts === null || u.restarts === undefined ? '–' : num(u.restarts));
-      if (u.restarts) explain(rs, 'systemd restarted it by itself ' + num(u.restarts) + ' time(s) since it was last started by hand or at boot: it stopped or broke. Its journal says why.');
-      tr.appendChild(rs);
-      tr.appendChild(el('td', 'num', u.memory ? bytes(u.memory) : '–'));
       var bt = el('td');
       var bw = u.boot || '–';
       bt.appendChild(el('span', 'tag ' + (bw === 'enabled' ? 'ok' : (bw === 'disabled' || bw === 'masked' ? 'warn' : 'dim')), bw));
       tr.appendChild(bt);
+      var rs = el('td', 'num' + (u.restarts ? ' warn' : ''), u.restarts === null || u.restarts === undefined ? '–' : num(u.restarts));
+      if (u.restarts) explain(rs, 'systemd restarted it by itself ' + num(u.restarts) + ' time(s) since it was last started by hand or at boot: it stopped or broke. Its journal says why.');
+      tr.appendChild(rs);
+      tr.appendChild(el('td', 'num', u.memory ? bytes(u.memory) : '–'));
       var tools = el('td', 'rowtools');
       var lg = iconButton('log', 'Its journal - the last lines');
       lg.onclick = function (ev) { ev.stopPropagation(); svcJournal(u); };

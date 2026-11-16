@@ -58,7 +58,8 @@ function loadMdnsTab() {
     AV.d = d;
     msTiles();
   }).catch(oops);
-  msBrowse(!AV.b);
+  /* Joined, not started again: somebody else may be looking at it too. Look again starts it afresh. */
+  msBrowse(false);
   msFollow();
 }
 function msFollow() {

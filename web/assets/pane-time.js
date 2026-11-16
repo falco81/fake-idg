@@ -178,8 +178,6 @@
     if (!item || !box) { setTimeout(function () { if (PANE === 'time' && $('set-time_servers')) serversEditor(); }, 600); return; }
     if (box._editor) { box._editor.redraw(); return; }
     box.hidden = true;
-    item.classList.add('wide');
-    item.style.gridColumn = '1 / -1';
     var host = el('div');
     box.parentNode.insertBefore(host, box.nextSibling);
     var list = parseServers(box.value);
@@ -216,7 +214,6 @@
         row.appendChild(x);
         rows.appendChild(row);
       });
-      if (!list.length) rows.appendChild(el('p', 'muted small', 'No server yet - add one.'));
       host.appendChild(rows);
       if (!ADMIN) return;
       var adds = el('div', 'btnrow');
@@ -239,5 +236,76 @@
     draw();
   }
 
-  PANE_LOAD.time = loadNtp;
+  /* otp's ntpForm: the switch alone, then - only while it is on - the servers, their buttons and
+     a grid of four; the time zone under it. The boxes are the settings' own (the save bar, its
+     count and Put them back work as everywhere), laid out as otp's form. */
+  var SAYS = {time_manage: 'Off: this machine keeps its own /etc/chrony.conf (AlmaLinux\'s pool, or what you set by hand) - shown and checked here, not changed. On: the servers below; the file\'s own server and pool lines are commented out, and put back when switched off again.',
+              time_step_s: 'Further off than this, the clock jumps to the right time instead of being slowed or sped up gently.',
+              time_step_n: 'How many updates after chronyd starts may step it: 3 is after a boot; -1 any time.',
+              time_minsources: 'The clock is set only when at least this many sources agree. 1 with one server; 2 or 3 with several.',
+              time_allow: 'Networks that may ask this machine for the time (UDP 123) - the PS5 and the rest of the home network, say. Empty: nobody. The firewall opens it by itself.',
+              time_zone: 'Of the machine: the logs and the times on these pages.'};
+  function plain(item) {
+    if (!item) return null;
+    var i = item.querySelector('.iinfo');
+    if (i) i.remove();
+    item.classList.remove('wide', 'tall', 'asleep');
+    item.style.gridColumn = '';
+    var why = item.querySelector('.asleep-why');
+    if (why) why.remove();
+    var k = item.dataset.key;
+    if (k in SAYS) {
+      var tail = item.querySelector('.set-tail');
+      if (tail) { clear(tail); tail.appendChild(el('div', 'says', SAYS[k])); }
+    }
+    return item;
+  }
+  function layout() {
+    var sect = $('sect-time');
+    if (!sect) return;
+    var item = function (k) { return sect.querySelector('.set-item[data-key="' + k + '"]'); };
+    if (!item('time_manage') || sect.querySelector('.ntp-body')) return;
+    var g0 = el('div', 'formgrid');
+    g0.appendChild(plain(item('time_manage')));
+    var body = el('div', 'ntp-body');
+    var srv = item('time_servers');
+    if (srv) {
+      plain(srv);
+      var lab = srv.querySelector('label');
+      if (lab) lab.hidden = true;
+      var tl = srv.querySelector('.set-tail');
+      if (tl) tl.hidden = true;
+      body.appendChild(srv);
+    }
+    var g = el('div', 'formgrid');
+    g.style.marginTop = '14px';
+    ['time_step_s', 'time_step_n', 'time_minsources', 'time_allow'].forEach(function (k) { var it = plain(item(k)); if (it) g.appendChild(it); });
+    body.appendChild(g);
+    var g2 = el('div', 'formgrid');
+    g2.style.marginTop = '14px';
+    var al = $('set-time_allow');
+    if (al) al.placeholder = '192.0.2.0/24';
+    var tz = plain(item('time_zone'));
+    if (tz) g2.appendChild(tz);
+    clear(sect);
+    sect.appendChild(g0);
+    sect.appendChild(body);
+    sect.appendChild(g2);
+    var sw = $('set-time_manage');
+    var paint = function () { body.hidden = !(sw && sw._get && sw._get()); };
+    if (sw && sw._input) sw._input.addEventListener('change', paint);
+    paint();
+  }
+  (function () {
+    var theirs = drawSettings;
+    drawSettings = function () {
+      var ow = SETTINGS && SETTINGS.only_when;
+      if (ow) ['time_servers', 'time_step_s', 'time_step_n', 'time_minsources', 'time_allow'].forEach(function (k) { delete ow[k]; });
+      var r = theirs.apply(this, arguments);
+      try { layout(); if ($('set-time_servers')) { $('set-time_servers')._editor = null; serversEditor(); } } catch (e) { /* as the settings code drew it */ }
+      return r;
+    };
+  }());
+
+  PANE_LOAD.time = function () { layout(); loadNtp(); };
 }());

@@ -8,6 +8,6 @@
     <div class="card full" id="ntp-form">
       <h2>The time servers</h2>
       <div id="sect-time"></div>
-      <p class="muted small">Saved with the bar at the bottom; root then puts them in within seconds.</p>
+      <p class="muted small">Saved with the bar at the bottom; root then puts them in by itself within seconds.</p>
     </div>
   </div>

@@ -35,6 +35,45 @@ SETTINGS = [
              "comes back by itself unless somebody presses Keep it within these minutes: a rule that shuts SSH "
              "or the pages out does not stay. 0: kept at once."},
 ]
+WEB_PROXY_ON = ("web_proxy", "true")
+
+
+def _nets_bad(x):
+    try:
+        ipaddress.ip_network(str(x).strip(), strict=False)
+    except ValueError:
+        return "%r is not an address or a network" % str(x)[:60]
+    return ""
+
+
+def _header_bad(x):
+    x = str(x or "").strip()
+    if not re.match(r"^[A-Za-z][A-Za-z0-9-]{0,63}\Z", x) or x.lower() in ("host", "cookie", "authorization"):
+        return "a header's name: X-Forwarded-For, X-Real-IP, True-Client-IP…"
+    return ""
+
+
+# Behind a load balancer or WAF (otp's web_proxy*, its second section of this pane's settings).
+SETTINGS += [
+    {"key": "web_proxy", "name": "Behind a load balancer or WAF", "kind": "bool", "default": False, "pane": "web",
+     "root": True,
+     "says": "The pages published through a load balancer or a WAF (NetScaler, F5, HAProxy...): nginx takes the "
+             "client's own address from the header below - only when the request comes from one of the addresses "
+             "below, never from anybody else - so that the sign-in pause, who may reach the pages and every log "
+             "see the client and not the balancer. Off: nginx as until now."},
+    {"key": "web_proxy_from", "name": "The load balancers and WAFs", "kind": "list", "default": [], "pane": "web",
+     "only_when": WEB_PROXY_ON, "check": _nets_bad, "root": True,
+     "says": "Their addresses or networks, as nginx sees them come in - one or more, separated by spaces. Needed "
+             "to switch it on: the header of anybody else is never believed."},
+    {"key": "web_proxy_header", "name": "The header with the client's address", "kind": "text",
+     "default": "X-Forwarded-For", "pane": "web", "only_when": WEB_PROXY_ON, "check": _header_bad, "root": True,
+     "says": "Where the balancer puts the client's address: X-Forwarded-For (the usual), X-Real-IP, "
+             "True-Client-IP, X-Client-IP, CF-Connecting-IP..."},
+    {"key": "web_proxy_recursive", "name": "Through more than one of them", "kind": "bool", "default": True,
+     "pane": "web", "only_when": WEB_PROXY_ON, "root": True,
+     "says": "On: in a chain (a WAF in front of a balancer), the last address in the header that is not one of "
+             "them is taken. Off: the last one, whoever put it there."},
+]
 LAST_EXPIRE = [0.0]
 
 
@@ -110,7 +149,10 @@ def fw_get(ctx):
     c = conf_now(cfg, conf)
     allow = cfg.get("web_allow", W.DEFAULT_ALLOW)
     allow = allow if isinstance(allow, list) else []
-    access = {"any": not allow, "from": [str(x) for x in allow]}
+    health = W.health_of(cfg)
+    access = {"admin": {"any": not allow, "from": [str(x) for x in allow]},
+              "health": {"any": not health, "from": [str(x) for x in health]},
+              "health_set": isinstance(cfg.get("health_allow"), list)}
     # A save root has not taken yet is shown as what is being put in, not what was there.
     waiting = queued(ctx)
     pay = (waiting or {}).get("payload") or {}
@@ -119,8 +161,11 @@ def fw_get(ctx):
                  rules=pay.get("rules") or [])
         conf = {"rules": c["rules"], "off": c["off"]}
         if isinstance(pay.get("access"), dict):
-            access = {"any": bool(pay["access"].get("any")), "from": list(pay["access"].get("from") or [])}
-            cfg["web_allow"] = [] if access["any"] else access["from"]
+            for key, ck in (("admin", "web_allow"), ("health", "health_allow")):
+                one = pay["access"].get(key)
+                if isinstance(one, dict):
+                    access[key] = {"any": bool(one.get("any")), "from": list(one.get("from") or [])}
+                    cfg[ck] = [] if access[key]["any"] else access[key]["from"]
     cfg["firewall_ssh"] = "ssh" not in c["off"]
     cfg["firewall_icmp"] = "icmp" not in c["off"]
     pages_here = os.path.isfile(W.NGINX_CONF)
@@ -167,24 +212,31 @@ def fw_post(ctx):
         words.append("switched off: %s" % ", ".join(off))
     if b.get("access") is not None:
         acc = b["access"] if isinstance(b["access"], dict) else {}
-        nets = []
-        raw = acc.get("from") or []
-        if isinstance(raw, str):
-            raw = re.split(r"[\s,;]+", raw)
-        for x in (raw if isinstance(raw, list) else [])[:200]:
-            x = str(x).strip()
-            if not x:
+        rows = {"admin": acc} if "any" in acc else acc
+        pay["access"] = {}
+        for key, what in (("admin", "the pages"), ("health", "the health check")):
+            one = rows.get(key)
+            if one is None:
                 continue
-            try:
-                n = str(ipaddress.ip_network(x, strict=False))
-            except ValueError:
-                raise ValueError("Who may reach the pages: %s is not an address or a network" % x[:60])
-            if n not in nets:
-                nets.append(n)
-        if acc.get("any") is not True and not nets:
-            raise ValueError("the pages would be for nobody: give a network, or let everybody in")
-        pay["access"] = {"any": acc.get("any") is True, "from": [] if acc.get("any") is True else nets}
-        words.append("the pages from %s" % ("everybody" if pay["access"]["any"] else ", ".join(nets)))
+            one = one if isinstance(one, dict) else {}
+            nets = []
+            raw = one.get("from") or []
+            if isinstance(raw, str):
+                raw = re.split(r"[\s,;]+", raw)
+            for x in (raw if isinstance(raw, list) else [])[:200]:
+                x = str(x).strip()
+                if not x:
+                    continue
+                try:
+                    nn = str(ipaddress.ip_network(x, strict=False))
+                except ValueError:
+                    raise ValueError("Who may reach %s: %s is not an address or a network" % (what, x[:60]))
+                if nn not in nets:
+                    nets.append(nn)
+            if one.get("any") is not True and not nets:
+                raise ValueError("%s would be for nobody: give a network, or let everybody in" % what)
+            pay["access"][key] = {"any": one.get("any") is True, "from": [] if one.get("any") is True else nets}
+            words.append("%s from %s" % (what, "everybody" if one.get("any") is True else ", ".join(nets)))
     n = int(ctx.setting("fw_confirm_min") or 0)
     pay["trial_min"] = n
     ident = ctx.ask_root(pay)
@@ -192,6 +244,21 @@ def fw_post(ctx):
                                                            " - on trial for %d min" % n if n else ""), "warn")
     return {"id": ident, "message": "saved - root puts it in place in a moment" +
             ("; it goes back by itself unless kept within %d min" % n if n else "")}
+
+
+def _words(v):
+    return ", ".join(str(x) for x in v) if isinstance(v, list) else str(v or "")
+
+
+def on_saved(ctx, changed):
+    """Behind a load balancer or WAF changed: root puts nginx's real_ip lines in (read from the database)."""
+    if any(k.startswith("web_proxy") for k in changed):
+        ctx.ask_root({"action": "realip"})
+        on = ctx.setting("web_proxy")
+        ctx.event("behind a load balancer or WAF: %s - root puts nginx's real_ip lines in" % (
+            "on, the client's address from %s when it comes from %s" % (
+                ctx.setting("web_proxy_header") or "X-Forwarded-For", _words(ctx.setting("web_proxy_from")) or "nobody yet")
+            if on else "off"), "warn" if on else "info")
 
 
 # ---- the trial (the banner on every page) --------------------------------------------

@@ -81,7 +81,7 @@ def serve(payload, ask):
                                universal_newlines=True, timeout=60)
             if r.returncode != 0:
                 raise Refused("avahi-daemon: %s did not work: %s" % (do, r.stdout.strip()[-200:] or r.returncode))
-            said.append("avahi-daemon: %s done" % {"restart": "restarted", "start": "started", "stop": "stopped",
+            said.append("avahi-daemon: %s" % {"restart": "restarted", "start": "started", "stop": "stopped",
                                                     "enable": "starts at boot", "disable": "does not start at boot"}[do])
         else:
             raise Refused("no such ask: %s" % str(do)[:40])

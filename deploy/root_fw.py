@@ -14,6 +14,7 @@ background step asking for it. Further changes within a trial move its deadline 
   serve({"action": "expire", "id"})            - the timer (or the API) when the time ran out
   serve({"action": "apply"})                   - put in again what is set (Try again)
   serve({"action": "read"})                    - the whole firewall read again
+  serve({"action": "realip"})                  - nginx's real_ip lines as the pages' settings say
 
 Nothing in the payload is trusted: every value is checked against the one shape it may have.
 Paths: FAKE_IGD_CONFIG, FAKE_IGD_FW_RULES, FAKE_IGD_FW_TRIAL (fake_igd_web.py's for the rest).
@@ -38,7 +39,7 @@ else:
     import fake_igd_web as W
 
 TRIAL_FILE = os.environ.get("FAKE_IGD_FW_TRIAL", os.path.join(os.path.dirname(W.CONFIG), "firewall-trial.json"))
-CFG_KEYS = ("firewall", "firewall_ssh", "firewall_icmp", "web_allow")
+CFG_KEYS = ("firewall", "firewall_ssh", "firewall_icmp", "web_allow", "health_allow")
 ID_RE = re.compile(r"^[0-9a-f]{12}\Z")
 HELPER = os.path.join(os.path.dirname(os.path.abspath(W.__file__)), "fake_igd_web.py")
 
@@ -48,7 +49,8 @@ def cfg_keys(cfg):
     return {"firewall": W.flag(cfg.get("firewall"), False), "firewall_ssh": W.flag(cfg.get("firewall_ssh"), True),
             "firewall_icmp": W.flag(cfg.get("firewall_icmp"), True),
             "web_allow": [str(x) for x in cfg.get("web_allow", W.DEFAULT_ALLOW)]
-            if isinstance(cfg.get("web_allow", W.DEFAULT_ALLOW), list) else list(W.DEFAULT_ALLOW)}
+            if isinstance(cfg.get("web_allow", W.DEFAULT_ALLOW), list) else list(W.DEFAULT_ALLOW),
+            "health_allow": [str(x) for x in W.health_of(cfg)]}
 
 
 def write_cfg(changes):
@@ -180,10 +182,18 @@ def save(p, by):
     if acc is not None:
         if not isinstance(acc, dict):
             raise W.Refused("who may reach the pages: everybody, or a list")
-        nets = nets_checked(acc.get("from") or [])
-        if acc.get("any") is not True and not nets:
-            raise W.Refused("the pages would be for nobody: give a network, or let everybody in")
-        new_cfg["web_allow"] = [] if acc.get("any") is True else nets
+        # {admin: {any, from}, health: {any, from}} - or, as before, the administration's alone {any, from}
+        rows = {"admin": acc} if "any" in acc else acc
+        for key, cfg_key, words in (("admin", "web_allow", "the pages"), ("health", "health_allow", "the health check")):
+            one = rows.get(key)
+            if one is None:
+                continue
+            if not isinstance(one, dict):
+                raise W.Refused("who may reach %s: everybody, or a list" % words)
+            nets = nets_checked(one.get("from") or [])
+            if one.get("any") is not True and not nets:
+                raise W.Refused("%s would be for nobody: give a network, or let everybody in" % words)
+            new_cfg[cfg_key] = [] if one.get("any") is True else nets
     new_conf = {"rules": rules, "off": [k for k in off if k in W.FW_OFF_KEYS]}
     if new_cfg == was_cfg and new_conf["rules"] == was_conf["rules"] and new_conf["off"] == was_conf["off"]:
         return report(["nothing was changed"])
@@ -218,8 +228,9 @@ def put_back(t, why):
     for k in ("firewall", "firewall_ssh", "firewall_icmp"):
         if isinstance(cfg_was.get(k), bool):
             clean[k] = cfg_was[k]
-    if isinstance(cfg_was.get("web_allow"), list):
-        clean["web_allow"] = nets_checked(cfg_was["web_allow"]) if cfg_was["web_allow"] else []
+    for k in ("web_allow", "health_allow"):
+        if isinstance(cfg_was.get(k), list):
+            clean[k] = nets_checked(cfg_was[k]) if cfg_was[k] else []
     conf_was = was.get("conf") if isinstance(was.get("conf"), dict) else {}
     conf = {"rules": W.fw_rules_checked(conf_was.get("rules") or []),
             "off": [k for k in W.FW_OFF_KEYS if k in (conf_was.get("off") or [])]}
@@ -236,6 +247,9 @@ def serve(payload, ask):
         return save(payload, by)
     if action == "read":
         return report(["the whole firewall read again"])
+    if action == "realip":
+        # Behind a load balancer or WAF - the settings are read from the database, not the payload.
+        return report([W.nginx_allow(W.read_config())])
     if action == "apply":
         cfg = W.read_config()
         said = []

@@ -88,6 +88,11 @@ def cmd_upgrade(M, args, cfg):
     url = cfg.get("upgrade_url") or ON.DEFAULT_URL
     here = M.VERSION
     pal = M.PAL
+    if what == "after":
+        # To be done by hand (otp --after / --after-done): what an update cannot do itself.
+        return as_app(lambda: after(M, args, cfg))
+    if what == "check" and args.downgrade:
+        return _downgrade_check(M, args, url, here)
     if what == "check":
         row = ON.look(url, here)
         if os.geteuid() == 0:
@@ -117,6 +122,7 @@ def cmd_upgrade(M, args, cfg):
             print(json.dumps(st, indent=2, default=str))
             return 0
         _say_status(M, st)
+        as_app(lambda: _after_short(M, cfg))
         return 0
     if what == "log":
         lines = ON.log_lines(args.lines or 400)
@@ -137,6 +143,8 @@ def cmd_upgrade(M, args, cfg):
         if row.get("error"):
             M.fail("%s: %s" % (row.get("url"), row["error"]))
         want = args.version
+        if args.downgrade:
+            return _downgrade_online(M, args, cfg, url, here, row)
         pk = row.get("newest") if not want else next(
             (x for x in row.get("packages") or [] if x["version"] == want), None)
         if not pk:
@@ -174,7 +182,136 @@ def cmd_upgrade(M, args, cfg):
             return as_app(lambda: _file_and_ask(M, copy, args, here))
         finally:
             shutil.rmtree(tmpd, ignore_errors=True)
-    M.fail("upnp upgrade check | online [VERSION] | file PATH | status | follow | log")
+    M.fail("upnp upgrade check [--downgrade] | online [VERSION] [--downgrade] | file PATH [--downgrade] | status | "
+           "follow | log | after [ID]")
+
+
+def _downgrade_check(M, args, url, here):
+    """The older versions at upgrade_url, each with what stands in its way (otp --downgrade-check)."""
+    pal = M.PAL
+    try:
+        g = ON.downgrade_list(url, here)
+    except (ValueError, OSError) as e:
+        M.fail("%s: %s" % (url, getattr(e, "reason", None) or e))
+    if args.json:
+        print(json.dumps(g, indent=2, default=str))
+        return 0
+    print(pal.head("older versions at %s" % g["url"]) + pal.dim("  this server runs %s; it may go back to %s or newer"
+                                                           % (here, g["lowest"])))
+    if not g["versions"]:
+        M.ok("no version older than %s is there" % here)
+        return 0
+    for v in g["versions"]:
+        if v["why"]:
+            print("  %-10s %s  %s" % (v["version"], pal.warn("no "), pal.dim(v["short"])))
+        else:
+            print("  %-10s %s  %s" % (v["version"], pal.good("yes"), pal.dim("sudo upnp upgrade online %s --downgrade"
+                                                                          % v["version"])))
+    reasons = []
+    for v in g["versions"]:
+        for w in v["why"]:
+            if w not in reasons:
+                reasons.append(w)
+    for w in reasons:
+        print(pal.dim("  - " + w))
+    return 0
+
+
+def _downgrade_online(M, args, cfg, url, here, row):
+    """Going back to an older version from upgrade_url (otp --downgrade VERSION): fetched, checked,
+    and put in by root as an upgrade is - asked for as such."""
+    pal = M.PAL
+    want = args.version
+    if not want:
+        M.fail("which version? upnp upgrade check --downgrade lists them")
+    pk = next((x for x in row.get("packages") or [] if x["version"] == want), None)
+    if not pk:
+        M.fail("%s is not at %s" % (want, row.get("url")))
+    why = ON.downgrade_why_not(want, here)
+    if why:
+        M.fail("fake-igd %s cannot be gone back to here: %s" % (want, "; ".join(why)))
+    print(pal.head("fake-igd %s → %s (going back)" % (here, want)) + pal.dim("  from %s" % pk["url"]))
+    print("  the configuration, the database and the logs stay as they are; what came in the newer versions is gone "
+          "until you upgrade again")
+    if not args.yes and not _ask("go back?"):
+        print("  nothing done")
+        return 1
+    print(pal.dim("  fetching it and checking its signature…"))
+
+    def go():
+        try:
+            info = ON.fetch(url, want, here, older=True)
+        except ValueError as e:
+            M.fail(str(e))
+        M.ok("fake-igd %s fetched, signed by %s, %d files - checked" % (info["version"], info.get("signed_by"),
+                                                                        info.get("files") or 0))
+        _event(M, cfg, "upgrade", "%s fetched fake-igd %s from %s to go back to" % (
+            who_runs(), info["version"], info.get("from")), "warn")
+        return _ask_root_and_follow(M, cfg, info, args, downgrade=True)
+    return as_app(go)
+
+
+def _upgrade_module(M, cfg, who):
+    """Settings → Upgrades' own module (api_upgrade.py), with a context of the command line."""
+    import igd_panes as PN
+    PN.load()
+    mod = PN.module("upgrade")
+    if mod is None:
+        M.fail("api_upgrade.py is not beside upnp.py")
+    s = store_of(M, cfg)
+    return mod, PN.Ctx(None, "CLI", "", {}, {"name": who, "role": "fulladmin"}, s, cfg, mod, s.add_event)
+
+
+def after(M, args, cfg):
+    """upnp upgrade after [ID]: what is to be done by hand, looked at now, with the commands - or ID
+    marked as done (otp --after, --after-done)."""
+    pal = M.PAL
+    mod, ctx = _upgrade_module(M, cfg, who_runs())
+    if args.version:
+        try:
+            print(pal.good("  " + mod.after_done(ctx, args.version, who_runs(), "cli")))
+        except ValueError as e:
+            M.fail(str(e))
+        return 0
+    try:
+        mod.after_evaluate(ctx)
+    except Exception as e:                                   # noqa: BLE001
+        M.warn("this server could not look now: %s" % e)
+    v = mod.after_view(ctx)
+    if args.json:
+        print(json.dumps(v, indent=2, default=str))
+        return 0
+    items = v["items"]
+    if not items:
+        M.ok("nothing is to be done by hand")
+    else:
+        print(pal.head("to be done by hand: %d" % len(items)))
+    for it in items:
+        mark = pal.bad if it["level"] == "bad" else pal.warn
+        print("  " + mark(it["title"]))
+        print(pal.dim("    " + it["why"]))
+        for st in it.get("steps") or []:
+            if st.get("cmd"):
+                print("    " + st.get("lead", ""))
+                print("      " + pal.bold(st["cmd"]) if hasattr(pal, "bold") else "      " + st["cmd"])
+            elif st.get("words"):
+                print("    " + st["words"])
+        print(pal.dim("    %s  (upnp upgrade after %s marks it done)" % (it.get("foot") or "", it["id"])))
+    return 0
+
+
+def _after_short(M, cfg):
+    """The count of what is to be done by hand, under upnp upgrade status."""
+    try:
+        mod, ctx = _upgrade_module(M, cfg, who_runs())
+        items, _row = mod.after_needed(ctx)
+    except BaseException:                                    # noqa: BLE001 - only said when it can be
+        return 0
+    if items:
+        M.warn("%d to be done by hand - upnp upgrade after" % len(items))
+        for it in items[:6]:
+            print("    " + (M.PAL.bad if it["level"] == "bad" else M.PAL.warn)(it["title"]))
+    return 0
 
 
 def _ask(words):
@@ -224,8 +361,9 @@ def _file_and_ask(M, path, args, here):
     except ValueError as e:
         M.fail(str(e))
     if info.get("older"):
-        M.fail("%s is older than %s, which is installed - going back: sudo upnp upgrade file %s --downgrade"
-               % (info["version"], info.get("installed"), args.path))
+        M.fail("%s is older than %s, which is installed - going back: sudo upnp upgrade file %s --downgrade, "
+               "or from upgrade_url: sudo upnp upgrade online %s --downgrade"
+               % (info["version"], info.get("installed"), args.path, info["version"]))
     M.ok("fake-igd %s, signed by %s, %d files - checked" % (info["version"], info.get("signed_by"),
                                                             info.get("files") or 0))
     if not info.get("newer"):
@@ -236,12 +374,13 @@ def _file_and_ask(M, path, args, here):
     return _ask_root_and_follow(M, cfg, info, args)
 
 
-def _ask_root_and_follow(M, cfg, info, args):
+def _ask_root_and_follow(M, cfg, info, args, downgrade=False):
     try:
-        ident = ON.ask_root(info, who_runs())
+        ident = ON.ask_root(info, who_runs(), downgrade=downgrade)
     except ValueError as e:
         M.fail(str(e))
-    _event(M, cfg, "upgrade", "%s started the upgrade to fake-igd %s" % (who_runs(), info["version"]), "warn")
+    _event(M, cfg, "upgrade", "%s started %s fake-igd %s" % (
+        who_runs(), "going back to" if downgrade else "the upgrade to", info["version"]), "warn")
     M.info("asked root to put it in (fake-igd-upgrade.path) - followed here; Ctrl+C stops the following, "
            "not the upgrade")
     if args.no_follow:

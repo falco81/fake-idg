@@ -15,7 +15,8 @@ function fwPaneLive() {
    this pane's draft in too, its Put them back forgets it. */
 function fwFromServer(d) {
   return JSON.parse(JSON.stringify({on: !!d.conf.on, off: d.conf.off || [], rules: d.conf.rules || [],
-                                    access: d.access, access_changed: false}));
+                                    access: {admin: (d.access || {}).admin, health: (d.access || {}).health},
+                                    access_changed: false}));
 }
 function fwDirty() {
   fwMarkBar();
@@ -155,52 +156,58 @@ function drawFwAccess(d) {
   var host = $('fw-access');
   liveFill(host, function (host) {
     var rows = el('div', 'fw-acc');
-    var acc = FW.draft.access || (FW.draft.access = {any: true, from: []});
-    acc.any = !!acc.any;
-    acc.from = (acc.from || []).slice();
-    var row = el('div', 'fw-acc-row');
-    var t = el('div', 'fw-acc-t');
-    t.appendChild(el('b', '', 'The administration'));
-    t.appendChild(el('div', 'arow-s', 'https://…/admin/ - these pages'));
-    row.appendChild(t);
-    var c = el('div', 'fw-acc-c');
-    var seg = el('div', 'seg');
-    var box = el('textarea', 'mono fw-nets');
-    box.rows = 2; box.spellcheck = false;
-    box.placeholder = '10.0.0.0/8, 192.168.10.0/24, 2001:db8::/32';
-    box.value = acc.from.join(', ');
-    box.disabled = !d.may;
-    box.oninput = function () {
-      FW.draft.access.from = box.value.split(/[\s,;]+/).filter(Boolean);
-      FW.draft.access_changed = true; fwMarkBar();
-    };
-    [[true, 'Everybody'], [false, 'Only from']].forEach(function (o) {
-      var b = el('button', '', o[1]);
-      b.type = 'button';
-      b.disabled = !d.may;
-      b.onclick = function () {
-        FW.draft.access.any = o[0];
-        Array.prototype.forEach.call(seg.children, function (x) { x.classList.toggle('on', x === b); });
-        box.hidden = o[0];
+    var A = FW.draft.access || (FW.draft.access = {});
+    /* otp's three rows, less the enrolment pages fake-igd has not: the administration and the
+       health check - each everybody, or only from these networks. */
+    [['admin', 'The administration', 'https://…/admin/ - these pages', 'gear'],
+     ['health', 'The health check', '/healthz - for a load balancer or monitoring (Zabbix, Nagios…)', 'pulse']].forEach(function (p) {
+      if (!A[p[0]]) A[p[0]] = {any: true, from: []};
+      var st = A[p[0]];
+      st.any = !!st.any;
+      st.from = (st.from || []).slice();
+      var row = el('div', 'fw-acc-row');
+      var t = el('div', 'fw-acc-t');
+      t.appendChild(el('b', '', p[1]));
+      t.appendChild(el('div', 'arow-s', p[2]));
+      row.appendChild(t);
+      var c = el('div', 'fw-acc-c');
+      var seg = el('div', 'seg');
+      var box = el('textarea', 'mono fw-nets');
+      box.rows = 2; box.spellcheck = false;
+      box.placeholder = '10.0.0.0/8, 192.168.10.0/24, 2001:db8::/32';
+      box.value = st.from.join(', ');
+      box.disabled = !d.may;
+      box.oninput = function () {
+        FW.draft.access[p[0]].from = box.value.split(/[\s,;]+/).filter(Boolean);
         FW.draft.access_changed = true; fwMarkBar();
       };
-      if (acc.any === o[0]) b.classList.add('on');
-      seg.appendChild(b);
+      [[true, 'Everybody'], [false, 'Only from']].forEach(function (o) {
+        var bt = el('button', '', o[1]);
+        bt.type = 'button';
+        bt.disabled = !d.may;
+        bt.onclick = function () {
+          FW.draft.access[p[0]].any = o[0];
+          Array.prototype.forEach.call(seg.children, function (x) { x.classList.toggle('on', x === bt); });
+          box.hidden = o[0];
+          FW.draft.access_changed = true; fwMarkBar();
+        };
+        if (st.any === o[0]) bt.classList.add('on');
+        seg.appendChild(bt);
+      });
+      box.hidden = st.any;
+      c.appendChild(seg);
+      c.appendChild(box);
+      row.appendChild(c);
+      rows.appendChild(row);
     });
-    box.hidden = acc.any;
-    c.appendChild(seg);
-    c.appendChild(box);
-    row.appendChild(c);
-    rows.appendChild(row);
     host.appendChild(rows);
     var foot = el('div', 'fw-acc-foot');
     var always = el('div', 'fw-always');
     always.appendChild(el('span', 'arow-s', 'Always let in:'));
     ['127.0.0.1', '::1'].forEach(function (a) { always.appendChild(noI18n(el('code', 'cchip', a))); });
     foot.appendChild(always);
-    if (!acc.any && acc.from.some(function (n) { return n.indexOf(':') >= 0; })) {
-      foot.appendChild(el('span', 'tag dim', 'IPv6 networks open the firewall; nginx\'s list takes IPv4'));
-    }
+    if (((FW.last && FW.last.access) || {}).health_set === false && !FW.draft.access_changed)
+      foot.appendChild(el('span', 'tag dim', 'the health check as the administration - not set here yet'));
     host.appendChild(foot);
   });
 }
@@ -471,15 +478,67 @@ function fwRuleEdit(d, r) {
   }
   /* web_allow, firewall, firewall_ssh, firewall_icmp are drawn above, as otp draws them,
      and saved on trial - not in the grid of settings as well. */
+  /* Settings of the built-in group "web" that otp has on other panes: the installation's name and
+     the API's port on About, how long a sign-in may sit on Accounts (otp's PANES: about, people). */
+  var ELSEWHERE = {site_name: 'about', api_port: 'about', session_idle_minutes: 'people'};
   if (typeof drawSettings === 'function') {
     var theirDraw = drawSettings;
     drawSettings = function () {
       var own = ['web_allow', 'firewall', 'firewall_ssh', 'firewall_icmp'];
       if (SETTINGS && SETTINGS.panes && SETTINGS.panes.web) {
-        SETTINGS.panes.web = SETTINGS.panes.web.filter(function (k, i, all) { return own.indexOf(k) < 0 && all.indexOf(k) === i; });
+        SETTINGS.panes.web = SETTINGS.panes.web.filter(function (k, i, all) {
+          var to = ELSEWHERE[k];
+          if (to && $('sect-' + to)) {
+            SETTINGS.panes[to] = SETTINGS.panes[to] || [];
+            if (SETTINGS.panes[to].indexOf(k) < 0) SETTINGS.panes[to].push(k);
+            return false;
+          }
+          return own.indexOf(k) < 0 && all.indexOf(k) === i;
+        });
       }
-      return theirDraw.apply(this, arguments);
+      var r = theirDraw.apply(this, arguments);
+      try { fwLayout(); } catch (e) { /* as the settings code drew it */ }
+      return r;
     };
+  }
+  /* otp's PANE_LAYOUT.fw: two sections - Taken back unless kept; Behind a load balancer or WAF in
+     four columns, its list two wide. */
+  function fwLayout() {
+    var host = $('sect-web');
+    if (!host || host.querySelector('.set-sec')) return;
+    var item = function (k) { return host.querySelector('.set-item[data-key="' + k + '"]'); };
+    var secs = [{title: 'Taken back unless kept', icon: 'undo', keys: ['fw_confirm_min']},
+                {title: 'Behind a load balancer or WAF', icon: 'net', cols: 4,
+                 keys: ['web_proxy', 'web_proxy_from', 'web_proxy_header', 'web_proxy_recursive'], wide: {web_proxy_from: 2}}];
+    var shown = {}, out = [];
+    secs.forEach(function (sec) {
+      var box = el('section', 'set-sec');
+      var h = el('h3', 'set-sec-head');
+      var i = el('span', 'set-sec-icon'); i.innerHTML = iconMarkup(sec.icon, 15); h.appendChild(i);
+      h.appendChild(el('span', '', sec.title));
+      box.appendChild(h);
+      var g = el('div', 'set-grid cols-' + (sec.cols || 4));
+      sec.keys.forEach(function (k) {
+        var it = item(k);
+        if (!it) return;
+        shown[k] = 1;
+        it.classList.remove('wide');
+        if (sec.wide && sec.wide[k]) it.classList.add('span-' + sec.wide[k]);
+        g.appendChild(it);
+      });
+      box.appendChild(g);
+      out.push(box);
+    });
+    var left = Array.prototype.filter.call(host.querySelectorAll('.set-item[data-key]'), function (x) { return !shown[x.dataset.key]; });
+    if (left.length) {
+      var rest = el('section', 'set-sec');
+      var g2 = el('div', 'set-grid cols-4');
+      left.forEach(function (x) { g2.appendChild(x); });
+      rest.appendChild(g2);
+      out.push(rest);
+    }
+    clear(host);
+    out.forEach(function (x) { host.appendChild(x); });
   }
   window.addEventListener('beforeunload', function (e) {
     if (FW.dirty) { e.preventDefault(); e.returnValue = ''; }
@@ -488,6 +547,7 @@ function fwRuleEdit(d, r) {
 
 PANE_LOAD.web = function () {
   loadFw();
+  try { fwLayout(); } catch (e) { /* drawn by the settings code */ }
   setTimeout(function () { if (FW.dirty) fwPaintBar(); }, 0);
 };
 

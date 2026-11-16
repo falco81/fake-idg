@@ -6,8 +6,9 @@
         whatever else you want - for IPv4 and IPv6. Every change goes back by itself unless kept.</p></div>
     <div class="card full">
       <h2>Who may reach the pages</h2>
-      <p class="note">The pages answer on ports 80 and 443; who sees them is said by nginx, and the
-        firewall below opens the ports only to these networks. The machine itself is always let in.</p>
+      <p class="note">The administration and the health check share ports 80 and 443, so who sees
+        which is said by nginx, page by page; the firewall below opens the ports only to these networks.
+        The machine itself is always let in.</p>
       <div id="fw-access"></div>
     </div>
     <div class="card full">

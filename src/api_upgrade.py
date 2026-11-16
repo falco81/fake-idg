@@ -112,6 +112,7 @@ def _checks(ctx, meta, plan):
 
 def _plan(ctx, hidden=True):
     p = ON.plan(VERSION, _node())
+    _tell(ctx, p)
     if p and hidden and p.get("state") != "running" and ctx.store.get_meta("upgrade:seen") == str(p.get("id")):
         return None
     return p
@@ -205,8 +206,9 @@ def upgrade_post(ctx):
         if act == "start":
             meta = _package(ctx)
             _start(ctx, meta)
-            return dict(view(ctx), message="the upgrade has begun - fake-igd.service and these pages restart once, "
-                        "and come back by themselves")
+            return dict(view(ctx), message="%s has begun - fake-igd.service and these pages restart once, and come "
+                        "back by themselves" % ("going back to %s" % meta["version"] if meta.get("downgrade")
+                                                else "the upgrade"))
         if act == "hide":
             plan = _plan(ctx, hidden=False)
             if plan and plan.get("state") == "running":
@@ -805,16 +807,23 @@ def background(ctx):
             after_evaluate(ctx)
         except Exception as e:                          # noqa: BLE001
             sys.stderr.write("api: after the update: %s\n" % e)
-    p = ON.plan(VERSION, _node())
-    if p and p.get("state") in ("done", "failed"):
-        told = ctx.store.get_meta("upgrade:told") or ""
-        key = "%s:%s" % (p.get("id"), p["state"])
-        if told != key:
-            ctx.store.set_meta("upgrade:told", key)
-            st = (p.get("steps") or [{}])[0]
-            if p["state"] == "done":
-                ctx.event("%s is %s fake-igd %s" % (_node(), "back on" if p.get("downgrade") else "upgraded to",
-                                                    VERSION), "info", kind="upgrade")
-            else:
-                ctx.event("the upgrade of %s to fake-igd %s failed: %s" % (_node(), p.get("version"),
-                                                                          st.get("said") or "?"), "error")
+    _plan(ctx, hidden=False)
+
+
+def _tell(ctx, p):
+    """How an upgrade ended, written in the events once (whichever asks first: the pages or the
+    minute's background step)."""
+    if not p or p.get("state") not in ("done", "failed"):
+        return
+    key = "%s:%s" % (p.get("id"), p["state"])
+    if (ctx.store.get_meta("upgrade:told") or "") == key:
+        return
+    ctx.store.set_meta("upgrade:told", key)
+    st = (p.get("steps") or [{}])[0]
+    if p["state"] == "done":
+        ctx.event("%s is %s fake-igd %s" % (_node(), "back on" if p.get("downgrade") else "upgraded to", VERSION),
+                  "info", kind="upgrade")
+    else:
+        ctx.event("the %s of %s to fake-igd %s failed: %s" % ("going back" if p.get("downgrade") else "upgrade",
+                                                              _node(), p.get("version"), st.get("said") or "?"),
+                  "error", kind="upgrade")

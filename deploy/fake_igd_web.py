@@ -126,26 +126,101 @@ def flag(v, default):
 
 
 # ---- nginx: who may reach the pages ------------------------------------------------
-def nginx_allow(cfg):
-    if not os.path.isfile(NGINX_CONF) or os.path.islink(NGINX_CONF):
-        return "no %s here" % NGINX_CONF
-    allow = cfg.get("web_allow", DEFAULT_ALLOW)
-    # IPv4 and IPv6 alike (1.6.0): nginx takes both; only the firewall's chain is per family.
-    both = []
-    for one in allow if isinstance(allow, list) else []:
+HEALTH_BEGIN = "        # HEALTH-ALLOW-BEGIN - who may ask /healthz (Settings → Firewall and access)"
+HEALTH_END = "        # HEALTH-ALLOW-END"
+REALIP_BEGIN = "    # FAKE-IGD-REALIP-BEGIN - behind a load balancer or WAF, as set on the pages\n"
+REALIP_END = "    # FAKE-IGD-REALIP-END\n"
+HEADER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,63}\Z")
+
+
+def allow_nets(values):
+    """Addresses and networks of a list, IPv4 and IPv6 alike, each once."""
+    out = []
+    for one in values if isinstance(values, list) else []:
         try:
-            both.append(str(ipaddress.ip_network(str(one).strip(), strict=False)))
+            n = str(ipaddress.ip_network(str(one).strip(), strict=False))
         except ValueError:
             continue
+        if n not in out:
+            out.append(n)
+    return out
+
+
+def health_of(cfg):
+    """Who may ask /healthz: config.json's health_allow ([] everybody), or - never set - the same
+    networks as the pages (as before 1.6.1, when the firewall's 80/443 said it alone)."""
+    if isinstance(cfg.get("health_allow"), list):
+        return cfg["health_allow"]
+    allow = cfg.get("web_allow", DEFAULT_ALLOW)
+    return allow if isinstance(allow, list) else []
+
+
+def realip_checked(s):
+    """Behind a load balancer or WAF (otp's web_proxy*, the pages' settings): (nets, header, recursive) -
+    nets empty when it is off or names nobody (the header of anybody else is never believed)."""
+    if s.get("web_proxy") is not True:
+        return [], "", False
+    raw = s.get("web_proxy_from") or []
+    if isinstance(raw, str):
+        raw = re.split(r"[\s,;]+", raw)
+    nets = allow_nets(raw)
+    head = str(s.get("web_proxy_header") or "X-Forwarded-For").strip()
+    if not HEADER_RE.match(head) or head.lower() in ("host", "cookie", "authorization"):
+        head = "X-Forwarded-For"
+    return nets, head, s.get("web_proxy_recursive") is not False
+
+
+def nginx_text(text, cfg, realip=None):
+    """fake-igd.conf with the allow lists and the real_ip lines as set - (new text, words)."""
+    allow = cfg.get("web_allow", DEFAULT_ALLOW)
+    # IPv4 and IPv6 alike (1.6.0): nginx takes both; only the firewall's chain is per family.
+    both = allow_nets(allow)
     lines = ["        allow %s;" % n for n in both] if allow else ["        allow all;"]
     if allow and not both:
         lines = ["        # nothing in web_allow is an address or a network - only this machine"]
-    with open(NGINX_CONF, encoding="utf-8") as f:
-        text = f.read()
     new, n = re.subn(r"(# ADMIN-ALLOW-BEGIN[^\n]*\n)(.*?)(\n[ \t]*# ADMIN-ALLOW-END)",
                      lambda m: m.group(1) + "\n".join(lines) + m.group(3), text, flags=re.S)
     if not n:
-        return "the allow list's marks are not in %s - left as it is" % NGINX_CONF
+        raise Refused("the allow list's marks are not in %s - left as it is" % NGINX_CONF)
+    words = ["the pages may be reached from %s" % (", ".join(both) if allow else "everybody")]
+    # The health check (otp's third row): everybody, or these - and this machine always.
+    health = health_of(cfg)
+    hn = allow_nets(health)
+    new = re.sub(r"%s\n.*?%s\n" % (re.escape(HEALTH_BEGIN), re.escape(HEALTH_END)), "", new, flags=re.S)
+    if hn:
+        m = re.search(r"(?m)^[ \t]*location[ \t]*=[ \t]*/healthz[ \t]*\{[^\n]*\n", new)
+        if m:
+            block = HEALTH_BEGIN + "\n" + "".join("        allow %s;\n" % x for x in hn) + \
+                "        allow 127.0.0.1;\n        allow ::1;\n        deny  all;\n" + HEALTH_END + "\n"
+            new = new[:m.end()] + block + new[m.end():]
+            words.append("/healthz from %s" % ", ".join(hn))
+        else:
+            words.append("no location = /healthz in %s - its list is not put in" % NGINX_CONF)
+    # Behind a load balancer or WAF: nginx takes the client's address from the header - only when the
+    # request comes from one of them.
+    if realip is not None:
+        nets, head, rec = realip
+        new = re.sub(r"%s.*?%s" % (re.escape(REALIP_BEGIN), re.escape(REALIP_END)), "", new, flags=re.S)
+        if nets:
+            m = re.search(r"(?m)^[ \t]*listen[ \t]+(?:\S+:)?443\b[^\n]*\n", new)
+            if not m:
+                raise Refused("no server listening on 443 in %s - the balancer's lines are not put in" % NGINX_CONF)
+            lines = REALIP_BEGIN + "".join("    set_real_ip_from %s;\n" % x for x in nets) + \
+                "    real_ip_header %s;\n    real_ip_recursive %s;\n" % (head, "on" if rec else "off") + REALIP_END
+            new = new[:m.end()] + lines + new[m.end():]
+            words.append("the client's address from %s when it comes from %s" % (head, ", ".join(nets)))
+    return new, words
+
+
+def nginx_allow(cfg):
+    if not os.path.isfile(NGINX_CONF) or os.path.islink(NGINX_CONF):
+        return "no %s here" % NGINX_CONF
+    with open(NGINX_CONF, encoding="utf-8") as f:
+        text = f.read()
+    try:
+        new, words = nginx_text(text, cfg, realip_checked(module_settings()))
+    except Refused as e:
+        return str(e)
     if new == text:
         return "nginx: as it was"
     keep = NGINX_CONF + ".before-fake-igd"
@@ -157,7 +232,8 @@ def nginx_allow(cfg):
     os.chmod(tmp, 0o644)
     os.replace(tmp, NGINX_CONF)
     try:
-        t = subprocess.run(["nginx", "-t"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+        t = subprocess.run([os.environ.get("FAKE_IGD_NGINX_BIN", "nginx"), "-t"], stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, universal_newlines=True)
     except OSError as e:
         os.replace(keep, NGINX_CONF)
         raise Refused("nginx could not be asked (%s), the file was put back" % e)
@@ -166,7 +242,7 @@ def nginx_allow(cfg):
         raise Refused("nginx -t refused the new allow list, the file was put back: %s" % t.stdout.strip()[-300:])
     os.unlink(keep)
     subprocess.run(["systemctl", "reload", "nginx"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return "nginx: the pages may be reached from %s" % (", ".join(both) if allow else "everybody")
+    return "nginx: %s" % "; ".join(words)
 
 
 # ---- iptables / ip6tables: FAKE-IGD-IN ---------------------------------------------
@@ -418,6 +494,13 @@ def builtin(cfg, conf=None, pages_here=None):
     shown = []
     if (os.path.isfile(NGINX_CONF) if pages_here is None else pages_here):
         allow = cfg.get("web_allow", DEFAULT_ALLOW)
+        health = health_of(cfg)
+        # 80 and 443 carry the administration and the health check: open to both lists (anybody's
+        # when either is everybody's); nginx says page by page who sees which.
+        if allow and health:
+            allow = list(allow) + [x for x in health if x not in allow]
+        elif not health:
+            allow = []
         for f in (4, 6):
             srcs = nets_of(allow, f) if allow else [None]
             for s in srcs:
