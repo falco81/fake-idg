@@ -4104,13 +4104,6 @@ body.framed > .wrap > .panel.holds-one.has-aside > .card.held > .scroll.rowsonly
   .card.held > .scroll.rowsonly{flex:none !important;min-height:0;overflow-y:visible;overflow-x:auto}
 }
 
-/* 1.7.2: a value and its copy button on one line (otp's cert-crl-url-in); the lists of interfaces in a card. */
-.copyline{display:flex;align-items:center;gap:6px;min-width:0}
-.copyline > .mono{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-.copyline > button{flex:none}
-table.if-list{margin-top:12px;width:100%}
-table.if-list td,table.if-list th{vertical-align:middle;padding-top:5px;padding-bottom:5px}
-table.if-list td.mono{white-space:nowrap}
 /* ---- own (round 3): the lists of interfaces (UPnP network, mDNS reflector) -------------------
    Replaces the 1.7.2 lines ".copyline ..." and "table.if-list ..." (no longer used). A row with a copy
    button is as high as the button: every cell of it in the middle, as otp's cert-crl-t. */
