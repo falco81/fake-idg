@@ -2,6 +2,22 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.7.1 (2026-11-16)
+
+- **Certificates and TLS**: "root has not taken it yet" no longer said of a certificate root did put in -
+  the trusted roots, read by themselves on the same pane, overwrote the answer before the pages saw it.
+  Root now keeps the short answers of the last 20 asks of each kind beside the newest one, and every pane
+  finds its own ask's answer among them.
+- **Certificates and TLS**: otp's **Root** and **Sent** on the certificate's card - what the chain leads
+  to, and what nginx sends now, checked on 127.0.0.1:443 by the certificate's name: whether it is the
+  certificate in the file at all (nginx not reloaded since says so, with the one it still answers with),
+  then as curl and every client that fetches nothing checks it, with the system's roots.
+- Gone through against otp's own tables (its ONLY_WHEN and NAMES): Mail - the sender, the waits, EHLO and
+  the lists asleep while sending is off, the account and password while signing in is none; Restart - On
+  the day only for a weekly restart; ACME - "The TXT records go into" asleep for acme-dns, its directory
+  before the CA as otp's.
+- The CA's certificate of ACME and of Syslog and SIEM in a box of the grid, as otp's, not a row of its own.
+
 ## 1.7.0 (2026-11-16)
 
 **Everything gone through again, against otp, element by element** - every tab and every pane of

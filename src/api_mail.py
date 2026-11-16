@@ -64,17 +64,19 @@ SETTINGS = [
      "says": "How this machine signs in to the server. None where the relay lets this address send by itself. "
              "XOAUTH2 (Microsoft 365, Google): the password is an access token."},
     {"key": "smtp_user", "name": "Account", "kind": "text", "default": "", "most": 200,
-     "only_when": ("mail_mode", "smtp"),
+     "only_when": ("smtp_auth", "none-not"),
      "says": "The account it signs in with - often the whole address."},
     {"key": "smtp_password", "name": "Password", "kind": "secret", "default": "", "most": 500,
-     "only_when": ("mail_mode", "smtp"),
+     "only_when": ("smtp_auth", "none-not"),
      "says": "Its password (or the OAuth access token for XOAUTH2). Kept in the database sealed with the "
              "key beside it (secrets.key)."},
     {"key": "smtp_verify", "name": "Check the server’s certificate", "kind": "bool", "default": True,
+     "only_when": ("mail_mode", "off-not"),
      "says": "Off is for a test: a server whose certificate is not checked is one anybody on the path can "
              "pretend to be. A certificate signed by your own authority is trusted once that authority is added "
              "below."},
     {"key": "smtp_timeout_s", "name": "Wait for the server (s)", "kind": "int", "default": 20, "min": 3, "max": 300,
+     "only_when": ("mail_mode", "off-not"),
      "says": "How long to wait for the server to answer."},
     {"key": "mail_direct_port", "name": "Port of the recipients’ servers", "kind": "int", "default": 25,
      "min": 1, "max": 65535, "only_when": ("mail_mode", "direct"),
@@ -91,23 +93,29 @@ SETTINGS = [
      "says": "Going direct: the DNS servers asked where each recipient’s domain takes its mail (its MX record), "
              "separated by commas - 1.1.1.1, 8.8.8.8. Empty: the ones in /etc/resolv.conf."},
     {"key": "mail_from", "name": "From (address)", "kind": "text", "default": "", "check": _addr,
+     "only_when": ("mail_mode", "off-not"),
      "says": "The sender’s address. Your mail server may allow only its own addresses; going direct, the "
              "domain should have this machine in its SPF. Empty: fake-igd@ this machine’s full name."},
     {"key": "mail_from_name", "name": "From (name)", "kind": "text", "default": "", "most": 120,
+     "only_when": ("mail_mode", "off-not"),
      "says": "The name beside it, as the recipient sees it. Empty: fake-igd."},
     {"key": "mail_reply_to", "name": "Replies to", "kind": "text", "default": "", "check": _addr,
+     "only_when": ("mail_mode", "off-not"),
      "says": "Where a reply goes - a helpdesk, say. Empty: back to the sender."},
     {"key": "mail_helo", "name": "This machine calls itself (EHLO)", "kind": "text", "default": "",
      "check": _host,
+     "only_when": ("mail_mode", "off-not"),
      "says": "The name this machine greets the server with. Empty: its own full name. Going direct, it should "
              "be the name its address resolves back to."},
     {"key": "mail_retry_hours", "name": "Try a mail not delivered for (hours)", "kind": "int", "default": 24,
      "min": 1, "max": 168,
+     "only_when": ("mail_mode", "off-not"),
      "says": "A mail the receiving side did not take yet - greylisting (a first \"try again later\"), a server "
              "away, a full mailbox - waits in the outgoing mail and is tried again: after 1, 2, 5, 10, 15 and "
              "30 min, then every hour, for this long."},
     {"key": "mail_keep_days", "name": "Keep the list of mails sent for (days)", "kind": "int", "default": 14,
      "min": 1, "max": 365,
+     "only_when": ("mail_mode", "off-not"),
      "says": "How long the outgoing mail keeps a mail that went, or that was given up, in its list - what it "
              "said and when. What a mail held is never kept once it went."},
 ]

@@ -917,7 +917,13 @@ def root_module(kind):
     return mod
 
 
+RECENT_KEEP = 20
+
+
 def write_kind_result(kind, d):
+    """The answer of root's last ask of a kind - and, beside it, the short answers of the asks before it
+    (1.7.1): one kind has asks of more than one sort (TLS: a certificate put, the trusted roots read), and
+    the newest must not hide whether an older one was done."""
     d["at"] = time.time()
     d["kind"] = kind
     try:
@@ -925,6 +931,18 @@ def write_kind_result(kind, d):
     except OSError:
         return
     try:
+        recent = []
+        try:
+            fd = os.open("result-%s.json" % kind, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
+            with os.fdopen(fd, "rb") as f:
+                was = json.loads(f.read(8 * 1024 * 1024).decode("utf-8") or "{}")
+            if isinstance(was, dict):
+                recent = [x for x in (was.get("recent") or []) if isinstance(x, dict)]
+                if was.get("id"):
+                    recent.append({k: was.get(k) for k in ("id", "ok", "action", "said", "at", "by") if k in was})
+        except (OSError, ValueError):
+            recent = []
+        d["recent"] = [x for x in recent if x.get("id") != d.get("id")][-RECENT_KEEP:]
         name = ".result-%s.%d" % (kind, os.getpid())
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640, dir_fd=dfd)
         with os.fdopen(fd, "w") as f:

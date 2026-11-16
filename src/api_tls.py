@@ -22,6 +22,7 @@ files back when nginx says no and reloads it. Automatic certificates (api_acme.p
 certificate in through the same ask (put_pem below).
 """
 import base64
+import hashlib
 import ipaddress
 import json
 import os
@@ -29,6 +30,7 @@ import re
 import secrets
 import shutil
 import socket
+import ssl
 import subprocess
 import tempfile
 import time
@@ -482,6 +484,71 @@ def current():
     return out
 
 
+SENT = {"key": None, "at": 0, "got": None}
+SENT_EVERY = 60
+
+
+def sent_check(cur):
+    """What nginx sends now (otp 1.0.269's self-check, 1.7.1): connected to on 127.0.0.1:443 by the
+    certificate's own name - first whether it is the certificate in the file (nginx took it; a reload
+    not done leaves the one before), then as a client that fetches nothing (curl, a VPN client)
+    checks it: the system's roots, the whole chain sent. Kept a minute."""
+    info = (cur or {}).get("info") or {}
+    if not info:
+        return None
+    name = next((n for n in info.get("san") or [] if n and "*" not in n and not re.match(r"^[0-9.:]+\Z", n)), "") \
+        or info.get("cn") or ""
+    key = (info.get("fingerprint"), name)
+    if SENT["key"] == key and time.time() - SENT["at"] < SENT_EVERY:
+        return SENT["got"]
+    port = int(os.environ.get("FAKE_IGD_TLS_PORT") or 443)
+    got = {"at": time.time(), "name": name}
+    try:
+        raw_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        raw_ctx.check_hostname = False
+        raw_ctx.verify_mode = ssl.CERT_NONE
+        with socket.create_connection(("127.0.0.1", port), timeout=6) as s:
+            with raw_ctx.wrap_socket(s, server_hostname=name or None) as t:
+                der = t.getpeercert(binary_form=True) or b""
+        fp = ":".join("%02X" % b for b in hashlib.sha256(der).digest())
+        mine = (info.get("fingerprint") or "").upper()
+        alt = (((cur or {}).get("alt") or {}).get("info") or {}).get("fingerprint", "").upper()
+        got["fingerprint"] = fp
+        if mine and fp != mine and fp != alt:
+            try:
+                other = cert_info(ssl.DER_cert_to_PEM_cert(der))
+                was = " (%s, issued by %s)" % (other.get("cn") or other.get("subject"),
+                                                "itself" if other.get("self_signed") else
+                                                (other.get("issuer") or "").replace("CN=", ""))
+            except ValueError:
+                was = ""
+            got.update(ok=False, same=False,
+                       words="nginx still answers with another certificate%s, not the one in its file - it has not "
+                             "been reloaded since: Settings → The service, or sudo systemctl reload nginx" % was)
+        else:
+            got["same"] = True
+            if info.get("self_signed"):
+                got.update(ok=None, words="signed by itself: every browser and client warns")
+            else:
+                vctx = ssl.create_default_context()
+                ca = ca_file()
+                if ca:
+                    vctx.load_verify_locations(cafile=ca)
+                vctx.check_hostname = False
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=6) as s:
+                        with vctx.wrap_socket(s, server_hostname=name or None):
+                            pass
+                    got.update(ok=True, words="checked as a client that fetches nothing: the whole chain is sent")
+                except ssl.SSLCertVerificationError as e:
+                    got.update(ok=False, words="a client that fetches nothing (curl, a VPN client) refuses what "
+                                                "nginx sends: %s" % str(e.verify_message or e)[:200])
+    except (OSError, ssl.SSLError, ValueError) as e:
+        got.update(ok=None, words="what nginx sends could not be checked: %s" % str(e)[:200])
+    SENT.update(key=key, at=time.time(), got=got)
+    return got
+
+
 def before_acme():
     """The certificate it had before ACME replaced it (root keeps it beside), or None."""
     certs = [m.group(0) for m in PEM_CERT.finditer(_read(files()["before"]))]
@@ -559,6 +626,11 @@ def ask_state(ctx):
     elif res.get("id") and res.get("id") != (meta(ctx.store, "tls:lastres") or {}).get("id"):
         set_meta(ctx.store, "tls:lastres", {k: res.get(k) for k in ("id", "ok", "action", "at", "said", "by")})
     if asked.get("id") and res.get("id") != asked["id"]:
+        # Answered, and another ask of the kind answered after it (the trusted roots read): its own answer.
+        mine = ctx.root_result("tls", asked["id"]) if res else {}
+        if mine:
+            return {"state": "done" if mine.get("ok") else "failed", "action": mine.get("action") or asked.get("action"),
+                    "at": mine.get("at"), "said": mine.get("said") or [], "by": mine.get("by")}
         late = time.time() - float(asked.get("at") or 0) > 120
         return {"state": "late" if late else "waiting", "action": asked.get("action"), "at": asked.get("at"),
                 "said": ["root has not taken it yet - is fake-igd-web.path active?"] if late else []}
@@ -618,7 +690,13 @@ def view(ctx):
         pass
     pend = bool(pending_key(ctx.cfg))
     csr = (meta(ctx.store, "tls:csr") or {}).get("csr") if pend else ""
-    return {"may": me.get("role") == "fulladmin", "cert": current(),
+    cur = current()
+    if cur and cur.get("info"):
+        cur["sent"] = sent_check(cur)
+        top = (cur.get("chain_info") or [cur["info"]])[-1]
+        cur["root_cn"] = "" if cur["info"].get("self_signed") else \
+            re.sub(r"^.*?CN=([^,]+).*$", r"\1", top.get("issuer") or "")
+    return {"may": me.get("role") == "fulladmin", "cert": cur,
             "policy": {"preset": preset, "protocols": ng["protocols"], "ciphers": ng["ciphers"],
                        "prefer": ng["prefer"], "dh": dh, "dhparam": ng["dhparam"], "hsts": ng["hsts"]},
             "nginx": {"file": ng["file"], "there": ng["there"]},

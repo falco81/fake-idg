@@ -1601,6 +1601,12 @@ function settingItemBare(s) {
     input = el('textarea');
     input.value = s.value === null || s.value === undefined ? '' : String(s.value);
     input.rows = 4;
+  } else if (s.cell) {
+    /* A PEM in a box of the grid, as otp's (its own cell, not a row of its own). */
+    input = el('textarea', 'mono');
+    input.value = s.value === null || s.value === undefined ? '' : String(s.value);
+    input.rows = 1;
+    input.placeholder = '-----BEGIN CERTIFICATE-----';
   } else {
     input = s.secret ? maskBox('', '', '') : textBox(s.value === null || s.value === undefined ? '' : s.value, s.list ? 'comma separated; empty = none' : '', '');
     if (s.list || /url|file|dir|path/.test(s.key)) input.classList.add('mono');

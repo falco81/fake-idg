@@ -102,15 +102,15 @@ SETTINGS = [
              "<code>server_name</code> that are full DNS names."},
     {"key": "acme_email", "kind": "text", "default": "", "name": "Mail of the account at the CA", "only_when": ON,
      "check": _mail_bad, "says": "Where the CA writes when a certificate runs out unrenewed. Empty: none."},
+    {"key": "acme_url", "kind": "text", "default": "", "name": "Its ACME directory",
+     "only_when": ("acme_ca", "custom"), "check": _https_bad,
+     "says": "The directory of another ACME CA, <code>https://ca.example.cz/acme/acme/directory</code>."},
     {"key": "acme_ca", "kind": "choice", "default": "letsencrypt", "name": "The CA", "only_when": ON,
      "choices": [("letsencrypt", "Let\u2019s Encrypt"),
                  ("letsencrypt-staging", "Let\u2019s Encrypt - staging (to try it)"),
                  ("custom", "another ACME CA (step-ca, an internal CA...)")],
      "says": "Let\u2019s Encrypt, its staging (certificates browsers do not trust - to try it), or another."},
-    {"key": "acme_url", "kind": "text", "default": "", "name": "Its ACME directory",
-     "only_when": ("acme_ca", "custom"), "check": _https_bad,
-     "says": "The directory of another ACME CA, <code>https://ca.example.cz/acme/acme/directory</code>."},
-    {"key": "acme_ca_pem", "kind": "textarea", "default": "", "name": "The CA\u2019s own certificate",
+    {"key": "acme_ca_pem", "kind": "textarea", "cell": True, "default": "", "name": "The CA\u2019s own certificate",
      "only_when": ("acme_ca", "custom"), "most": 20000,
      "says": "The CA\u2019s root (PEM), where the system does not trust it already."},
     {"key": "acme_days", "kind": "int", "default": 30, "min": 7, "max": 60,
@@ -187,7 +187,7 @@ SETTINGS = [
     {"key": "acme_desec_token", "kind": "secret", "default": "", "name": "The deSEC API token",
      "only_when": ("acme_dns", "desec"),
      "says": "A token from deSEC (Token management) - one that may change this domain\u2019s records."},
-    {"key": "acme_dns_alias", "kind": "text", "default": "", "name": "The TXT records go into", "only_when": DNS01,
+    {"key": "acme_dns_alias", "kind": "text", "default": "", "name": "The TXT records go into", "only_when": ("acme_dns", "acmedns-not"),
      "check": lambda v: "" if re.match(r"^[A-Za-z0-9.-]{1,253}\Z", v) else "a DNS zone, acme.example.net",
      "says": "A zone the records go into instead of the name\u2019s own (<code>acme.example.net</code>), each name "
              "with a CNAME to it in your DNS - <i>In your DNS</i> above says which. Empty: _acme-challenge.NAME "
@@ -727,7 +727,7 @@ def http80(ctx, names, say=None, wait=60):
         say("asked root to make port 80 ready for the CA (%s)" % ", ".join(plain))
     end = time.time() + wait
     while time.time() < end:
-        res = ctx.root_result("tls")
+        res = ctx.root_result("tls", ident)
         if res.get("id") == ident:
             _set(ctx.store, "acme:http80", {"names": plain, "ok": bool(res.get("ok")), "at": time.time()})
             if not res.get("ok"):

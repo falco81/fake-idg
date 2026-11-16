@@ -96,7 +96,7 @@ SETTINGS = [
      "most": 120, "only_when": ("siem", True), "says": "The host name on every line. Empty: this machine's name."},
     {"key": "siem_verify", "name": "Check the server’s certificate (TLS)", "kind": "bool", "default": True,
      "only_when": ("siem", True), "says": "Off only for a test: anyone between could read and change the lines."},
-    {"key": "siem_ca", "name": "The certificate authority of the server (TLS)", "kind": "textarea", "default": "",
+    {"key": "siem_ca", "name": "The certificate authority of the server (TLS)", "kind": "textarea", "cell": True, "default": "",
      "check": _ca_check, "most": 64000, "only_when": ("siem", True),
      "says": "The CA certificate (PEM) the server’s certificate is signed by, where it is not one the system "
              "trusts already."},

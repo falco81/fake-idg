@@ -125,7 +125,8 @@ def view(store, secret_set=None):
         row = {"key": key, "name": s.get("name", key), "says": s.get("says", ""),
                "short": s.get("short"), "default": s.get("default"), "pane": s["pane"],
                "secret": kind == "secret", "bool": kind == "bool", "list": kind == "list",
-               "tall": kind == "textarea", "source": "database" if key in saved else "default",
+               "tall": kind == "textarea" and not s.get("cell"),
+               "cell": kind == "textarea" and bool(s.get("cell")), "source": "database" if key in saved else "default",
                "source_says": "saved on these pages" if key in saved else "as it comes",
                "restarts": bool(s.get("restarts")), "root": bool(s.get("root"))}
         if kind == "secret":
@@ -240,14 +241,22 @@ def ask_root(state_dir, kind, payload, by=""):
     return ident
 
 
-def root_result(state_dir, kind):
+def root_result(state_dir, kind, ident=None):
+    """Root's last answer of a kind; with ident, the answer to that ask - the last one, or one of the
+    short answers kept beside it (1.7.1) - or {} while it is not done."""
     try:
         with open(os.path.join(state_dir or "/var/lib/fake-igd", "web", "result-%s.json" % kind),
                   encoding="utf-8") as f:
             got = json.load(f)
-        return got if isinstance(got, dict) else {}
+        got = got if isinstance(got, dict) else {}
     except (OSError, ValueError):
         return {}
+    if ident is None or got.get("id") == ident:
+        return got
+    for one in reversed(got.get("recent") or []):
+        if isinstance(one, dict) and one.get("id") == ident:
+            return one
+    return {}
 
 
 class Ctx(object):
@@ -282,8 +291,8 @@ class Ctx(object):
         return ask_root(self.cfg.get("state_dir"), kind or getattr(self.mod, "NAME", ""), payload,
                         (self.me or {}).get("name", ""))
 
-    def root_result(self, kind=None):
-        return root_result(self.cfg.get("state_dir"), kind or getattr(self.mod, "NAME", ""))
+    def root_result(self, kind=None, ident=None):
+        return root_result(self.cfg.get("state_dir"), kind or getattr(self.mod, "NAME", ""), ident)
 
     def event(self, words, level="info", kind=None):
         who = (self.me or {}).get("name", "")

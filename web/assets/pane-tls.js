@@ -117,6 +117,12 @@
       if ((cur.chain_info || []).length) {
         facts.push(['Authorities', noI18n(el('span', '', cur.chain_info.map(function (c) { return c.cn || c.subject; }).join(' → ')))]);
       }
+      /* What it leads to, and what nginx sends now, checked as curl checks it (otp's Root and Sent). */
+      if (!info.self_signed) facts.push(['Root', cur.root_cn ? noI18n(el('span', '', cur.root_cn)) : '–']);
+      var sc = cur.sent;
+      if (sc && sc.words && (sc.ok !== null && sc.ok !== undefined || sc.same === false))
+        facts.push(['Sent', el('span', sc.ok ? 'good' : 'bad', sc.words)]);
+      else if (sc && sc.words && sc.ok === null && !info.self_signed) facts.push(['Sent', el('span', 'dim', sc.words)]);
       if (info.fingerprint) facts.push(['SHA-256', noI18n(el('span', 'mono small', info.fingerprint))]);
       var kv = el('dl', 'cert-kv');
       facts.forEach(function (f) {

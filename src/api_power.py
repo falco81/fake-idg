@@ -32,7 +32,7 @@ SETTINGS = [
     {"key": "power_auto_day", "name": "On the day", "kind": "choice", "default": "7",
      "choices": [("1", "Monday"), ("2", "Tuesday"), ("3", "Wednesday"), ("4", "Thursday"), ("5", "Friday"),
                  ("6", "Saturday"), ("7", "Sunday")],
-     "only_when": ("power_auto", True), "says": "The day a weekly restart goes."},
+     "only_when": ("power_auto_every", "weekly"), "says": "The day a weekly restart goes."},
     {"key": "power_auto_at", "name": "At", "kind": "text", "default": "05:40", "check": _at,
      "only_when": ("power_auto", True), "says": "When, as HH:MM on this machine's clock."},
     {"key": "power_auto_needed", "name": "Only when an update needs one", "kind": "bool", "default": True,
