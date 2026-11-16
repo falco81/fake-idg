@@ -321,9 +321,14 @@ def status_view():
         d = guarded(U.status_data, cfg)
         s = d["service"]
         problems = []
+        up_now = ON.status()
         if s["state"] != "active":
-            problems.append("fake-igd.service is %s - nothing on the network is answered (Settings → The service, or "
-                            "sudo upnp start)" % s["state"])
+            if up_now.get("busy"):
+                problems.append("fake-igd is being upgraded to %s - fake-igd.service restarts once and is back "
+                                "in a moment" % (up_now.get("version") or "a new version"))
+            else:
+                problems.append("fake-igd.service is %s - nothing on the network is answered (Settings → The "
+                                "service, or sudo upnp start)" % s["state"])
         for o in d.get("other_igd") or []:
             problems.append("Another UPnP router is on the network: %s - switch UPnP off on it, or the PS5 may ask "
                             "it instead" % o)

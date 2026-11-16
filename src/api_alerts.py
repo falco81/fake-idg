@@ -165,7 +165,8 @@ def problems(ctx, c=None):
     if c.get("alerts_service") or c.get("alerts_avahi"):
         units = mon.unit_states()
         st = units.get("fake-igd.service")
-        if c.get("alerts_service") and st != "active":
+        import igd_online as ON
+        if c.get("alerts_service") and st != "active" and not ON.status().get("busy"):
             out["service"] = {"level": "bad", "title": "fake-igd.service is %s" % st, "pane": "service",
                               "said": "Nothing on the network is answered - Settings → The service, or sudo upnp start."}
         av = units.get("avahi-daemon.service")
