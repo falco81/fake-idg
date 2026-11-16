@@ -118,11 +118,17 @@
       nodeBig(c, left !== null ? num(left) : '–', left !== null ? 'days left' : '');
       var due = t.due ? t.due : (acme && t.ari && t.ari.pick ? 'renewed at ' + stamp(t.ari.pick) + ' (the CA\'s window)' : '');
       c.appendChild(netFacts([
-        ['For', (d.names || []).join(', '), true], ['Issued by', t.issuer || '', true], ['Keys', t.keys || '', true],
+        ['For', (d.names || []).join(', '), true],
+        ['The names', d.names_from === 'nginx' ? 'from nginx\'s server_name' : (d.names_from === 'setting' ? 'as given (The names of the certificate)' : 'none yet')],
+        ['Issued by', t.issuer || '', true], ['Keys', t.keys || '', true],
         ['Good until', dateOf(t.not_after)],
         ['Last ordered', st.ordered_at ? ago(st.ordered_at) : 'never'],
         ['Next', d.on ? (due || (acme ? 'when fewer than ' + (AC.d.days || 30) + ' days are left' : '–')) : 'off']
       ]));
+      /* Where the names come from, said plainly (a CNAME made for another name than nginx's
+         server_name fails with NXDOMAIN, and nothing on the page said which name was ordered). */
+      if (d.names_from === 'nginx') c.appendChild(el('p', 'note warn small', 'The names are taken from nginx\'s server_name: ' + (d.names || []).join(', ') + ' - The names of the certificate is empty. If that is not the name your DNS has, give the right one (Its names…).'));
+      else if (!d.names_from) c.appendChild(el('p', 'note warn small', 'No name: The names of the certificate is empty, and nginx\'s server_name has no full DNS name - give them (Its names…).'));
       if (st.ok === false && st.said && !(d.work && d.work.busy)) c.appendChild(nodeSaid({ok: false, error: st.said, at: st.failed_at}, ''));
       if ((st.steps || []).length) {
         var det = el('details', 'acme-steps-done');
@@ -314,6 +320,7 @@
       ? 'HTTP-01: the CA asks port 80 of each name - so each name points at this server, and port 80 is open to the CA.'
       : (g.dns === 'manual' ? 'DNS-01 by hand: the CA reads a TXT record you put in at every order.'
         : 'DNS-01: the CA reads a TXT record fake-igd puts in. What has to be in your DNS for it - once - is below.')));
+    if (g.names_from === 'nginx') card.appendChild(el('p', 'note warn', 'For ' + (d.names || []).join(', ') + ' - the names in nginx\'s server_name, as The names of the certificate is empty. A record made for another name does not count: give that name in The names of the certificate.'));
     var ol = el('ol', 'acme-steps');
     (ACME_DNS_STEPS[key] || []).forEach(function (w) { ol.appendChild(el('li', '', w)); });
     card.appendChild(ol);
@@ -385,4 +392,29 @@
     card.appendChild(row);
     return card;
   }
+  /* The names' setting says what an empty box means here and now: the names nginx's server_name
+     has - in its placeholder and under it. */
+  function namesHint() {
+    var box = $('set-acme_names'), item = document.querySelector('.set-item[data-key="acme_names"]');
+    if (!box || !item || !AC.d) return;
+    var ng = AC.d.names_nginx || [];
+    box.placeholder = ng.length ? 'empty = the names in nginx\'s server_name: ' + ng.join(', ')
+      : 'empty = nginx\'s server_name - it has no full DNS name';
+    var tail = item.querySelector('.set-tail') || item;
+    var was = tail.querySelector('.acme-names-now');
+    if (was) was.remove();
+    if (!AC.d.names_given) tail.appendChild(el('div', 'says acme-names-now', ng.length
+      ? 'Now empty: the certificate is for ' + ng.join(', ') + ' - from nginx\'s server_name.'
+      : 'Now empty, and nginx\'s server_name has no full DNS name: nothing can be ordered.'));
+  }
+  (function () {
+    var theirs = drawSettings;
+    drawSettings = function () {
+      var r = theirs.apply(this, arguments);
+      try { namesHint(); } catch (e) { /* as the settings code drew it */ }
+      return r;
+    };
+  }());
+  var theirDraw = drawAcme;
+  drawAcme = function () { var r = theirDraw.apply(this, arguments); try { namesHint(); } catch (e) { /* later */ } return r; };
 }());

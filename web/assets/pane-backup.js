@@ -126,7 +126,7 @@
     };
     if (mine) fact('Last', ago(mine.at) + (mine.bytes ? ' · ' + rbBytes(mine.bytes) : ''));
     fact('Next', d.next ? new Date(d.next).toLocaleString(numLang(), {weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit'}) : 'by hand only', d.next ? '' : 'warn');
-    fact('Locked', d.locked ? 'with the password (AES-256)' : 'NO PASSWORD - nothing is sent', d.locked ? 'good' : 'bad');
+    fact('Locked', d.locked ? 'with the password (AES-256)' : 'NOT locked - set the password', d.locked ? 'good' : 'bad');
     fact('Destinations', num(on.length) + ' of ' + num((d.targets || []).length) + ' switched on');
     var tried = (d.verified || [])[0];
     fact('Tried', tried ? (tried.ok ? 'can be put back' : 'NOT GOOD') + ' · ' + ago(tried.at) : 'never', tried ? (tried.ok ? 'good' : 'bad') : 'warn');

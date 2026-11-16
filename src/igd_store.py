@@ -287,6 +287,8 @@ class Store(object):
         return r["v"] if r else default
 
     def set_meta(self, k, v):
+        if k == "settings":
+            self._policy = (0.0, None)
         self.run("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", (k, v))
 
     def meta_json(self, k):

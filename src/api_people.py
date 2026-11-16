@@ -48,17 +48,17 @@ SETTINGS = [
              "address may make ten times as many, 50 at least - an office behind one address is not "
              "locked out by one person's typos."},
     {"key": "login_wait_min", "name": "...and the pause (min)", "kind": "int", "default": 15, "min": 1,
-     "max": 1440, "says": "How long it waits. Locked out below shows who waits, and lets them try again."},
-    {"key": "password_min", "name": "A password at least (characters)", "kind": "int", "default": 8, "min": 8,
-     "max": 64,
-     "says": "For a password set on these pages, by upnp user, and one's own. Passwords there already "
-             "stay until they are changed."},
+     "max": 1440, "says": "How long it waits. Locked out, above, shows who waits, and lets them try again at once."},
     {"key": "admin_2fa", "name": "A second step when signing in to these pages", "kind": "bool",
      "default": False,
      "says": "After the password, every account gives a code too - from an authenticator app (Google or "
              "Microsoft Authenticator…), its own. The first time, the account sets it up: it scans a QR "
              "code and writes the code the app shows. Accounts → Reset the second step, or upnp user "
              "reset-2fa NAME, makes it set it up again. Sign-ins already open stay open."},
+    {"key": "password_min", "name": "A password at least (characters)", "kind": "int", "default": 8, "min": 8,
+     "max": 64,
+     "says": "For a password set on these pages, by upnp user, and one's own. Passwords there already "
+             "stay until they are changed."},
 ]
 
 KIND_WORDS = {"app": "an app"}

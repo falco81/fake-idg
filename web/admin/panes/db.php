@@ -44,7 +44,8 @@
       <h2>Which one it is <span class="right" id="db-engine-now"></span></h2>
       <p class="note">This installation keeps everything in one database: the file on this machine (SQLite).
         fake-igd has no other engine - no MariaDB or PostgreSQL to move to - so there is nothing to choose here:
-        this says what it is. Where it is kept is the state folder of <b id="db-engine-file">the config file</b>.</p>
+        this says what it is. Where it is kept is the only thing written into <b id="db-engine-file">the config file</b> (its
+        state_dir).</p>
       <div id="db-engine-says"></div>
     </div>
 

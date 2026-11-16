@@ -248,6 +248,13 @@ class Browser(object):
                     if was is not None and was.get("address") == d.get("address") and was.get("port") == d.get("port") \
                             and was.get("txt") == d.get("txt"):
                         continue
+                    if was is None or not was.get("address"):
+                        # Its first resolution: the "new" it came with says it, no line of its own.
+                        for e in reversed(self.events[-200:]):
+                            if e.get("key") == k and e["event"] == "new":
+                                e.update({x: d.get(x) for x in ("host", "address", "port", "txt")})
+                                break
+                        continue
                     ev = dict(row, event="resolved")
                 self.seq += 1
                 ev.update(seq=self.seq, at=t, before=first)

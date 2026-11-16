@@ -1,0 +1,728 @@
+"""api_upnp.py - fake-igd's own panes of Settings, beside their settings (1.6.1).
+
+How it answers, UPnP network, Notifications (ntfy), Logs and state: their settings are
+config.json's (the generic settings code draws them); this module gives the cards otp shows
+beside its own settings:
+
+  GET  /api/upnp/here    what listens where now: the service, every interface of the machine and
+                         whether fake-igd uses it (and why not), the sockets (SSDP 1900/udp, the
+                         description and SOAP port), the description's URLs, the public IP and where
+                         it came from, other UPnP routers heard, what was answered in the last 24 h
+  POST /api/upnp/try     {add: "", "udp", "tcp"} - fake-igd asked as the PS5 asks it, every step shown
+                         (as otp's mail test): SSDP M-SEARCH, the description, controlURL, SOAP
+                         GetStatusInfo / GetExternalIPAddress, and - asked - a test AddPortMapping
+                         and its DeletePortMapping
+  GET  /api/upnp/ntfy    how notifications go, what is sent when, the last sends (from the main log),
+                         the tests, the certificate authority of a private server
+  POST /api/upnp/ntfy    {action: "test", title?} - one test, every step shown (looked up, connected,
+                         TLS, sent); {action: "ca", mode: "add", ca: PEM} / {mode: "drop"} - the CA of a
+                         private ntfy server kept beside config.json and set as ntfy_ca_file
+  GET  /api/upnp/logs    the files: the main log, the request log, the rotated ones, the state
+                         folder, the database - their sizes, and the disk they are on
+"""
+import collections
+import fcntl
+import glob
+import hashlib
+import json
+import os
+import re
+import socket
+import ssl
+import struct
+import sys
+import tempfile
+import time
+import urllib.parse
+from datetime import datetime, timedelta
+
+import upnp as U
+
+NAME = "upnp"
+IGD_ST = "urn:schemas-upnp-org:device:InternetGatewayDevice:1"
+WAN_SVC = "urn:schemas-upnp-org:service:WANIPConnection:1"
+TESTS_KEPT = 20
+
+
+def _api():
+    """The API's own module (run as a script: __main__) - for config.json's settings."""
+    for name in ("fake_igd_api", "__main__"):
+        m = sys.modules.get(name)
+        if m is not None and hasattr(m, "settings_save"):
+            return m
+    return None
+
+
+def _node():
+    return socket.gethostname().split(".")[0]
+
+
+# ---- the interfaces of the machine ---------------------------------------------------------
+def kernel_ifaces():
+    """Every interface: its IPv4 address and mask, up, loopback, multicast, MAC (no tools needed)."""
+    out = []
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        for _i, name in socket.if_nameindex():
+            req = struct.pack("256s", name[:15].encode())
+            row = {"name": name, "ipv4": "", "prefix": None, "up": False, "loopback": False, "multicast": False,
+                   "mac": "", "state": ""}
+            try:
+                flags = struct.unpack("H", fcntl.ioctl(s.fileno(), 0x8913, req)[16:18])[0]
+                row.update(up=bool(flags & 0x1), loopback=bool(flags & 0x8), multicast=bool(flags & 0x1000))
+            except OSError:
+                pass
+            try:
+                row["ipv4"] = socket.inet_ntoa(fcntl.ioctl(s.fileno(), 0x8915, req)[20:24])
+                mask = socket.inet_ntoa(fcntl.ioctl(s.fileno(), 0x891b, req)[20:24])
+                row["prefix"] = sum(bin(int(x)).count("1") for x in mask.split("."))
+            except OSError:
+                pass
+            for f, k in (("address", "mac"), ("operstate", "state")):
+                try:
+                    with open("/sys/class/net/%s/%s" % (name, f)) as fh:
+                        row[k] = fh.read().strip()
+                except OSError:
+                    pass
+            out.append(row)
+    finally:
+        s.close()
+    return out
+
+
+def uses(cfg, row):
+    """(used, why not) - the service's own rule (fake-igd.py list_interfaces)."""
+    want = set(cfg.get("interfaces") or [])
+    skip = set(cfg.get("exclude_interfaces") or [])
+    if want and row["name"] not in want:
+        return False, "not one of the interfaces chosen"
+    if row["name"] in skip:
+        return False, "left out"
+    if not row["up"]:
+        return False, "down"
+    if row["loopback"] and not want:
+        return False, "loopback"
+    if not row["multicast"]:
+        return False, "no multicast"
+    if not row["ipv4"]:
+        return False, "no IPv4 address"
+    return True, ""
+
+
+# ---- what the main log says since the service last started ---------------------------------
+LOG_RE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)(?:,\d+)?\s+(\w+)\s+(.*)$")
+
+
+def _when(stamp):
+    try:
+        return time.mktime(time.strptime(stamp, "%Y-%m-%d %H:%M:%S"))
+    except (ValueError, OverflowError):
+        return None
+
+
+def log_tail(cfg, most=4 * 1024 * 1024):
+    path = cfg.get("log_file") or ""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - most))
+            data = f.read()
+    except OSError:
+        return []
+    lines = data.decode("utf-8", "replace").splitlines()
+    return lines[1:] if size > most else lines
+
+
+def since_start(lines):
+    start = 0
+    for i, ln in enumerate(lines):
+        if re.search(r"service: fake-igd \S+ starting|===== fake-igd .*starting", ln):
+            start = i
+    d = {"started": None, "listening": collections.OrderedDict(), "public": None, "public_from": "",
+         "public_said": "", "other": [], "said": []}
+    m = LOG_RE.match(lines[start]) if lines else None
+    if m and "starting" in m.group(3):
+        d["started"] = _when(m.group(1))
+    for ln in lines[start:]:
+        m = LOG_RE.match(ln)
+        if not m:
+            continue
+        t, lvl, msg = _when(m.group(1)), m.group(2), m.group(3)
+        x = re.search(r"net: listening on (\S+) \(([\d.]+)\)(?: - (\S+))?", msg)
+        if x:
+            d["listening"][x.group(1)] = {"name": x.group(1), "ipv4": x.group(2), "url": x.group(3) or "", "at": t}
+            continue
+        x = re.search(r"net: (\S+) \(([\d.]+)\) is gone", msg)
+        if x:
+            d["listening"].pop(x.group(1), None)
+            continue
+        x = re.search(r"net: the public IP is (\S+) \(from (\S+)\)", msg)
+        if x:
+            d["public"], d["public_from"], d["public_said"] = x.group(1), x.group(2), ""
+            continue
+        x = re.search(r"net: (looking up the public IP at \S+ failed: .*|the public IP could not be found.*)", msg)
+        if x:
+            d["public_said"] = x.group(1)
+        if lvl.lower() in ("warning", "error", "critical") and "OTHER UPnP ROUTER" not in msg:
+            d["said"].append({"at": t, "level": lvl.lower(), "words": msg})
+    for ln in lines:
+        x = re.search(r"OTHER UPnP ROUTER on the network: (\S+) announces NT=(\S+)", ln)
+        m = LOG_RE.match(ln)
+        if x:
+            row = {"addr": x.group(1), "nt": x.group(2), "at": _when(m.group(1)) if m else None}
+            d["other"] = [o for o in d["other"] if o["addr"] != row["addr"]] + [row]
+    d["listening"] = list(d["listening"].values())
+    d["said"] = d["said"][-6:]
+    return d
+
+
+# ---- the sockets (/proc/net) -------------------------------------------------------------------
+def _hex_addr(h):
+    ip, port = h.split(":")
+    if len(ip) == 8:
+        addr = socket.inet_ntop(socket.AF_INET, struct.pack("<I", int(ip, 16)))
+    else:
+        raw = bytes.fromhex(ip)
+        addr = socket.inet_ntop(socket.AF_INET6, b"".join(raw[i:i + 4][::-1] for i in range(0, 16, 4)))
+    return addr, int(port, 16)
+
+
+def sockets(ports):
+    """Who listens on these ports: [{proto, addr, port}] - TCP in LISTEN, UDP bound."""
+    out = []
+    for proto, f, want_state in (("tcp", "/proc/net/tcp", "0A"), ("tcp", "/proc/net/tcp6", "0A"),
+                                 ("udp", "/proc/net/udp", None), ("udp", "/proc/net/udp6", None)):
+        try:
+            with open(f) as fh:
+                next(fh)
+                for ln in fh:
+                    parts = ln.split()
+                    if len(parts) < 4 or (want_state and parts[3] != want_state):
+                        continue
+                    addr, port = _hex_addr(parts[1])
+                    if (proto, port) in ports:
+                        row = {"proto": proto, "addr": addr, "port": port}
+                        if row not in out:
+                            out.append(row)
+        except (OSError, ValueError, StopIteration):
+            continue
+    return out
+
+
+# ---- GET /api/upnp/here ---------------------------------------------------------------------------
+def here(ctx):
+    cfg = ctx.cfg
+    try:
+        svc = U.service_info()
+    except Exception:                                    # noqa: BLE001 - no systemd here
+        svc = {}
+    ifs = kernel_ifaces()
+    for r in ifs:
+        r["used"], r["why"] = uses(cfg, r)
+    lg = since_start(log_tail(cfg))
+    port = int(cfg.get("http_port") or 5000)
+    socks = sockets({("tcp", port), ("udp", 1900)})
+    ev = []
+    try:
+        ev = U.read_events(cfg, since=datetime.now().astimezone() - timedelta(hours=24))
+    except (SystemExit, Exception):                      # noqa: BLE001 - an unreadable log says nothing
+        ev = []
+    answered = collections.Counter()
+    for e in ev:
+        if e.get("action") == "AddPortMapping":
+            answered[e.get("result") or "ok"] += 1
+    ext = str(cfg.get("external_ip") or "auto")
+    public = {"set": ext, "now": ext if ext != "auto" else lg["public"],
+              "from": "set by hand (external_ip)" if ext != "auto" else (lg["public_from"] or ""),
+              "said": "" if ext != "auto" else lg["public_said"]}
+    listening = lg["listening"]
+    if not listening and svc.get("ActiveState") == "active":
+        listening = [{"name": r["name"], "ipv4": r["ipv4"], "url": "", "at": None} for r in ifs if r["used"]]
+    for x in listening:
+        x["url"] = x.get("url") or "http://%s:%d/rootDesc.xml" % (x["ipv4"], port)
+    return {
+        "node": _node(), "at": time.time(),
+        "service": {"state": svc.get("ActiveState", "unknown"), "sub": svc.get("SubState", "?"),
+                    "pid": svc.get("MainPID", "0"), "since": svc.get("ActiveEnterTimestamp", ""),
+                    "restarts": svc.get("NRestarts", "")},
+        "started": lg["started"], "mode": cfg.get("mode"), "mapping_response": cfg.get("mapping_response"),
+        "allowed_clients": cfg.get("allowed_clients") or [], "http_port": port,
+        "interfaces_set": cfg.get("interfaces") or [], "exclude_set": cfg.get("exclude_interfaces") or [],
+        "kernel": ifs, "listening": listening, "sockets": socks, "public": public, "other": lg["other"],
+        "said": lg["said"], "answered": dict(answered), "asked_24h": len(ev),
+        "rescan_s": cfg.get("interface_rescan_seconds"), "announce_s": cfg.get("notify_interval_seconds"),
+    }
+
+
+# ---- POST /api/upnp/try: asked as the PS5 asks --------------------------------------------------
+def _step(steps, what, fn):
+    t0 = time.time()
+    try:
+        ok, said, val = fn()
+    except Exception as e:                               # noqa: BLE001 - a step that broke is a failed step
+        ok, said, val = False, str(getattr(e, "reason", e)) or e.__class__.__name__, None
+    steps.append({"what": what, "ok": bool(ok), "said": said, "ms": int((time.time() - t0) * 1000)})
+    return ok, val
+
+
+def try_it(ctx):
+    me = ctx.need("fulladmin")
+    b = ctx.body()
+    add = str(b.get("add") or "")
+    if add not in ("", "udp", "tcp"):
+        raise ValueError("add: udp, tcp or nothing")
+    cfg = ctx.cfg
+    steps, t0 = [], time.time()
+    found = {}
+
+    def search():
+        got = U.ssdp_search(IGD_ST, 2.5)
+        found.update(got)
+        mine = [(s, l) for (s, l), h in got.items() if "fake-igd" in h.get("SERVER", "")]
+        others = sorted({s for (s, l), h in got.items() if "fake-igd" not in h.get("SERVER", "")})
+        words = "%d answer(s)" % len(got)
+        if mine:
+            words += " - fake-igd from %s" % ", ".join(sorted({s for s, _l in mine}))
+        if others:
+            words += " - ANOTHER UPnP router: %s (the PS5 may ask it instead)" % ", ".join(others)
+        if not got:
+            words = "nobody answered the multicast M-SEARCH (239.255.255.250:1900)"
+        return bool(mine), words, mine
+
+    ok, mine = _step(steps, "SSDP: M-SEARCH for an InternetGatewayDevice, as the PS5 sends it", search)
+    if not ok:
+        used = [r for r in kernel_ifaces() if uses(cfg, r)[0]]
+        for r in used:
+            def uni(r=r):
+                got = U.ssdp_search(IGD_ST, 1.5, r["ipv4"])
+                hit = [(s, l) for (s, l), h in got.items() if "fake-igd" in h.get("SERVER", "")]
+                return bool(hit), ("answers over unicast - multicast did not reach it: the firewall drops "
+                                   "udp 1900 (Settings - Firewall and access)" if hit else "no answer"), hit
+            okk, hit = _step(steps, "SSDP: unicast M-SEARCH to %s (%s)" % (r["ipv4"], r["name"]), uni)
+            if okk:
+                mine = hit
+                break
+    if not mine:
+        why = ("mode is passive - fake-igd only listens" if cfg.get("mode") == "passive" else
+               "allowed_clients does not let this server in" if cfg.get("allowed_clients") else
+               "fake-igd.service does not answer - is it running? (the log: Settings - About)")
+        return _tried(ctx, me, steps, t0, False, "fake-igd did not answer: %s" % why)
+    loc = sorted({l for _s, l in mine})[0]
+    holder = {}
+
+    def desc():
+        import urllib.request
+        with urllib.request.urlopen(loc, timeout=5) as r:
+            text = r.read().decode("utf-8", "replace")
+        holder["desc"] = text
+        return r.status == 200, "HTTP %d, %d bytes - %s" % (r.status, len(text), loc), text
+
+    ok, _t = _step(steps, "The device description (LOCATION)", desc)
+    if not ok:
+        return _tried(ctx, me, steps, t0, False, "the description could not be read - tcp %s let in?"
+                      % cfg.get("http_port"))
+
+    def control():
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(holder["desc"])
+        base = loc.rsplit("/", 1)[0]
+        for svc in root.iter():
+            if svc.tag.endswith("service"):
+                kids = {c.tag.rsplit("}", 1)[-1]: (c.text or "") for c in svc}
+                if "WANIPConnection" in kids.get("serviceType", ""):
+                    ctl = kids.get("controlURL", "")
+                    ctl = ctl if ctl.startswith("http") else base + ctl
+                    return True, ctl, ctl
+        return False, "no WANIPConnection service in the description", None
+
+    ok, ctl = _step(steps, "The WANIPConnection service (controlURL)", control)
+    if not ok:
+        return _tried(ctx, me, steps, t0, False, "the description has no WANIPConnection service")
+    for action, field in (("GetStatusInfo", "NewConnectionStatus"), ("GetExternalIPAddress", "NewExternalIPAddress")):
+        def soap(action=action, field=field):
+            code, text = U.soap_call(ctl, WAN_SVC, action)
+            val = U.xml_find(text, field)
+            good = code == 200 and (action != "GetExternalIPAddress" or bool(val))
+            return good, "HTTP %d, %s = %s%s" % (code, field, val or "(empty)", "" if good or code != 200 else
+                                                 " - set the public IP (How it answers)"), val
+        _step(steps, "SOAP %s" % action, soap)
+    if add:
+        def mapping():
+            lan = urllib.parse.urlparse(ctl).hostname
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect((lan, 1))
+                mine_ip = s.getsockname()[0]
+            finally:
+                s.close()
+            code, text = U.soap_call(ctl, WAN_SVC, "AddPortMapping", {
+                "NewRemoteHost": "", "NewExternalPort": 9, "NewProtocol": add.upper(), "NewInternalPort": 9,
+                "NewInternalClient": mine_ip, "NewEnabled": 1, "NewPortMappingDescription": "upnp-cli-test",
+                "NewLeaseDuration": 60})
+            if code == 200:
+                code2, _x = U.soap_call(ctl, WAN_SVC, "DeletePortMapping", {
+                    "NewRemoteHost": "", "NewExternalPort": 9, "NewProtocol": add.upper()})
+                return True, "accepted (nothing is opened) - DeletePortMapping: HTTP %d" % code2, None
+            return cfg.get("mapping_response") == "reject", "refused: HTTP %d, error %s (%s)" % (
+                code, U.xml_find(text, "errorCode"), U.xml_find(text, "errorDescription")), None
+        _step(steps, "SOAP AddPortMapping %s 9 (upnp-cli-test, left out of the ports)" % add.upper(), mapping)
+    good = all(s["ok"] for s in steps if not s["what"].startswith("SSDP: unicast"))
+    return _tried(ctx, me, steps, t0, good, "fake-igd answers as a UPnP router should" if good
+                  else "fake-igd answers, but not everything as it should - see the steps")
+
+
+def _tried(ctx, me, steps, t0, ok, said):
+    ctx.event("%s tried fake-igd as the PS5 asks it: %s" % (me["name"], said), "info" if ok else "warn")
+    return {"sent": ok, "said": said, "steps": steps, "took_ms": int((time.time() - t0) * 1000)}
+
+
+# ---- notifications (ntfy) ------------------------------------------------------------------------
+def _daemon():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "fake_igd_daemon", os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake-igd.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _ca_path():
+    a = _api()
+    folder = os.path.dirname(getattr(a, "CFG_PATH", "") or U.DEFAULT_CONFIG)
+    return os.environ.get("FAKE_IGD_NTFY_CA") or os.path.join(folder, "ntfy-ca.pem")
+
+
+PEM_RE = re.compile(r"-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----")
+
+
+def certs_of(text):
+    """[{subject, issuer, from, until, fingerprint, self_signed}] of every certificate in PEM text."""
+    out = []
+    for pem in PEM_RE.findall(text or ""):
+        try:
+            der = ssl.PEM_cert_to_DER_cert(pem)
+        except ValueError:
+            continue
+        info = {}
+        fd, tmp = tempfile.mkstemp(suffix=".pem")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(pem + "\n")
+            info = ssl._ssl._test_decode_cert(tmp)          # noqa: SLF001 - stdlib's own reader of a certificate
+        except Exception:                                  # noqa: BLE001
+            info = {}
+        finally:
+            os.unlink(tmp)
+
+        def name(seq):
+            parts = dict(x[0] for x in seq or () if x)
+            return parts.get("commonName") or ", ".join("%s=%s" % kv for kv in parts.items())
+        subj, iss = name(info.get("subject")), name(info.get("issuer"))
+        out.append({"subject": subj, "issuer": iss, "self_signed": bool(subj) and subj == iss,
+                    "from": info.get("notBefore", ""), "until": info.get("notAfter", ""),
+                    "fingerprint": hashlib.sha256(der).hexdigest(), "pem": pem})
+    return out
+
+
+def _until_iso(s):
+    try:
+        return datetime.utcfromtimestamp(ssl.cert_time_to_seconds(s)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (ValueError, OverflowError):
+        return s
+
+
+SEND_RE = re.compile(r"notify: (sent|sending) '(.*)' to (\S+?)(?: \((.*)\))?(?: failed: (.*))?$")
+
+
+def sends(cfg, most=60):
+    out = []
+    for ln in log_tail(cfg, 8 * 1024 * 1024):
+        m = LOG_RE.match(ln)
+        if not m or "notify:" not in m.group(3):
+            continue
+        x = SEND_RE.search(m.group(3))
+        if not x:
+            continue
+        title = x.group(2)
+        kind = ("another router" if "another router" in title else
+                "a test" if "test" in title.lower() else "a port")
+        out.append({"at": _when(m.group(1)), "title": title, "host": x.group(3), "ok": x.group(1) == "sent",
+                    "said": x.group(4) if x.group(1) == "sent" else (x.group(5) or ""), "kind": kind,
+                    "by": "fake-igd.service"})
+    return out[-most:]
+
+
+def ntfy_view(ctx):
+    cfg = ctx.cfg
+    try:
+        tests = json.loads(ctx.store.get_meta("ntfy:tests") or "[]")
+    except ValueError:
+        tests = []
+    rows = sends(cfg) + [dict(t, kind="a test", by=t.get("by") or "") for t in tests if isinstance(t, dict)]
+    rows.sort(key=lambda r: r.get("at") or 0, reverse=True)
+    url = str(cfg.get("ntfy_url") or "")
+    ca_file = str(cfg.get("ntfy_ca_file") or "")
+    ca = []
+    ca_said = ""
+    if ca_file:
+        try:
+            with open(ca_file, encoding="utf-8", errors="replace") as f:
+                ca = certs_of(f.read())
+        except OSError as e:
+            ca_said = "%s cannot be read: %s" % (ca_file, e.strerror or e)
+    for c in ca:
+        c.pop("pem", None)
+        c["from"], c["until"] = _until_iso(c["from"]), _until_iso(c["until"])
+    p = urllib.parse.urlparse(url) if url else None
+    auth = "a token" if cfg.get("ntfy_token") else ("user %s" % cfg.get("ntfy_user") if cfg.get("ntfy_user")
+                                                    else "none")
+    return {"on": bool(url), "url": url, "server": p.netloc if p else "", "topic": p.path.lstrip("/") if p else "",
+            "auth": auth, "priority": cfg.get("ntfy_priority"), "tags": cfg.get("ntfy_tags") or "",
+            "on_port": bool(url), "on_renew": bool(cfg.get("notify_on_renew")),
+            "on_other": bool(cfg.get("notify_other_router")), "ca_file": ca_file,
+            "ca_ours": bool(ca_file) and os.path.abspath(ca_file) == os.path.abspath(_ca_path()),
+            "ca_list": ca, "ca_said": ca_said, "sends": rows[:60], "at": time.time()}
+
+
+def ntfy_test(ctx, me, b):
+    cfg = dict(ctx.cfg)
+    if any(k.startswith(("ntfy_", "notify_")) for k in (b.get("dirty") or [])):
+        raise ValueError("save the notification settings first")
+    url = str(cfg.get("ntfy_url") or "").strip()
+    if not url:
+        raise ValueError("no ntfy topic URL yet - fill it in and save it first")
+    steps, t0 = [], time.time()
+    p = urllib.parse.urlparse(url)
+    host = p.hostname or ""
+    port = p.port or (443 if p.scheme == "https" else 80)
+    proxy = ""
+    try:
+        import igd_proxy
+        proxy = igd_proxy.url_for(None, "ntfy") or ""
+    except Exception:                                    # noqa: BLE001
+        proxy = ""
+    if proxy:
+        steps.append({"what": "Through the proxy", "ok": True, "said": re.sub(r"//[^@/]*@", "//", proxy), "ms": 0})
+    else:
+        addrs = []
+
+        def look():
+            got = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+            addrs[:] = sorted({g[4][0] for g in got})
+            return True, "%s - %s" % (host, ", ".join(addrs)), None
+        ok, _v = _step(steps, "Looked up", look)
+        if ok:
+            holder = {}
+
+            def conn():
+                s = socket.create_connection((host, port), timeout=8)
+                holder["s"] = s
+                return True, "%s:%d (%s)" % (host, port, s.getpeername()[0]), None
+            ok, _v = _step(steps, "Connected to", conn)
+            if ok and p.scheme == "https":
+                def tls():
+                    c = ssl.create_default_context(cafile=cfg.get("ntfy_ca_file") or None)
+                    t = c.wrap_socket(holder["s"], server_hostname=host)
+                    holder["s"] = t
+                    cert = t.getpeercert() or {}
+                    who = dict(x[0] for x in cert.get("subject", ()) if x).get("commonName", "?")
+                    by = dict(x[0] for x in cert.get("issuer", ()) if x).get("commonName", "?")
+                    return True, "%s, %s - %s, signed by %s, until %s%s" % (
+                        t.version(), (t.cipher() or ["?"])[0], who, by, cert.get("notAfter", "?"),
+                        " (the CA of your own)" if cfg.get("ntfy_ca_file") else ""), None
+                ok, _v = _step(steps, "TLS", tls)
+            try:
+                holder.get("s") and holder["s"].close()
+            except OSError:
+                pass
+        if not ok:
+            return _ntfy_done(ctx, me, steps, t0, False, steps[-1]["said"] if steps else "not sent")
+    title = "fake-igd test"
+    words = "A test notification from the fake-igd pages on %s, asked by %s." % (socket.gethostname(), me["name"])
+
+    def send():
+        good, said = _daemon().ntfy_send(cfg, title, words, tags="white_check_mark", timeout=15)
+        return good, "%s as %s - %s" % (url, "a token" if cfg.get("ntfy_token") else (
+            "user " + str(cfg.get("ntfy_user")) if cfg.get("ntfy_user") else "nobody (no sign-in)"), said), None
+    ok, _v = _step(steps, "Sent to the topic", send)
+    return _ntfy_done(ctx, me, steps, t0, ok, steps[-1]["said"])
+
+
+def _ntfy_done(ctx, me, steps, t0, ok, said):
+    took = int((time.time() - t0) * 1000)
+    try:
+        tests = json.loads(ctx.store.get_meta("ntfy:tests") or "[]")
+    except ValueError:
+        tests = []
+    host = urllib.parse.urlparse(str(ctx.cfg.get("ntfy_url") or "")).netloc
+    tests = ([t for t in tests if isinstance(t, dict)] + [{"at": time.time(), "title": "fake-igd test", "host": host,
+                                                          "ok": ok, "said": said, "by": me["name"]}])[-TESTS_KEPT:]
+    ctx.store.set_meta("ntfy:tests", json.dumps(tests))
+    ctx.event("%s sent a test notification: %s" % (me["name"], said), "info" if ok else "warn", kind="notify")
+    return {"sent": ok, "said": said, "steps": steps, "took_ms": took}
+
+
+def ntfy_post(ctx):
+    me = ctx.need("fulladmin")
+    b = ctx.body()
+    action = b.get("action")
+    if action == "test":
+        return ntfy_test(ctx, me, b)
+    if action != "ca":
+        raise ValueError("no such action")
+    a = _api()
+    if a is None:
+        raise ValueError("the API cannot save config.json from here")
+    path = _ca_path()
+    if b.get("mode") == "drop":
+        was = str(ctx.cfg.get("ntfy_ca_file") or "")
+        a.settings_save({"ntfy_ca_file": ""}, me["name"], ctx.addr)
+        if was and os.path.abspath(was) == os.path.abspath(path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        ctx.event("%s took the certificate authority of the ntfy server away" % me["name"], kind="notify")
+        return {"message": "taken away - the ntfy server is checked against the system's authorities again"}
+    if b.get("mode") != "add":
+        raise ValueError("add or drop")
+    text = str(b.get("ca") or "")
+    if len(text) > 256 * 1024:
+        raise ValueError("that is more than a chain of certificates")
+    new = certs_of(text)
+    if not new:
+        raise ValueError("no certificate in that (-----BEGIN CERTIFICATE----- ... -----END CERTIFICATE-----)")
+    have = []
+    cur = str(ctx.cfg.get("ntfy_ca_file") or "")
+    if cur and os.path.abspath(cur) == os.path.abspath(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                have = certs_of(f.read())
+        except OSError:
+            have = []
+    seen = {c["fingerprint"] for c in have}
+    keep = have + [c for c in new if c["fingerprint"] not in seen]
+    folder = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".ntfy-ca-", dir=folder)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(c["pem"] for c in keep) + "\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    if cur != path:
+        a.settings_save({"ntfy_ca_file": path}, me["name"], ctx.addr)
+    added = len(keep) - len(have)
+    ctx.event("%s added %d certificate(s) of the ntfy server's authority (%s)" % (
+        me["name"], added, ", ".join(c["subject"] for c in new)), kind="notify")
+    return {"message": "%d added - %d kept in %s" % (added, len(keep), path)}
+
+
+# ---- GET /api/upnp/logs ------------------------------------------------------------------------
+def _size(path):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return None
+
+
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def _lines(path, most=64 * 1024 * 1024):
+    n = 0
+    try:
+        with open(path, "rb") as f:
+            while True:
+                b = f.read(1024 * 1024)
+                if not b:
+                    break
+                n += b.count(b"\n")
+                most -= len(b)
+                if most <= 0:
+                    return None
+    except OSError:
+        return None
+    return n
+
+
+def _dir_size(path):
+    total, files = 0, 0
+    for root, _dirs, names in os.walk(path):
+        for n in names:
+            try:
+                total += os.lstat(os.path.join(root, n)).st_size
+                files += 1
+            except OSError:
+                pass
+    return total, files
+
+
+def _disk(path):
+    p = path
+    while p and not os.path.exists(p):
+        p = os.path.dirname(p)
+    try:
+        st = os.statvfs(p or "/")
+    except OSError:
+        return None
+    total = st.f_blocks * st.f_frsize
+    free = st.f_bavail * st.f_frsize
+    mount = os.path.abspath(p or "/")
+    while not os.path.ismount(mount):
+        mount = os.path.dirname(mount)
+    return {"path": mount, "total": total, "free": free,
+            "pct": round(100.0 * (total - free) / total, 1) if total else 0}
+
+
+def logs(ctx):
+    cfg = ctx.cfg
+    lf, rl, sd = cfg.get("log_file") or "", cfg.get("request_log") or "", cfg.get("state_dir") or ""
+    db = os.environ.get("FAKE_IGD_DB") or os.path.join(sd, "fake-igd.db")
+    files = []
+
+    def add(what, path, lines=False, says=""):
+        files.append({"what": what, "path": path, "size": _size(path), "at": _mtime(path),
+                      "lines": _lines(path) if lines else None, "there": os.path.exists(path), "says": says})
+    add("The main log", lf, True, "what fake-igd.service does: SSDP, ports, interfaces, notifications")
+    add("The request log", rl, True, "every SOAP request, one JSON line each - the ports, requests and clients tabs")
+    old = []
+    for base in {lf, rl}:
+        if not base:
+            continue
+        for p in glob.glob(base + ".*") + glob.glob(os.path.join(os.path.dirname(base), "old-*")):
+            if p not in old and os.path.isfile(p):
+                old.append(p)
+    old_size = sum(_size(p) or 0 for p in old)
+    st_size, st_files = _dir_size(sd) if sd and os.path.isdir(sd) else (None, 0)
+    add("The mappings", os.path.join(sd, "mappings.json"), False, "the mappings a client holds now")
+    add("The database", db, False, "accounts, sessions, events and the settings of the panes")
+    disks = []
+    for p in (lf, rl, sd):
+        d = _disk(p) if p else None
+        if d and d["path"] not in [x["path"] for x in disks]:
+            disks.append(d)
+    return {"node": _node(), "at": time.time(), "level": cfg.get("log_level"), "files": files,
+            "rotated": {"count": len(old), "size": old_size,
+                        "newest": max((_mtime(p) or 0 for p in old), default=None)},
+            "state": {"path": sd, "size": st_size, "files": st_files}, "disks": disks,
+            "logrotate": os.path.isfile("/etc/logrotate.d/fake-igd")}
+
+
+ROUTES = {
+    ("GET", "/api/upnp/here"): here,
+    ("POST", "/api/upnp/try"): try_it,
+    ("GET", "/api/upnp/ntfy"): ntfy_view,
+    ("POST", "/api/upnp/ntfy"): ntfy_post,
+    ("GET", "/api/upnp/logs"): logs,
+}

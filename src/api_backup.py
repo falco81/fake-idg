@@ -4,6 +4,7 @@ A backup is everything that makes this installation what it is, in one file
 fake-igd-backup-SITE-NODE-YYYYMMDD-HHMMSS.tar.gz.enc:
 
   fake-igd.db       the whole database (SQLite's backup API: whole while it is written to)
+  secrets.key       the key its secrets are sealed with (igd_seal)
   config.json       /etc/fake-igd/config.json
   mappings.json     what the service has handed out (to read)
   system/...        what only root may read, collected by root (deploy/root_backup.py):
@@ -83,11 +84,11 @@ def _hhmm(v):
 
 
 SETTINGS = [
-    {"key": "rbackup", "name": "Backups on a schedule", "kind": "bool", "default": False,
-     "says": "A backup made and sent to every destination switched on, at the time below. Without it, only "
-             "<b>Back up now</b> sends one."},
+    {"key": "rbackup", "name": "Backups to the destinations on a schedule", "kind": "bool", "default": False,
+     "says": "This machine makes its backup and sends it to every destination switched on, at the time below. "
+             "Without it, only Back up now sends one."},
     {"key": "rbackup_at", "name": "At", "kind": "text", "default": "04:15", "check": _hhmm,
-     "says": "When, as <code>HH:MM</code> on this machine's clock.", "only_when": ("rbackup", True)},
+     "says": "When, as <code>HH:MM</code> on this machine’s clock.", "only_when": ("rbackup", True)},
     {"key": "rbackup_every", "name": "How often", "kind": "choice", "default": "daily",
      "choices": [("daily", "daily"), ("weekly", "weekly")], "says": "daily, or weekly on the day below.",
      "only_when": ("rbackup", True)},
@@ -95,18 +96,19 @@ SETTINGS = [
      "says": "The day of a weekly backup: 1 is Monday, 7 Sunday.", "only_when": ("rbackup_every", "weekly")},
     {"key": "rbackup_keep", "name": "Backups kept at each destination", "kind": "int", "default": 30,
      "min": 1, "max": 1000,
-     "says": "How many of this machine's backups each destination keeps; the oldest go first, the newest never."},
+     "says": "How many of this machine’s backups each destination keeps; the oldest go first, the newest never."},
     {"key": "rbackup_keep_days", "name": "And none older than (days)", "kind": "int", "default": 0,
      "min": 0, "max": 3650, "says": "Older ones are taken away too - 0: only the count above decides."},
     {"key": "rbackup_password", "name": "The password of the backups", "kind": "secret", "default": "",
-     "says": "Every backup is locked with it (AES-256, opened by these pages or by openssl alone). Keep it apart "
-             "from the backups - in a password vault: without it nobody, you included, opens them. Empty: "
-             "nothing is sent."},
+     "says": "Every backup is locked with it (AES-256, opened with fake-igd or with openssl alone). Keep it apart "
+             "from the backups as well - in a password vault: without it nobody, you included, opens them. Empty: "
+             "nothing is sent - an unlocked backup would hand every account's hash to whoever reads it."},
     {"key": "rbackup_verify", "name": "Try the backups", "kind": "choice", "default": "off",
      "choices": [("off", "only by hand"), ("after", "after every backup, the one just sent"),
-                 ("weekly", "once a week, the newest")],
-     "says": "The newest backup fetched back, opened with the password, every file checked and the database "
-             "read through - nothing is put back."},
+                 ("weekly", "once a week, the newest one")],
+     "says": "The newest backup fetched back, opened with the password, every file checked, the database read "
+             "through and the secrets tried against the key in it - nothing is put back. After every backup, or "
+             "once a week."},
 ]
 
 
@@ -871,6 +873,7 @@ cd {base}
 sha256sum -c <(python3 -c 'import json;[print(v["sha256"]+"  "+k) for k,v in json.load(open("manifest.json"))["files"].items()]')
 sudo systemctl stop fake-igd fake-igd-api
 sudo install -o fake-igd -g fake-igd -m 0640 fake-igd.db /var/lib/fake-igd/fake-igd.db
+sudo install -o fake-igd -g fake-igd -m 0600 secrets.key /var/lib/fake-igd/secrets.key
 sudo rm -f /var/lib/fake-igd/fake-igd.db-wal /var/lib/fake-igd/fake-igd.db-shm
 sudo install -o root -g fake-igd -m 0664 config.json /etc/fake-igd/config.json
 sudo cp system/etc/avahi/avahi-daemon.conf /etc/avahi/avahi-daemon.conf
@@ -892,6 +895,7 @@ to read: the chain FAKE-IGD-IN is made again from config.json by the step above.
 | File | |
 |---|---|
 | fake-igd.db | the database: accounts, events, the settings saved on the pages, the destinations of the backups |
+| secrets.key | the key the secrets in the database are sealed with (the destinations' passwords, the mail server's, the proxy's, the ACME account key) |
 | config.json | /etc/fake-igd/config.json |
 | mappings.json | what the service had handed out |
 | system/ | the system's files, collected by root |
@@ -942,6 +946,10 @@ def build(ctx, work, collected, progress):
         shutil.copyfile(cfg_path(), os.path.join(inner, "config.json"))
     except OSError as e:
         raise RbError("%s cannot be read: %s" % (cfg_path(), e))
+    kp = SEAL.key_path(ctx.store)
+    if os.path.isfile(kp):                                  # the key that opens the secrets in the database
+        shutil.copyfile(kp, os.path.join(inner, "secrets.key"))
+        os.chmod(os.path.join(inner, "secrets.key"), 0o600)
     mp = os.path.join(ctx.cfg.get("state_dir") or "/var/lib/fake-igd", "mappings.json")
     if os.path.isfile(mp):
         shutil.copyfile(mp, os.path.join(inner, "mappings.json"))
@@ -1269,6 +1277,8 @@ def verify(ctx, by, tid=None, name=None, progress=None):
         says = db_module().read_db(os.path.join(x, "fake-igd.db"))
         check("the database is whole, with a full admin", True, "%s account(s), %s event(s)"
               % (says["counts"].get("users"), says["counts"].get("events")))
+        sealed_ok, sealed_said = secrets_open(os.path.join(x, "fake-igd.db"), os.path.join(x, "secrets.key"))
+        check("its secrets open with the key in it", sealed_ok, sealed_said)
         check("config.json reads", _json_ok(os.path.join(x, "config.json")))
         check("the system's files are in it", bool(m.get("system")), "" if m.get("system") else
               "made without them (root did not answer)")
@@ -1284,6 +1294,33 @@ def verify(ctx, by, tid=None, name=None, progress=None):
                                                     "it can be put back" if row["ok"] else "NOT GOOD: " +
                                                     row["checks"][-1]["said"]), "info" if row["ok"] else "warn")
     return row
+
+
+def secrets_open(dbfile, keyfile):
+    """(ok, words): every sealed secret in a backup's database tried against the key beside it - as otp
+    tries the tokens against the key in a backup."""
+    import sqlite3 as _sq
+    try:
+        conn = _sq.connect("file:%s?mode=ro" % dbfile, uri=True)
+        try:
+            rows = conn.execute("SELECT k, v FROM meta").fetchall()
+        finally:
+            conn.close()
+    except _sq.Error as e:
+        return False, str(e)
+    sealed = []
+    for _k, v in rows:
+        sealed += re.findall(r"sealed:[12]:[A-Za-z0-9_=-]+", str(v or ""))
+    if not sealed:
+        return True, "no secret sealed in it"
+    try:
+        with open(keyfile, encoding="ascii") as f:
+            k = bytes.fromhex(f.read().strip())
+    except (OSError, ValueError):
+        return False, "%d secret(s) sealed, and no secrets.key in it" % len(sealed)
+    bad = sum(1 for v in sealed if v.startswith("sealed:1:") and SEAL.unseal_with(k, v) is None)
+    return not bad, ("%d secret(s), every one opens" % len(sealed)) if not bad else \
+        "%d of %d secret(s) do not open with its key" % (bad, len(sealed))
 
 
 def _json_ok(p):
@@ -1379,7 +1416,11 @@ def restore(ctx, by, src, pw, progress=None):
         dbm = db_module()
         progress(3, "the database put back")
         says = dbm.read_db(os.path.join(x, "fake-igd.db"))
-        got = dbm.restore_from(ctx, os.path.join(x, "fake-igd.db"), what)
+        key_hex = None
+        if os.path.isfile(os.path.join(x, "secrets.key")):
+            with open(os.path.join(x, "secrets.key"), encoding="ascii") as f:
+                key_hex = f.read().strip()
+        got = dbm.restore_from(ctx, os.path.join(x, "fake-igd.db"), what, key_hex)
         out["safety"] = got["safety"]
         out["said"].append("the database: %s account(s), %s event(s)" % (says["counts"].get("users"),
                                                                        says["counts"].get("events")))

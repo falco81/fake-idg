@@ -354,7 +354,7 @@ def follow(M, ident):
 
 
 # ---- the accounts of the web pages ---------------------------------------------------
-def _password_from(M, given, name):
+def _password_from(M, given, name, least=None):
     """`-`: asked twice on the terminal; @env: UPNP_PASSWORD; nothing: one is made and printed."""
     import igd_store as ST
     if given == "-":
@@ -363,13 +363,13 @@ def _password_from(M, given, name):
         b = getpass.getpass("again: ")
         if a != b:
             M.fail("those two are not the same")
-        bad = ST.password_problem(a)
+        bad = ST.password_problem(a, least)
         if bad:
             M.fail(bad)
         return a, False
     if given == "@env":
         v = os.environ.get("UPNP_PASSWORD", "")
-        bad = ST.password_problem(v)
+        bad = ST.password_problem(v, least)
         if bad:
             M.fail("UPNP_PASSWORD: %s" % bad)
         return v, False
@@ -380,11 +380,20 @@ def _password_from(M, given, name):
     return secrets.token_urlsafe(12), True
 
 
+def _span(sec):
+    sec = max(0, int(sec))
+    return "%d min %02d s" % (sec // 60, sec % 60) if sec >= 60 else "%d s" % sec
+
+
 def cmd_user(M, args, cfg):
+    """upnp user - the accounts of the web pages, as Settings → Accounts has them (otp's --users,
+    --add-user, --passwd, --set-role, --del-user, --disable-user, --enable-user, --reset-2fa,
+    --lockouts, --lockouts-clear)."""
     import igd_store as ST
     what = args.what or "list"
+    what = {"disable": "off", "enable": "on", "lockouts-clear": "clear", "unlock": "clear"}.get(what, what)
     p = M.PAL
-    if what in ("list", "sessions"):
+    if what in ("list", "sessions", "lockouts"):
         def go():
             s = store_of(M, cfg)
             if what == "sessions":
@@ -394,16 +403,34 @@ def cmd_user(M, args, cfg):
                     return 0
                 M.table(["ID", "ACCOUNT", "FROM", "SIGNED IN", "LAST SEEN", "BROWSER"],
                         [[M.col(r["id"], M.C.dim), M.col(r["name"], M.C.bold), M.col(r["addr"], M.C.magenta),
-                          _when(r["created"]), _when(r["seen"]), (r["agent"] or "")[:50]] for r in rows],
+                          _when(r["created"]) + (" (second step)" if r.get("mfa") else ""), _when(r["seen"]),
+                          (r["agent"] or "")[:50]] for r in rows],
                         "nobody is signed in to the pages")
+                return 0
+            if what == "lockouts":
+                rows = s.lockouts()
+                if args.json:
+                    print(json.dumps(rows, indent=2, default=str))
+                    return 0
+                now = time.time()
+                M.table(["STATE", "WHO", "BY", "HOW MANY", "TRIED", "LAST"],
+                        [[M.col("locked out, %s left" % _span(r["until"] - now), M.C.red) if r["locked"]
+                          else M.col("counting, forgotten in %s" % _span(r["forgets"] - now), M.C.yellow),
+                          M.col(r["who"] or "(no name)", M.C.bold), r["by"], "%d / %d" % (r["fails"], r["limit"]),
+                          ", ".join(r["others"][-4:]) or "-", _when(r["last"])] for r in rows],
+                        "nobody is locked out, and no wrong attempt is being counted")
                 return 0
             rows = s.users()
             if args.json:
                 print(json.dumps(rows, indent=2, default=str))
                 return 0
-            M.table(["NAME", "ROLE", "SIGNED IN NOW", "LAST SIGN-IN", "FROM", "NOTE"],
+            on = s.policy()["admin_2fa"]
+            M.table(["NAME", "ROLE", "STATE", "SECOND STEP", "SIGNED IN NOW", "LAST SIGN-IN", "FROM", "NOTE"],
                     [[M.col(r["name"], M.C.bold),
                       M.col(r["role_words"], M.C.magenta if r["role"] == "fulladmin" else M.C.dim),
+                      (M.col("off", M.C.red) if r["disabled"] else M.col("on", M.C.green))
+                      + (" (to change its password)" if r["must_change"] else ""),
+                      M.col("an app", M.C.green) if r["mfa"] else ("set up at the next sign-in" if on else "-"),
                       M.col(r["sessions"], M.C.green) if r["sessions"] else M.col("-", M.C.dim),
                       _when(r["last_login"]), r["last_from"] or "-", r["note"] or ""] for r in rows],
                     "no account yet - make one: sudo upnp user add NAME")
@@ -413,7 +440,7 @@ def cmd_user(M, args, cfg):
         return as_app(go)
     M.require_root("Changing the accounts of the web pages")
     name = args.name
-    if what in ("add", "passwd", "role", "del", "note") and not name:
+    if what in ("add", "passwd", "role", "del", "note", "off", "on", "reset-2fa", "must-change") and not name:
         M.fail("which account? upnp user %s NAME" % what)
     pw, made = ("", False)
     if what in ("add", "passwd"):
@@ -421,42 +448,72 @@ def cmd_user(M, args, cfg):
     if what == "del" and not args.yes and not _ask("take the account %s away?" % name):
         print("  nothing done")
         return 1
+    if what == "reset-2fa" and not args.yes and not _ask(
+            "%s sets the second step up again at the next sign-in - with the password alone. Go on?" % name):
+        print("  nothing done")
+        return 1
 
     def go():
         s = store_of(M, cfg)
+        by = who_runs()
         try:
             if what == "add":
-                s.add_user(name, pw, args.role or "fulladmin", args.note or "")
-                s.add_event("account", "%s made the account %s (%s)" % (who_runs(), name, args.role or "fulladmin"),
-                            "info", who_runs())
+                s.add_user(name, pw, args.role or "fulladmin", args.note or "", must_change=made)
+                s.add_event("account", "%s made the account %s (%s)" % (by, name, args.role or "fulladmin"),
+                            "info", by)
                 M.ok("%s may sign in to the pages, as %s" % (name, ST.ROLE_WORDS[args.role or "fulladmin"]))
             elif what == "passwd":
-                s.set_password(name, pw)
-                for x in s.sessions():
-                    if x["name"].lower() == name.lower():
-                        s.end_session(x["id"])
-                s.add_event("account", "%s gave %s a new password" % (who_runs(), name), "info", who_runs())
+                s.set_password(name, pw, must_change=made)
+                s.end_sessions_of(name)
+                s.add_event("account", "%s set a new password for %s; their sign-ins are ended" % (by, name), "warn",
+                            by)
                 M.ok("%s has a new password (its sign-ins are ended)" % name)
             elif what == "role":
                 if args.role not in ST.ROLES:
                     M.fail("--role fulladmin or readonly")
                 s.set_role(name, args.role)
-                s.add_event("account", "%s made %s %s" % (who_runs(), name, ST.ROLE_WORDS[args.role]), "info",
-                            who_runs())
+                s.add_event("account", "%s made %s %s" % (by, name, ST.ROLE_WORDS[args.role]), "info", by)
                 M.ok("%s is %s" % (name, ST.ROLE_WORDS[args.role]))
             elif what == "note":
                 s.set_note(name, args.note or "")
                 M.ok("kept")
+            elif what == "must-change":
+                s.set_must_change(name, True)
+                s.add_event("account", "%s asked %s to change the password at the next sign-in" % (by, name),
+                            "info", by)
+                M.ok("%s chooses a new password at the next sign-in" % name)
+            elif what in ("off", "on"):
+                s.set_disabled(name, what == "off")
+                s.add_event("account", "%s switched %s %s" % (by, name, what), "warn" if what == "off" else "info",
+                            by)
+                M.ok("%s is switched %s%s" % (name, what, " - its sign-ins are ended" if what == "off" else ""))
+            elif what == "reset-2fa":
+                had = s.mfa_reset(name)
+                s.add_event("account", "%s reset the second step of %s; their sign-ins are ended" % (by, name),
+                            "warn", by)
+                M.ok("the second step of %s is reset: set up again at the next sign-in" % name if had
+                     else "%s had no second step set up" % name)
             elif what == "del":
                 s.delete_user(name)
-                s.add_event("account", "%s took the account %s away" % (who_runs(), name), "warn", who_runs())
+                s.add_event("account", "%s removed the account %s" % (by, name), "warn", by)
                 M.ok("%s is gone" % name)
             elif what == "end":
                 s.end_session(name)
                 M.ok("that sign-in is over")
+            elif what == "clear":
+                if name:
+                    n = s.clear_fails("name", name) + s.clear_fails("address", name)
+                    if not n:
+                        M.fail("nothing is counted for %s" % name)
+                else:
+                    n = s.clear_all_fails()
+                s.add_event("sign-in", "%s cleared %s" % (by, ("the count of wrong attempts of %s" % name) if name
+                                                          else "every count of wrong attempts (%d)" % n), "warn", by)
+                M.ok("cleared - %s may try again at once" % (name or "every one"))
             else:
-                M.fail("upnp user list | add NAME | passwd NAME | role NAME --role R | note NAME | del NAME | "
-                       "sessions | end ID")
+                M.fail("upnp user list | add NAME | passwd NAME | role NAME --role R | note NAME | must-change NAME | "
+                       "off NAME | on NAME | reset-2fa NAME | del NAME | sessions | end ID | lockouts | "
+                       "clear [NAME|ADDRESS]")
         except ST.StoreError as e:
             M.fail(str(e))
         if made:
@@ -464,7 +521,7 @@ def cmd_user(M, args, cfg):
             print("    %s %s" % (p.good("name:    "), name))
             print("    %s %s" % (p.good("password:"), pw))
             print()
-            M.warn("Write that down now - it is not shown again.")
+            M.warn("Write that down now - it is not shown again. It is changed at the first sign-in.")
         return 0
     return as_app(go)
 

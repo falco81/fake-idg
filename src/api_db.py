@@ -555,7 +555,9 @@ def view(ctx):
             "last_copy": float(last_copy) if last_copy else None,
             "events_keep_days": int(ctx.setting("events_keep_days") or 0),
             "tidied": float(tidied) if tidied else None, "disk": disk, "growth": grew, "parts": parts,
-            "key": kp, "key_there": os.path.isfile(kp), "erasable": erasable(ctx)}
+            "key": kp, "key_there": os.path.isfile(kp), "erasable": erasable(ctx),
+            "config_file": getattr(__import__("sys").modules.get("__main__"), "CFG_PATH", None)
+            or os.environ.get("FAKE_IGD_CONFIG", "/etc/fake-igd/config.json")}
 
 
 # ---- the routes ------------------------------------------------------------------------
@@ -764,6 +766,10 @@ def on_saved(ctx, changed):
 def background(ctx):
     """A copy once a day at db_copy_at; the events trimmed once an hour."""
     now = time.time()
+    try:
+        SEAL.key(ctx.store, make=True)                  # the key beside the database, as otp makes it at its start
+    except OSError as e:
+        ctx.event("the key that seals the secrets: %s" % e, "warn")
     if ctx.setting("db_copy_daily"):
         at = str(ctx.setting("db_copy_at") or "03:30")
         today = time.strftime("%Y-%m-%d")

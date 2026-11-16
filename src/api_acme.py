@@ -605,6 +605,49 @@ def names_of(ctx):
     return out[:100]
 
 
+def names_source(ctx):
+    """Where the names come from, said plainly: the setting, or nginx's server_name (empty setting)."""
+    given = ctx.setting("acme_names") or []
+    if isinstance(given, str):
+        given = [x for x in re.split(r"[,\s]+", given) if x.strip()]
+    return "setting" if given else ("nginx" if names_from_nginx() else "")
+
+
+def names_words(src, names):
+    if src == "nginx":
+        return "from nginx's server_name: %s - The names of the certificate is empty" % ", ".join(names)
+    if src == "setting":
+        return "from The names of the certificate: %s" % ", ".join(names)
+    return "none: The names of the certificate is empty and nginx's server_name has no full DNS name"
+
+
+NXDOMAIN_RE = re.compile(r"(?i)(?:NXDOMAIN looking up (?:TXT|A|AAAA|CAA) for|No TXT record found at|"
+                         r"no valid TXT records? found for|Incorrect TXT record .{0,80}? found at)\s+"
+                         r"([A-Za-z0-9*_.-]+)")
+
+
+def missing_words(words, names, src, http):
+    """A failure where the CA found no record: which exact record is missing, and where the name came
+    from - a CNAME made for another name than the one ordered does not help (a real case: the names
+    came from nginx's server_name, mdsn..., the CNAME was made for mdns...)."""
+    m = NXDOMAIN_RE.search(words or "")
+    if not m and "NXDOMAIN" not in (words or "") and "no TXT" not in (words or "") and "No TXT" not in (words or ""):
+        return ""
+    rec = (m.group(1) if m else "").rstrip(".-")
+    name = rec[len("_acme-challenge."):] if rec.startswith("_acme-challenge.") else rec
+    if not name:
+        name = next((n for n in names if not n.startswith("*.")), names[0] if names else "?")
+    if http:
+        miss = "%s has no A/AAAA record (NXDOMAIN) - the CA cannot reach it on port 80" % name
+    else:
+        miss = "the record %s is missing - the TXT record (or the CNAME to where fake-igd puts it) for %s" % (
+            rec if rec.startswith("_acme-challenge.") else "_acme-challenge." + name.lstrip("*."), name)
+    where = ("the name %s is taken from nginx's server_name, because The names of the certificate is empty - "
+             "if it is not the name meant, give the right one there (Its names…)" % name) if src == "nginx" else \
+        ("%s is in The names of the certificate - is it spelled as in your DNS?" % name)
+    return ("%s; %s. In your DNS → Check DNS shows each record." % (miss, where)).replace("?.", "?")
+
+
 def state(store):
     return _meta(store, "acme:state") or {}
 
@@ -752,7 +795,10 @@ def order(ctx, names, by):
         if not isinstance(e, (AcmeError, ValueError, OSError)):
             e = AcmeError("%s: %s" % (type(e).__name__, e))
         words = str(e)
-        if "NXDOMAIN" in words and c.get("acme_challenge") == "dns-01":
+        miss = missing_words(words, names, names_source(ctx), c.get("acme_challenge") != "dns-01")
+        if miss:
+            words = miss + " (the CA said: %s)" % words[:300]
+        elif "NXDOMAIN" in words and c.get("acme_challenge") == "dns-01":
             words += (" - the CA does not find the record: In your DNS → Check DNS, with DNS servers for ACME set "
                       "to public ones (1.1.1.1), shows where the way to it stops")
         say("it did not go: %s" % words[:280])
@@ -1356,7 +1402,8 @@ def dns_guide(ctx, c=None):
         else:
             rows.append({"name": name, "type": "TXT", "record": rr, "value": "",
                          "why": "nothing to do: fake-igd puts it in and takes it away"})
-    return {"rows": rows, "challenge": "http-01" if http else "dns-01", "dns": how}
+    return {"rows": rows, "challenge": "http-01" if http else "dns-01", "dns": how, "names_from": names_source(ctx),
+            "names_words": names_words(names_source(ctx), names_of(ctx))}
 
 
 def dns_check(ctx):
@@ -1372,7 +1419,8 @@ def dns_check(ctx):
                 want = r["value"].rstrip(".").lower()
                 r["found"] = got[0] + "." if got else ""
                 r["ok"] = bool(got) and got[0].rstrip(".") == want
-                r["said"] = "there" if r["ok"] else ("it points elsewhere: %s" % r["found"] if got else "not there yet")
+                r["said"] = "there" if r["ok"] else ("it points elsewhere: %s" % r["found"] if got else
+                                                     "not there: no CNAME at %s" % r["record"])
             elif r["check"] == "ns":
                 _rc, recs = dns_ask_rc(c, r["record"], 2)
                 got = sorted(x[1] for x in recs if x[0] == "NS")
@@ -1390,9 +1438,17 @@ def dns_check(ctx):
                             raise
                 r["found"] = ", ".join(got)
                 r["ok"] = bool(got)
-                r["said"] = "it points at %s" % r["found"] if got else "not there"
+                r["said"] = "it points at %s" % r["found"] if got else "not there: %s has no A/AAAA record" % r["record"]
         except OSError as e:
             r.update(ok=False, said="could not be looked up: %s" % str(e)[:120])
+    src = names_source(ctx)
+    if src == "nginx":
+        for r in g["rows"]:
+            if r.get("check") and r.get("ok") is False and not r.get("zone"):
+                r["said"] += (" - %s is nginx's server_name (The names of the certificate is empty): a record made "
+                              "for another name does not count; give that name in The names of the certificate"
+                              % r["name"])
+    g["names_from"] = src
     g["at"] = time.time()
     g["resolvers"] = resolvers(c) or ["this machine's DNS"]
     g["own_resolvers"] = bool(resolvers(c))
@@ -1451,6 +1507,7 @@ def view(ctx):
     ari = _meta(ctx.store, "acme:ari") or {}
     return {"on": bool(c.get("acme")), "may": (ctx.me or {}).get("role") == "fulladmin", "days": c.get("acme_days"),
             "names": names, "names_given": bool(c.get("acme_names")), "names_nginx": names_from_nginx(),
+            "names_from": names_source(ctx), "names_words": names_words(names_source(ctx), names),
             "card": {"name": ", ".join(names), "state": st, "how": how_now(ctx.store),
                      "subject": info.get("subject"), "issuer": info.get("issuer"), "not_after": info.get("not_after"),
                      "keys": keys, "care": care(ctx.store), "wanted": bool(names), "before": T.before_acme(),

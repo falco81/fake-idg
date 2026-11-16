@@ -119,7 +119,7 @@
     /* The notice: its words, and where it is shown as three ticks. */
     var words = plain(item('sshd_notice'));
     if (words) {
-      var ta = boxOf('sshd_notice');
+      var ta = words.querySelector('textarea, input');
       ta.rows = 6;
       ta.classList.add('mono', 'sd-notice');
       ta.placeholder = 'Authorised use only. Every connection is logged.';
@@ -130,7 +130,7 @@
     var wh = el('div', 'sd-where');
     WHERE.forEach(function (o) {
       var it = item(o[0]);
-      var sw = boxOf(o[0]);
+      var sw = it && it.querySelector('label.sw');
       if (!it || !sw) return;
       it.hidden = true;
       nh.appendChild(it);
