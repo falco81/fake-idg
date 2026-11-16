@@ -48,13 +48,15 @@
           tr.appendChild(noI18n(el('td', 'mono', x.name)));
           tr.appendChild(noI18n(el('td', 'mono', x.ipv4)));
           var td = el('td');
-          td.appendChild(noI18n(el('span', 'mono small', x.url)));
+          var line = el('div', 'copyline');
+          line.appendChild(noI18n(el('span', 'mono small', x.url)));
           var cp = iconButton('copy', 'Copy the address');
           cp.onclick = function () { copyText(x.url, cp, 'copied'); };
-          td.appendChild(cp);
+          line.appendChild(cp);
+          td.appendChild(line);
           tr.appendChild(td);
           return tr;
-        }, 'plain'));
+        }, 'plain if-list'));
       }
       (d.said || []).slice(-3).forEach(function (w) {
         c.appendChild(noI18n(el('div', 'si-said small', (w.at ? ago(w.at) + ': ' : '') + w.words)));

@@ -244,7 +244,7 @@ function drawAvahi(live) {
     else P.big(c, 'off', 'the reflector - avahi answers for this machine only');
     var allow = d.allow_interfaces || [], deny = d.deny_interfaces || [];
     c.appendChild(P.facts([
-      ['On the interfaces now', on ? (joined.length ? joined.map(function (i) { return i.name + ' (' + i.ipv4.concat(i.ipv6).join(', ') + ')'; }).join('; ') : (now.read ? 'none joined' : 'its journal cannot be read')) : '–', true],
+      ['On the interfaces now', on ? (joined.length ? joined.map(function (i) { return i.name; }).join(', ') : (now.read ? 'none joined' : 'its journal cannot be read')) : '–', true],
       ['Set to use', allow.length ? allow.join(', ') : 'every interface', true],
       ['Never used', deny.length ? deny.join(', ') : 'none', true],
       ['Missing here', (d.missing_interfaces || []).length ? d.missing_interfaces.join(', ') : 'none', true, (d.missing_interfaces || []).length ? 'bad' : ''],
@@ -257,6 +257,16 @@ function drawAvahi(live) {
       ['Version', d.version ? 'avahi ' + d.version : '', true],
       ['Read', ago(d.at)]
     ]));
+    /* Each interface it joined on a line of its own, its addresses in columns (1.7.2) - not one long run. */
+    if (on && joined.length) {
+      c.appendChild(listTable(['Interface', 'IPv4', 'IPv6'], joined, function (i) {
+        var tr = el('tr');
+        tr.appendChild(noI18n(el('td', 'mono', i.name)));
+        tr.appendChild(noI18n(el('td', 'mono', (i.ipv4 || []).join(', ') || '–')));
+        tr.appendChild(noI18n(el('td', 'mono', (i.ipv6 || []).join(', ') || '–')));
+        return tr;
+      }, 'plain if-list'));
+    }
     (now.problems || []).slice(-3).forEach(function (w) { c.appendChild(noI18n(el('div', 'si-said small', w.replace(/^\S+\s+\S+\s+/, '')))); });
     var r = d.root || {};
     if (r.at) {

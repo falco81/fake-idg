@@ -631,6 +631,11 @@ def ask_state(ctx):
         if mine:
             return {"state": "done" if mine.get("ok") else "failed", "action": mine.get("action") or asked.get("action"),
                     "at": mine.get("at"), "said": mine.get("said") or [], "by": mine.get("by")}
+        # Root answered an ask made after this one: the queue is served oldest first, so this one was done
+        # too - its answer was overwritten before the pages saw it (before 1.7.1 kept them). Not "late".
+        newest = ctx.root_result("tls")
+        if newest and float(newest.get("at") or 0) > float(asked.get("at") or 0) + 1:
+            return None
         late = time.time() - float(asked.get("at") or 0) > 120
         return {"state": "late" if late else "waiting", "action": asked.get("action"), "at": asked.get("at"),
                 "said": ["root has not taken it yet - is fake-igd-web.path active?"] if late else []}
