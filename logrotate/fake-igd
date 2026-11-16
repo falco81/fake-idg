@@ -1,0 +1,10 @@
+/var/log/fake-igd/*.log /var/log/fake-igd/*.jsonl {
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    su fake-igd fake-igd
+    create 0640 fake-igd fake-igd
+}

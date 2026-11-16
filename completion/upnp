@@ -1,0 +1,99 @@
+# shellcheck shell=bash
+# bash completion for upnp (fake-igd)
+_upnp() {
+  local cur prev cmd i
+  COMPREPLY=()
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+  local cmds="status ports requests mappings clients log dnat firewall mdns notify-test config mode response test start stop restart enable disable clear version help"
+  local keys="mode mapping_response http_port external_ip interfaces exclude_interfaces allowed_clients ntfy_url notify_on_renew log_level log_file request_log state_dir interface_rescan_seconds notify_interval_seconds"
+  local glob="--config --color --no-color --no-dns -h --help"
+
+  cmd=""
+  for ((i = 1; i < COMP_CWORD; i++)); do
+    case "${COMP_WORDS[i]}" in
+      --config|--color) ((i++)) ;;
+      -*) ;;
+      *) cmd="${COMP_WORDS[i]}"; break ;;
+    esac
+  done
+
+  case "$prev" in
+    --config) COMPREPLY=($(compgen -f -- "$cur")); return ;;
+    --color) COMPREPLY=($(compgen -W "auto always never" -- "$cur")); return ;;
+    --proto) COMPREPLY=($(compgen -W "tcp udp" -- "$cur")); return ;;
+    --format|-F)
+      if [[ " ${COMP_WORDS[*]} " == *" firewall "* || " ${COMP_WORDS[*]} " == *" fw "* ]]; then
+        COMPREPLY=($(compgen -W "auto iptables nft firewalld" -- "$cur"))
+      else
+        COMPREPLY=($(compgen -W "iptables nft mikrotik firewalld" -- "$cur"))
+      fi
+      return ;;
+    --interface|-i) COMPREPLY=($(compgen -W "$(ls /sys/class/net 2>/dev/null)" -- "$cur")); return ;;
+    --level) COMPREPLY=($(compgen -W "DEBUG INFO WARNING ERROR" -- "$cur")); return ;;
+    --action) COMPREPLY=($(compgen -W "AddPortMapping DeletePortMapping Expired" -- "$cur")); return ;;
+    --since) COMPREPLY=($(compgen -W "30m 1h 2h 1d 7d" -- "$cur")); return ;;
+    --client|--target|--wan|--grep|--st|--timeout|--add|-n|--min-count|--source|-s|--zone) return ;;
+  esac
+
+  case "$prev" in
+    --console-at-login) COMPREPLY=($(compgen -W "on off status" -- "$cur")); return ;;
+    --console-users) COMPREPLY=($(compgen -W "none '*'" -- "$cur")); return ;;
+  esac
+  if [[ -z "$cmd" ]]; then
+    COMPREPLY=($(compgen -W "$cmds $glob --console --console-at-login --console-users" -- "$cur")); return
+  fi
+
+  case "$cmd" in
+    status|st)      COMPREPLY=($(compgen -W "--json $glob" -- "$cur")) ;;
+    version|start|stop|restart|enable|disable)
+      COMPREPLY=($(compgen -W "$glob" -- "$cur")) ;;
+    ports|p)        COMPREPLY=($(compgen -W "--client --proto --since --min-count --port --json $glob" -- "$cur")) ;;
+    requests|req|r) COMPREPLY=($(compgen -W "-n --client --action --since --json $glob" -- "$cur")) ;;
+    mappings|m)     COMPREPLY=($(compgen -W "--json $glob" -- "$cur")) ;;
+    clients|c)      COMPREPLY=($(compgen -W "--since --json $glob" -- "$cur")) ;;
+    log|l)          COMPREPLY=($(compgen -W "-n -f --follow -e --events --level --grep --since --raw $glob" -- "$cur")) ;;
+    dnat|d)         COMPREPLY=($(compgen -W "--format --wan --client --proto --since --min-count --port --no-forward --quiet $glob" -- "$cur")) ;;
+    mdns|avahi)
+      local sub="" j
+      for ((j = i + 1; j < COMP_CWORD; j++)); do [[ "${COMP_WORDS[j]}" != -* ]] && { sub="${COMP_WORDS[j]}"; break; }; done
+      if [[ -z "$sub" ]]; then
+        COMPREPLY=($(compgen -W "status services browse reflector interfaces filters ipv6 ipv4 reflect-ipv set config start stop restart enable disable log" -- "$cur"))
+      else
+        case "$sub" in
+          reflector|ipv6|ipv4|reflect-ipv) COMPREPLY=($(compgen -W "on off --no-restart" -- "$cur")) ;;
+          interfaces) COMPREPLY=($(compgen -W "all $(ls /sys/class/net 2>/dev/null) --no-restart" -- "$cur")) ;;
+          filters) COMPREPLY=($(compgen -W "none _airplay._tcp _raop._tcp _googlecast._tcp _ipp._tcp _spotify-connect._tcp --no-restart" -- "$cur")) ;;
+          set) COMPREPLY=($(compgen -W "use-ipv4 use-ipv6 allow-interfaces deny-interfaces cache-entries-max ratelimit-interval-usec ratelimit-burst enable-wide-area publish-hinfo publish-workstation disable-publishing enable-reflector reflect-ipv reflect-filters" -- "$cur")) ;;
+          services) COMPREPLY=($(compgen -W "--json --type --iface --no-resolve --timeout" -- "$cur")) ;;
+          log) COMPREPLY=($(compgen -W "-n -f --follow" -- "$cur")) ;;
+          status|config) COMPREPLY=($(compgen -W "--json" -- "$cur")) ;;
+        esac
+      fi ;;
+    notify-test|nt) COMPREPLY=($(compgen -W "$glob" -- "$cur")) ;;
+    firewall|fw)    COMPREPLY=($(compgen -W "--format --interface --source --zone $glob" -- "$cur")) ;;
+    test|t)         COMPREPLY=($(compgen -W "--st --timeout --target --add $glob" -- "$cur")) ;;
+    clear)          COMPREPLY=($(compgen -W "--requests --log --all -y --yes" -- "$cur")) ;;
+    mode)           COMPREPLY=($(compgen -W "active passive --no-restart" -- "$cur")) ;;
+    response)       COMPREPLY=($(compgen -W "accept reject --no-restart" -- "$cur")) ;;
+    help)           COMPREPLY=($(compgen -W "$cmds" -- "$cur")) ;;
+    config|cfg)
+      local sub="" j
+      for ((j = i + 1; j < COMP_CWORD; j++)); do [[ "${COMP_WORDS[j]}" != -* ]] && { sub="${COMP_WORDS[j]}"; break; }; done
+      if [[ -z "$sub" ]]; then
+        COMPREPLY=($(compgen -W "show get set edit validate path" -- "$cur"))
+      elif [[ "$sub" == get || "$sub" == set ]] && (( COMP_CWORD == j + 1 )); then
+        COMPREPLY=($(compgen -W "$keys" -- "$cur"))
+      elif [[ "$sub" == set ]] && (( COMP_CWORD == j + 2 )); then
+        case "${COMP_WORDS[j+1]}" in
+          mode) COMPREPLY=($(compgen -W "active passive" -- "$cur")) ;;
+          mapping_response) COMPREPLY=($(compgen -W "accept reject" -- "$cur")) ;;
+          log_level) COMPREPLY=($(compgen -W "DEBUG INFO WARNING ERROR" -- "$cur")) ;;
+          notify_on_renew) COMPREPLY=($(compgen -W "true false" -- "$cur")) ;;
+        esac
+      else
+        COMPREPLY=($(compgen -W "--no-restart --json" -- "$cur"))
+      fi ;;
+  esac
+}
+complete -F _upnp upnp

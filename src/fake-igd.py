@@ -1,0 +1,973 @@
+#!/usr/bin/env python3
+"""
+fake-igd 1.2 - fake UPnP Internet Gateway Device (IGD v1).
+
+Pretends to be a router with UPnP enabled on the LAN, but opens NOTHING. It only logs
+which ports devices (e.g. a PS5) ask for, and can optionally send notifications.
+Listens on all (or selected) network interfaces of the server.
+
+Usage:
+  fake-igd.py [--config /etc/fake-igd/config.json]            run the service
+  fake-igd.py [--config ...] --summary                         print requested ports
+
+Python 3.9+ standard library only (Linux).
+"""
+import argparse
+import fcntl
+import ipaddress
+import json
+import logging
+import logging.handlers
+import os
+import random
+import re
+import signal
+import socket
+import struct
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from datetime import datetime, timezone
+from email.utils import formatdate
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from xml.etree import ElementTree as ET
+from xml.sax.saxutils import escape
+
+VERSION = "1.3"
+DEFAULT_CONFIG = "/etc/fake-igd/config.json"
+DEFAULTS = {
+    "mode": "active",              # active = answer like a UPnP router; passive = only log SSDP, never answer
+    "mapping_response": "accept",  # accept = confirm AddPortMapping (nothing is opened); reject = refuse with error 501
+    "http_port": 5000,
+    "external_ip": "auto",
+    "interfaces": [],
+    "exclude_interfaces": ["lo"],
+    "allowed_clients": [],
+    "ntfy_url": "",                # https://ntfy.sh/topic or https://ntfy.example.com/topic (private server)
+    "ntfy_token": "",              # access token (tk_...) for a private server - Authorization: Bearer
+    "ntfy_user": "",               # or user + password (Basic auth)
+    "ntfy_password": "",
+    "ntfy_priority": 3,            # 1 min .. 5 max
+    "ntfy_tags": "video_game",     # comma-separated tags / emoji names
+    "ntfy_ca_file": "",            # CA bundle for a private server with its own certificate authority
+    "notify_on_renew": False,
+    "notify_other_router": True,   # notify when another UPnP router announces itself
+    "log_level": "INFO",
+    "log_file": "/var/log/fake-igd/fake-igd.log",
+    "request_log": "/var/log/fake-igd/requests.jsonl",
+    "state_dir": "/var/lib/fake-igd",
+    "interface_rescan_seconds": 60,
+    "notify_interval_seconds": 300,
+}
+
+SSDP_GROUP = "239.255.255.250"
+SSDP_PORT = 1900
+SERVER_HDR = "Linux/5 UPnP/1.0 fake-igd/" + VERSION
+START_TIME = time.time()
+
+T_IGD = "urn:schemas-upnp-org:device:InternetGatewayDevice:1"
+T_WAN = "urn:schemas-upnp-org:device:WANDevice:1"
+T_CONN = "urn:schemas-upnp-org:device:WANConnectionDevice:1"
+S_IPC = "urn:schemas-upnp-org:service:WANIPConnection:1"
+S_CIC = "urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1"
+
+log = logging.getLogger("fake-igd")
+CFG = {}
+ALLOWED_NETS = []
+EXTERNAL_IP = ""
+UUID_ROOT = UUID_WAN = UUID_CONN = ""
+ADVERTS = []
+
+
+# ================================================================ konfigurace
+def load_config(path):
+    cfg = dict(DEFAULTS)
+    try:
+        with open(path, encoding="utf-8") as f:
+            user = json.load(f)
+    except FileNotFoundError:
+        print("Config %s does not exist, using defaults." % path, file=sys.stderr)
+        user = {}
+    except json.JSONDecodeError as e:
+        print("JSON error in config %s: %s" % (path, e), file=sys.stderr)
+        sys.exit(2)
+    unknown = set(user) - set(DEFAULTS)
+    cfg.update(user)
+    cfg["_unknown_keys"] = sorted(k for k in unknown if not k.startswith("_"))
+    cfg["mode"] = str(cfg["mode"]).lower()
+    cfg["mapping_response"] = str(cfg["mapping_response"]).lower()
+    if cfg["mode"] not in ("active", "passive"):
+        print("Invalid mode: %r (active/passive)" % cfg["mode"], file=sys.stderr)
+        sys.exit(2)
+    if cfg["mapping_response"] not in ("accept", "reject"):
+        print("Invalid mapping_response: %r (accept/reject)" % cfg["mapping_response"], file=sys.stderr)
+        sys.exit(2)
+    try:
+        cfg["http_port"] = int(cfg["http_port"])
+        assert 0 < cfg["http_port"] < 65536
+    except (ValueError, AssertionError):
+        print("Invalid http_port: %r" % cfg["http_port"], file=sys.stderr)
+        sys.exit(2)
+    return cfg
+
+
+def parse_allowed(items):
+    nets = []
+    for it in items:
+        try:
+            nets.append(ipaddress.ip_network(str(it).strip(), strict=False))
+        except ValueError:
+            print("Invalid entry in allowed_clients: %r" % it, file=sys.stderr)
+            sys.exit(2)
+    return nets
+
+
+class OtpFormatter(logging.Formatter):
+    """Lines as otp writes them: 'YYYY-MM-DD HH:MM:SS level what: words', the level lower case
+    (info, warn, error, debug, crit); control characters shown, a newline continued indented."""
+    LEVELS = {"DEBUG": "debug", "INFO": "info", "WARNING": "warn", "ERROR": "error", "CRITICAL": "crit"}
+
+    def __init__(self, with_time=True):
+        super().__init__()
+        self.with_time = with_time
+
+    def format(self, record):
+        words = re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", lambda m: "\\x%02x" % ord(m.group(0)),
+                       record.getMessage()).replace("\n", "\n    ")
+        lvl = self.LEVELS.get(record.levelname, "info")
+        if not self.with_time:
+            return "%-5s %s" % (lvl, words)
+        return "%s %-5s %s" % (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record.created)), lvl, words)
+
+
+def setup_logging(cfg):
+    level = getattr(logging, str(cfg["log_level"]).upper(), logging.INFO)
+    fmt = OtpFormatter()
+    log.setLevel(level)
+    log.handlers.clear()
+    try:
+        os.makedirs(os.path.dirname(cfg["log_file"]), exist_ok=True)
+        fh = logging.handlers.WatchedFileHandler(cfg["log_file"], encoding="utf-8")
+        fh.setFormatter(fmt)
+        log.addHandler(fh)
+    except OSError as e:
+        print("Cannot open log %s: %s" % (cfg["log_file"], e), file=sys.stderr)
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(OtpFormatter(with_time=False))
+    log.addHandler(sh)
+
+
+def client_allowed(ip):
+    if not ALLOWED_NETS:
+        return True
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return any(addr in n for n in ALLOWED_NETS)
+
+
+def now_iso():
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+# ================================================================ interfaces
+SIOCGIFFLAGS = 0x8913
+SIOCGIFADDR = 0x8915
+IFF_UP = 0x1
+IFF_LOOPBACK = 0x8
+IFF_MULTICAST = 0x1000
+
+
+def _ioctl(sock, req, name):
+    return fcntl.ioctl(sock.fileno(), req, struct.pack("256s", name[:15].encode()))
+
+
+def list_interfaces():
+    """Return {name: ipv4} of active interfaces with IPv4, according to the config."""
+    want = set(CFG["interfaces"])
+    skip = set(CFG["exclude_interfaces"])
+    result = {}
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        for _, name in socket.if_nameindex():
+            if want and name not in want:
+                continue
+            if name in skip:
+                continue
+            try:
+                flags = struct.unpack("H", _ioctl(s, SIOCGIFFLAGS, name)[16:18])[0]
+                if not flags & IFF_UP:
+                    continue
+                if flags & IFF_LOOPBACK and not want:
+                    continue
+                if not flags & IFF_MULTICAST:
+                    log.debug("net: %s does not support multicast - skipped", name)
+                    continue
+                ip = socket.inet_ntoa(_ioctl(s, SIOCGIFADDR, name)[20:24])
+            except OSError:
+                continue  # bez IPv4
+            result[name] = ip
+    finally:
+        s.close()
+    return result
+
+
+def local_ip_for(client_ip):
+    """Local IP through which the server reaches the client (used for LOCATION)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect((client_ip, SSDP_PORT))
+        return s.getsockname()[0]
+    finally:
+        s.close()
+
+
+def location_url(local_ip):
+    return "http://%s:%d/rootDesc.xml" % (local_ip, CFG["http_port"])
+
+
+# ================================================================ external IP
+def resolve_external_ip():
+    global EXTERNAL_IP
+    val = str(CFG["external_ip"]).strip()
+    if val and val.lower() != "auto":
+        EXTERNAL_IP = val
+        return
+    for url in ("https://api.ipify.org", "https://ifconfig.me/ip"):
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                EXTERNAL_IP = r.read().decode().strip()
+            log.info("net: the public IP is %s (from %s)", EXTERNAL_IP, url)
+            return
+        except Exception as e:  # noqa: BLE001
+            log.warning("net: looking up the public IP at %s failed: %s", url, e)
+    EXTERNAL_IP = ""
+    log.warning("net: the public IP could not be found - set external_ip in the config")
+
+
+# ================================================================ state and request log
+_lock = threading.Lock()
+mappings = {}  # (remote_host, external_port, protocol) -> dict
+
+
+def record(event):
+    event = dict(event, time=now_iso())
+    try:
+        with open(CFG["request_log"], "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log.warning("service: %s cannot be written: %s", CFG["request_log"], e)
+
+
+def map_file():
+    return os.path.join(CFG["state_dir"], "mappings.json")
+
+
+def save_mappings():
+    data = [dict(m, remote_host=k[0], external_port=k[1], protocol=k[2]) for k, m in mappings.items()]
+    try:
+        tmp = map_file() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, map_file())
+    except OSError as e:
+        log.warning("service: %s cannot be written: %s", map_file(), e)
+
+
+def purge_expired():
+    t = time.time()
+    dead = [k for k, m in mappings.items() if m.get("expires_at") and m["expires_at"] < t]
+    for k in dead:
+        log.info("port: %s %d of %s expired", k[2], k[1], mappings[k]["internal_client"])
+        record({"action": "Expired", "protocol": k[2], "external_port": k[1],
+                "internal_client": mappings[k]["internal_client"]})
+        del mappings[k]
+    if dead:
+        save_mappings()
+
+
+def _hdr(value):
+    """A header value: plain ASCII as it is, anything else as an RFC 2047 encoded word (ntfy reads it)."""
+    v = str(value)
+    try:
+        v.encode("ascii")
+        return v
+    except UnicodeEncodeError:
+        import base64
+        return "=?UTF-8?B?%s?=" % base64.b64encode(v.encode("utf-8")).decode()
+
+
+def ntfy_send(cfg, title, message, priority=None, tags=None, timeout=10):
+    """One message to ntfy (ntfy.sh or a private server). Returns (ok, words)."""
+    import base64
+    import ssl
+    url = str(cfg.get("ntfy_url") or "").strip()
+    if not url:
+        return False, "ntfy_url is not set"
+    if not re.match(r"^https?://[^/\s]+/[^\s]+$", url):
+        return False, "ntfy_url must be http(s)://server/topic"
+    headers = {"Title": _hdr(title), "Priority": str(priority or cfg.get("ntfy_priority") or 3)}
+    t = tags if tags is not None else cfg.get("ntfy_tags")
+    if t:
+        headers["Tags"] = _hdr(t)
+    if cfg.get("ntfy_token"):
+        headers["Authorization"] = "Bearer %s" % str(cfg["ntfy_token"]).strip()
+    elif cfg.get("ntfy_user"):
+        pair = "%s:%s" % (cfg.get("ntfy_user"), cfg.get("ntfy_password") or "")
+        headers["Authorization"] = "Basic %s" % base64.b64encode(pair.encode("utf-8")).decode()
+    ctx = None
+    if url.startswith("https://"):
+        ctx = ssl.create_default_context(cafile=cfg.get("ntfy_ca_file") or None)
+    req = urllib.request.Request(url, data=str(message).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+            r.read()
+            return True, "HTTP %d" % r.status
+    except urllib.error.HTTPError as e:
+        why = {401: "unauthorized - check ntfy_token / ntfy_user / ntfy_password",
+               403: "forbidden - the token/user may not write to this topic",
+               429: "too many messages (rate limited)"}.get(e.code, e.reason)
+        return False, "HTTP %d %s" % (e.code, why)
+    except ssl.SSLError as e:
+        return False, "TLS: %s (a private CA? set ntfy_ca_file)" % e
+    except Exception as e:  # noqa: BLE001
+        return False, str(getattr(e, "reason", e))
+
+
+def ntfy_words(cfg):
+    """How notifications go, for the log - never the secret itself."""
+    url = str(cfg.get("ntfy_url") or "")
+    if not url:
+        return "off"
+    auth = "token" if cfg.get("ntfy_token") else ("user %s" % cfg["ntfy_user"] if cfg.get("ntfy_user") else "no auth")
+    return "ntfy %s (%s%s)" % (url, auth, ", own CA" if cfg.get("ntfy_ca_file") else "")
+
+
+def notify(title, message, priority=None, tags=None):
+    if not CFG.get("ntfy_url"):
+        return
+
+    def _send():
+        ok, words = ntfy_send(CFG, title, message, priority, tags)
+        host = urllib.parse.urlparse(CFG["ntfy_url"]).netloc
+        if ok:
+            log.info("notify: sent '%s' to %s (%s)", title, host, words)
+        else:
+            log.warning("notify: sending '%s' to %s failed: %s", title, host, words)
+
+    threading.Thread(target=_send, daemon=True).start()
+
+
+# ================================================================ XML descriptions
+def device_xml(local_ip):
+    base = "http://%s:%d" % (local_ip, CFG["http_port"])
+
+    def svc(stype, sid, scpd, ctl, evt):
+        return ("<service><serviceType>%s</serviceType><serviceId>%s</serviceId><SCPDURL>%s</SCPDURL>"
+                "<controlURL>%s</controlURL><eventSubURL>%s</eventSubURL></service>") % (stype, sid, scpd, ctl, evt)
+
+    return (
+        '<?xml version="1.0"?>\n<root xmlns="urn:schemas-upnp-org:device-1-0">'
+        "<specVersion><major>1</major><minor>0</minor></specVersion><URLBase>%(base)s/</URLBase>"
+        "<device><deviceType>%(igd)s</deviceType><friendlyName>fake-igd</friendlyName>"
+        "<manufacturer>fake-igd</manufacturer><modelName>fake-igd</modelName><modelNumber>%(ver)s</modelNumber>"
+        "<UDN>uuid:%(u1)s</UDN><serviceList></serviceList>"
+        "<deviceList><device><deviceType>%(wan)s</deviceType><friendlyName>WAN Device</friendlyName>"
+        "<manufacturer>fake-igd</manufacturer><modelName>WAN Device</modelName><UDN>uuid:%(u2)s</UDN>"
+        "<serviceList>%(cic)s</serviceList>"
+        "<deviceList><device><deviceType>%(conn)s</deviceType><friendlyName>WAN Connection Device</friendlyName>"
+        "<manufacturer>fake-igd</manufacturer><modelName>WAN Connection Device</modelName><UDN>uuid:%(u3)s</UDN>"
+        "<serviceList>%(ipc)s</serviceList></device></deviceList></device></deviceList>"
+        "<presentationURL>%(base)s/</presentationURL></device></root>"
+    ) % {
+        "base": base, "igd": T_IGD, "wan": T_WAN, "conn": T_CONN, "ver": VERSION,
+        "u1": UUID_ROOT, "u2": UUID_WAN, "u3": UUID_CONN,
+        "cic": svc(S_CIC, "urn:upnp-org:serviceId:WANCommonIFC1", "/WANCfg.xml", "/ctl/CmnIfCfg", "/evt/CmnIfCfg"),
+        "ipc": svc(S_IPC, "urn:upnp-org:serviceId:WANIPConn1", "/WANIPCn.xml", "/ctl/IPConn", "/evt/IPConn"),
+    }
+
+
+PM_KEY = [("NewRemoteHost", "RemoteHost"), ("NewExternalPort", "ExternalPort"), ("NewProtocol", "PortMappingProtocol")]
+PM_OUT = [("NewInternalPort", "InternalPort"), ("NewInternalClient", "InternalClient"),
+          ("NewEnabled", "PortMappingEnabled"), ("NewPortMappingDescription", "PortMappingDescription"),
+          ("NewLeaseDuration", "PortMappingLeaseDuration")]
+IPC_ACTIONS = {
+    "GetConnectionTypeInfo": ([], [("NewConnectionType", "ConnectionType"), ("NewPossibleConnectionTypes", "PossibleConnectionTypes")]),
+    "GetStatusInfo": ([], [("NewConnectionStatus", "ConnectionStatus"), ("NewLastConnectionError", "LastConnectionError"), ("NewUptime", "Uptime")]),
+    "GetNATRSIPStatus": ([], [("NewRSIPAvailable", "RSIPAvailable"), ("NewNATEnabled", "NATEnabled")]),
+    "GetExternalIPAddress": ([], [("NewExternalIPAddress", "ExternalIPAddress")]),
+    "AddPortMapping": (PM_KEY + PM_OUT, []),
+    "DeletePortMapping": (PM_KEY, []),
+    "GetSpecificPortMappingEntry": (PM_KEY, PM_OUT),
+    "GetGenericPortMappingEntry": ([("NewPortMappingIndex", "PortMappingNumberOfEntries")], PM_KEY + PM_OUT),
+}
+IPC_VARS = [
+    ("ConnectionType", "string", "no"), ("PossibleConnectionTypes", "string", "yes"),
+    ("ConnectionStatus", "string", "yes"), ("Uptime", "ui4", "no"), ("LastConnectionError", "string", "no"),
+    ("RSIPAvailable", "boolean", "no"), ("NATEnabled", "boolean", "no"), ("ExternalIPAddress", "string", "yes"),
+    ("PortMappingNumberOfEntries", "ui2", "yes"), ("PortMappingEnabled", "boolean", "no"),
+    ("PortMappingLeaseDuration", "ui4", "no"), ("RemoteHost", "string", "no"), ("ExternalPort", "ui2", "no"),
+    ("InternalPort", "ui2", "no"), ("PortMappingProtocol", "string", "no"), ("InternalClient", "string", "no"),
+    ("PortMappingDescription", "string", "no"),
+]
+CIC_ACTIONS = {
+    "GetCommonLinkProperties": ([], [
+        ("NewWANAccessType", "WANAccessType"), ("NewLayer1UpstreamMaxBitRate", "Layer1UpstreamMaxBitRate"),
+        ("NewLayer1DownstreamMaxBitRate", "Layer1DownstreamMaxBitRate"), ("NewPhysicalLinkStatus", "PhysicalLinkStatus")]),
+    "GetTotalBytesSent": ([], [("NewTotalBytesSent", "TotalBytesSent")]),
+    "GetTotalBytesReceived": ([], [("NewTotalBytesReceived", "TotalBytesReceived")]),
+    "GetTotalPacketsSent": ([], [("NewTotalPacketsSent", "TotalPacketsSent")]),
+    "GetTotalPacketsReceived": ([], [("NewTotalPacketsReceived", "TotalPacketsReceived")]),
+}
+CIC_VARS = [
+    ("WANAccessType", "string", "no"), ("Layer1UpstreamMaxBitRate", "ui4", "no"),
+    ("Layer1DownstreamMaxBitRate", "ui4", "no"), ("PhysicalLinkStatus", "string", "yes"),
+    ("TotalBytesSent", "ui4", "no"), ("TotalBytesReceived", "ui4", "no"),
+    ("TotalPacketsSent", "ui4", "no"), ("TotalPacketsReceived", "ui4", "no"),
+]
+
+
+def scpd_xml(actions, variables):
+    p = ['<?xml version="1.0"?>\n<scpd xmlns="urn:schemas-upnp-org:service-1-0">'
+         "<specVersion><major>1</major><minor>0</minor></specVersion><actionList>"]
+    for name, (ins, outs) in actions.items():
+        p.append("<action><name>%s</name><argumentList>" % name)
+        for d, args in (("in", ins), ("out", outs)):
+            for arg, rel in args:
+                p.append("<argument><name>%s</name><direction>%s</direction>"
+                         "<relatedStateVariable>%s</relatedStateVariable></argument>" % (arg, d, rel))
+        p.append("</argumentList></action>")
+    p.append("</actionList><serviceStateTable>")
+    for name, dtype, ev in variables:
+        p.append('<stateVariable sendEvents="%s"><name>%s</name><dataType>%s</dataType></stateVariable>' % (ev, name, dtype))
+    p.append("</serviceStateTable></scpd>")
+    return "".join(p)
+
+
+# ================================================================ SOAP
+class UPnPError(Exception):
+    def __init__(self, code, desc):
+        super().__init__(desc)
+        self.code, self.desc = code, desc
+
+
+ENV_OPEN = ('<?xml version="1.0"?>\n<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+            's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>')
+ENV_CLOSE = "</s:Body></s:Envelope>"
+
+
+def soap_response(service, action, args):
+    body = "".join("<%s>%s</%s>" % (k, escape(str(v)), k) for k, v in args)
+    return ENV_OPEN + '<u:%sResponse xmlns:u="%s">%s</u:%sResponse>' % (action, service, body, action) + ENV_CLOSE
+
+
+def soap_fault(code, desc):
+    return (ENV_OPEN + "<s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring><detail>"
+            '<UPnPError xmlns="urn:schemas-upnp-org:control-1-0"><errorCode>%d</errorCode>'
+            "<errorDescription>%s</errorDescription></UPnPError></detail></s:Fault>" % (code, escape(desc)) + ENV_CLOSE)
+
+
+def local_name(tag):
+    return tag.rsplit("}", 1)[-1]
+
+
+def parse_soap(body):
+    root = ET.fromstring(body)
+    for el in root:
+        if local_name(el.tag) == "Body":
+            for act in el:
+                return local_name(act.tag), {local_name(c.tag): (c.text or "").strip() for c in act}
+    raise ValueError("SOAP Body not found")
+
+
+def entry_args(key, m, with_key):
+    out = [("NewRemoteHost", key[0]), ("NewExternalPort", key[1]), ("NewProtocol", key[2])] if with_key else []
+    lease = max(0, int(m["expires_at"] - time.time())) if m.get("expires_at") else m["lease"]
+    return out + [("NewInternalPort", m["internal_port"]), ("NewInternalClient", m["internal_client"]),
+                  ("NewEnabled", 1 if m["enabled"] else 0), ("NewPortMappingDescription", m["description"]),
+                  ("NewLeaseDuration", lease)]
+
+
+def _key(a):
+    try:
+        return (a.get("NewRemoteHost", ""), int(a.get("NewExternalPort", "0")), a.get("NewProtocol", "").upper())
+    except ValueError:
+        raise UPnPError(402, "Invalid Args")
+
+
+def handle_ipc(action, a, client):
+    if action == "GetExternalIPAddress":
+        return [("NewExternalIPAddress", EXTERNAL_IP)]
+    if action == "GetStatusInfo":
+        return [("NewConnectionStatus", "Connected"), ("NewLastConnectionError", "ERROR_NONE"),
+                ("NewUptime", int(time.time() - START_TIME))]
+    if action == "GetConnectionTypeInfo":
+        return [("NewConnectionType", "IP_Routed"), ("NewPossibleConnectionTypes", "IP_Routed")]
+    if action == "GetNATRSIPStatus":
+        return [("NewRSIPAvailable", 0), ("NewNATEnabled", 1)]
+
+    with _lock:
+        purge_expired()
+        if action == "AddPortMapping":
+            key = _key(a)
+            try:
+                iport = int(a.get("NewInternalPort", "0"))
+                lease = int(a.get("NewLeaseDuration", "0") or 0)
+            except ValueError:
+                raise UPnPError(402, "Invalid Args")
+            if key[2] not in ("TCP", "UDP") or not (0 < key[1] < 65536) or not (0 < iport < 65536):
+                raise UPnPError(402, "Invalid Args")
+            ic = a.get("NewInternalClient", "") or client
+            desc = a.get("NewPortMappingDescription", "")
+            ev = {"action": action, "client": client, "protocol": key[2], "external_port": key[1],
+                  "internal_client": ic, "internal_port": iport, "lease": lease, "description": desc,
+                  "remote_host": key[0]}
+            if CFG["mapping_response"] == "reject":
+                log.info("port: %s %d -> %s:%d asked by %s (lease %s, '%s') - rejected (mapping_response reject)",
+                         key[2], key[1], ic, iport, client, ("%ds" % lease) if lease else "unlimited", desc)
+                record(dict(ev, result="rejected"))
+                notify("UPnP: %s %d" % (key[2], key[1]), "%s asks for %s %d -> %s:%d '%s' (rejected)" % (
+                    client, key[2], key[1], ic, iport, desc))
+                raise UPnPError(501, "ActionFailed")
+            old = mappings.get(key)
+            if old and old["internal_client"] != ic:
+                log.warning("port: %s %d already belongs to %s, asked by %s - refused (conflict)", key[2], key[1], old["internal_client"], client)
+                record(dict(ev, result="conflict"))
+                raise UPnPError(718, "ConflictInMappingEntry")
+            renew = old is not None
+            mappings[key] = {"internal_client": ic, "internal_port": iport, "description": desc,
+                             "enabled": a.get("NewEnabled", "1") in ("1", "true", "yes"), "lease": lease,
+                             "expires_at": (time.time() + lease) if lease else None, "requested_by": client,
+                             "added_at": old["added_at"] if old else now_iso()}
+            save_mappings()
+            record(dict(ev, result="ok", renew=renew))
+            lw = ("%ds" % lease) if lease else "unlimited"
+            log.info("port: %s %d -> %s:%d asked by %s (lease %s, '%s') - accepted, %s",
+                     key[2], key[1], ic, iport, client, lw, desc, "renewed" if renew else "new")
+            if not renew or CFG.get("notify_on_renew"):
+                notify("UPnP: %s %d" % (key[2], key[1]), "%s asks for %s %d -> %s:%d '%s' (lease %s)%s" % (
+                    client, key[2], key[1], ic, iport, desc, lw, " - renewed" if renew else ""))
+            if ic != client:
+                log.warning("port: %s asks for a mapping to another IP (%s)", client, ic)
+            return []
+
+        if action == "DeletePortMapping":
+            key = _key(a)
+            record({"action": action, "client": client, "protocol": key[2], "external_port": key[1]})
+            if key not in mappings:
+                log.info("port: %s %d deleted by %s - there was none", key[2], key[1], client)
+                raise UPnPError(714, "NoSuchEntryInArray")
+            del mappings[key]
+            save_mappings()
+            log.info("port: %s %d deleted by %s", key[2], key[1], client)
+            return []
+
+        if action == "GetSpecificPortMappingEntry":
+            key = _key(a)
+            if key not in mappings:
+                raise UPnPError(714, "NoSuchEntryInArray")
+            return entry_args(key, mappings[key], False)
+
+        if action == "GetGenericPortMappingEntry":
+            try:
+                idx = int(a.get("NewPortMappingIndex", "-1"))
+            except ValueError:
+                raise UPnPError(402, "Invalid Args")
+            items = list(mappings.items())
+            if not 0 <= idx < len(items):
+                raise UPnPError(713, "SpecifiedArrayIndexInvalid")
+            return entry_args(items[idx][0], items[idx][1], True)
+
+    raise UPnPError(401, "Invalid Action")
+
+
+def handle_cic(action, a, client):
+    if action == "GetCommonLinkProperties":
+        return [("NewWANAccessType", "Ethernet"), ("NewLayer1UpstreamMaxBitRate", 1000000000),
+                ("NewLayer1DownstreamMaxBitRate", 1000000000), ("NewPhysicalLinkStatus", "Up")]
+    if action.startswith("GetTotal"):
+        return [("New" + action[3:], 0)]
+    raise UPnPError(401, "Invalid Action")
+
+
+CONTROL = {"/ctl/IPConn": (S_IPC, handle_ipc), "/ctl/CmnIfCfg": (S_CIC, handle_cic)}
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = SERVER_HDR
+    sys_version = ""
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+        log.debug("http: %s %s", self.client_address[0], fmt % args)
+
+    def _send(self, code, body, ctype='text/xml; charset="utf-8"', extra=None):
+        data = body.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Connection", "close")
+        self.send_header("EXT", "")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+        self.close_connection = True
+
+    def _allowed(self):
+        if client_allowed(self.client_address[0]):
+            return True
+        log.debug("http: %s %s from %s refused (not in allowed_clients)", self.command, self.path, self.client_address[0])
+        self._send(403, "forbidden", "text/plain")
+        return False
+
+    def do_GET(self):
+        if not self._allowed():
+            return
+        path = self.path.split("?", 1)[0]
+        local_ip = self.connection.getsockname()[0]
+        if path == "/rootDesc.xml":
+            log.info("http: %s fetched the device description (via %s)", self.client_address[0], local_ip)
+            self._send(200, device_xml(local_ip))
+        elif path == "/WANIPCn.xml":
+            self._send(200, scpd_xml(IPC_ACTIONS, IPC_VARS))
+        elif path == "/WANCfg.xml":
+            self._send(200, scpd_xml(CIC_ACTIONS, CIC_VARS))
+        else:
+            log.debug("http: 404 %s from %s", path, self.client_address[0])
+            self._send(404, "not found", "text/plain")
+
+    do_HEAD = do_GET
+
+    def do_POST(self):
+        if not self._allowed():
+            return
+        client = self.client_address[0]
+        path = self.path.split("?", 1)[0]
+        if path not in CONTROL:
+            self._send(404, "not found", "text/plain")
+            return
+        service, handler = CONTROL[path]
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        body = self.rfile.read(length) if length else b""
+        try:
+            action, args = parse_soap(body)
+        except Exception as e:  # noqa: BLE001
+            log.warning("soap: invalid request from %s: %s", client, e)
+            self._send(500, soap_fault(402, "Invalid Args"))
+            return
+        sa = (self.headers.get("SOAPAction") or "").strip('"')
+        if "#" in sa and sa.split("#", 1)[1]:
+            action = sa.split("#", 1)[1]
+        log.info("soap: %s -> %s %s", client, action, json.dumps(args, ensure_ascii=False) if args else "")
+        try:
+            out = handler(action, args, client)
+            self._send(200, soap_response(service, action, out))
+        except UPnPError as e:
+            log.info("soap: %s <- %s error %d %s", client, action, e.code, e.desc)
+            self._send(500, soap_fault(e.code, e.desc))
+
+    def do_SUBSCRIBE(self):
+        if not self._allowed():
+            return
+        log.debug("http: SUBSCRIBE %s %s", self.client_address[0], self.path)
+        self._send(200, "", "text/plain", {"SID": "uuid:" + str(uuid.uuid4()), "TIMEOUT": "Second-1800"})
+
+    def do_UNSUBSCRIBE(self):
+        if not self._allowed():
+            return
+        self._send(200, "", "text/plain")
+
+
+# ================================================================ SSDP
+def ssdp_message(first_line, headers):
+    return (first_line + "\r\n" + "".join("%s: %s\r\n" % (k, v) for k, v in headers) + "\r\n").encode()
+
+
+class SSDP:
+    def __init__(self):
+        self.rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        self.rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.rx.bind(("", SSDP_PORT))
+        self.tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        self.tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+        self.joined = {}  # interface name -> ip
+        self.seen = {}
+        self.lock = threading.Lock()
+
+    # ---- multicast group membership on all interfaces
+    def sync_interfaces(self):
+        current = list_interfaces()
+        with self.lock:
+            for name, ip in list(self.joined.items()):
+                if current.get(name) != ip:
+                    try:
+                        self.rx.setsockopt(socket.IPPROTO_IP, socket.IP_DROP_MEMBERSHIP,
+                                           struct.pack("4s4s", socket.inet_aton(SSDP_GROUP), socket.inet_aton(ip)))
+                    except OSError:
+                        pass
+                    del self.joined[name]
+                    log.info("net: %s (%s) is gone", name, ip)
+            for name, ip in current.items():
+                if name in self.joined:
+                    continue
+                try:
+                    self.rx.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                                       struct.pack("4s4s", socket.inet_aton(SSDP_GROUP), socket.inet_aton(ip)))
+                    self.joined[name] = ip
+                    log.info("net: listening on %s (%s) - %s", name, ip, location_url(ip))
+                    if CFG["mode"] == "active":
+                        self.send_notify(name, ip)
+                except OSError as e:
+                    log.warning("net: the SSDP group cannot be joined on %s (%s): %s", name, ip, e)
+            if not self.joined:
+                log.warning("net: no usable interface with IPv4 (check interfaces / exclude_interfaces)")
+
+    def rescan_loop(self):
+        while True:
+            time.sleep(max(10, int(CFG["interface_rescan_seconds"])))
+            try:
+                self.sync_interfaces()
+            except Exception as e:  # noqa: BLE001
+                log.warning("net: checking the interfaces failed: %s", e)
+
+    # ---- NOTIFY ssdp:alive
+    def send_notify(self, name, ip):
+        try:
+            self.tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(ip))
+        except OSError as e:
+            log.debug("ssdp: IP_MULTICAST_IF %s failed: %s", ip, e)
+            return
+        for nt, usn in ADVERTS:
+            msg = ssdp_message("NOTIFY * HTTP/1.1", [
+                ("HOST", "%s:%d" % (SSDP_GROUP, SSDP_PORT)), ("CACHE-CONTROL", "max-age=1800"),
+                ("LOCATION", location_url(ip)), ("SERVER", SERVER_HDR), ("NT", nt), ("NTS", "ssdp:alive"),
+                ("USN", usn), ("BOOTID.UPNP.ORG", "1"), ("CONFIGID.UPNP.ORG", "1")])
+            try:
+                self.tx.sendto(msg, (SSDP_GROUP, SSDP_PORT))
+            except OSError as e:
+                log.debug("ssdp: NOTIFY on %s failed: %s", name, e)
+                return
+        log.debug("ssdp: NOTIFY ssdp:alive sent on %s (%s)", name, ip)
+
+    def notify_loop(self):
+        while True:
+            time.sleep(max(30, int(CFG["notify_interval_seconds"])))
+            if CFG["mode"] != "active":
+                continue
+            with self.lock:
+                for name, ip in list(self.joined.items()):
+                    self.send_notify(name, ip)
+
+    # ---- M-SEARCH
+    def listen(self):
+        while True:
+            try:
+                data, (src, sport) = self.rx.recvfrom(4096)
+            except OSError as e:
+                log.warning("ssdp: receiving failed: %s", e)
+                time.sleep(1)
+                continue
+            try:
+                self.handle(data, src, sport)
+            except Exception as e:  # noqa: BLE001
+                log.warning("ssdp: a packet from %s failed: %s", src, e)
+
+    def handle(self, data, src, sport):
+        lines = data.decode("utf-8", "ignore").split("\r\n")
+        if not lines or not lines[0].upper().startswith("M-SEARCH"):
+            if lines and lines[0].upper().startswith("NOTIFY") and src not in self.joined.values():
+                nt = next((ln.split(":", 1)[1].strip() for ln in lines if ln.upper().startswith("NT:")), "")
+                k = (src, "NOTIFY", nt)
+                if time.time() - self.seen.get(k, 0) > 3600:
+                    self.seen[k] = time.time()
+                    if "InternetGatewayDevice" in nt or "WANIPConnection" in nt:
+                        log.warning("ssdp: OTHER UPnP ROUTER on the network: %s announces NT=%s", src, nt)
+                        if CFG.get("notify_other_router", True):
+                            notify("UPnP: another router", "%s announces itself as a UPnP router (%s) - "
+                                   "the PS5 may use it instead of fake-igd" % (src, nt), priority=4, tags="warning")
+                    else:
+                        log.info("ssdp: %s announces NT=%s", src, nt)
+            return
+        hdr = {}
+        for ln in lines[1:]:
+            if ":" in ln:
+                k, v = ln.split(":", 1)
+                hdr[k.strip().upper()] = v.strip()
+        if hdr.get("MAN", "").strip('"') != "ssdp:discover":
+            return
+        st = hdr.get("ST", "")
+        if not client_allowed(src):
+            log.debug("ssdp: M-SEARCH from %s (ST=%s) ignored - not in allowed_clients", src, st)
+            return
+        k = (src, st)
+        if time.time() - self.seen.get(k, 0) > 600:
+            log.info("ssdp: %s is looking for a UPnP device (ST=%s, UA=%s)", src, st, hdr.get("USER-AGENT", "-"))
+            self.seen[k] = time.time()
+        else:
+            log.debug("ssdp: M-SEARCH %s ST=%s", src, st)
+        if CFG["mode"] == "passive":
+            return
+
+        if st == "ssdp:all":
+            answers = ADVERTS
+        else:
+            st_v1 = st[:-1] + "1" if st.endswith(":2") else st  # answer IGD:2 searches with the v1 device
+            answers = [(s, u) for s, u in ADVERTS if s == st_v1]
+        if not answers:
+            return
+        local_ip = local_ip_for(src)
+        try:
+            mx = max(0, min(int(hdr.get("MX", "1")), 3))
+        except ValueError:
+            mx = 1
+        delay = random.uniform(0, mx * 0.5) if mx else 0
+        threading.Timer(delay, self._reply, args=(src, sport, local_ip, answers)).start()
+
+    def _reply(self, src, sport, local_ip, answers):
+        # Replies go out from the SSDP socket itself (source port 1900), like real routers do,
+        # so they pass stateful firewalls / conntrack on the client side.
+        s = self.rx
+        try:
+            for st, usn in answers:
+                s.sendto(ssdp_message("HTTP/1.1 200 OK", [
+                    ("CACHE-CONTROL", "max-age=1800"), ("DATE", formatdate(usegmt=True)), ("EXT", ""),
+                    ("LOCATION", location_url(local_ip)), ("SERVER", SERVER_HDR), ("ST", st), ("USN", usn),
+                    ("BOOTID.UPNP.ORG", "1"), ("CONFIGID.UPNP.ORG", "1")]), (src, sport))
+            log.debug("ssdp: answered %s:%d (%d entries, LOCATION %s)", src, sport, len(answers), location_url(local_ip))
+        except OSError as e:
+            log.warning("ssdp: the reply to %s failed: %s", src, e)
+
+
+def expiry_loop():
+    while True:
+        time.sleep(30)
+        with _lock:
+            purge_expired()
+
+
+# ================================================================ --summary
+def summary():
+    path = CFG["request_log"]
+    ports = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if e.get("action") != "AddPortMapping":
+                    continue
+                k = (e["protocol"], e["external_port"], e.get("internal_client", ""))
+                p = ports.setdefault(k, {"count": 0, "first": e["time"], "last": e["time"], "desc": set()})
+                p["count"] += 1
+                p["last"] = e["time"]
+                if e.get("description"):
+                    p["desc"].add(e["description"])
+    except FileNotFoundError:
+        print("Request log %s does not exist yet." % path)
+        return
+    if not ports:
+        print("No port requests yet.")
+        return
+    print("%-5s %-6s %-16s %-6s %-25s %s" % ("PROTO", "PORT", "CLIENT", "COUNT", "LAST", "DESCRIPTION"))
+    for (proto, port, ic), p in sorted(ports.items(), key=lambda x: (x[0][2], x[0][0], x[0][1])):
+        print("%-5s %-6d %-16s %-6d %-25s %s" % (proto, port, ic, p["count"], p["last"], ", ".join(sorted(p["desc"]))))
+    by = {}
+    for proto, port, ic in ports:
+        by.setdefault((ic, proto), set()).add(port)
+    print("\nSuggested iptables DNAT (adjust the WAN interface):")
+    for (ic, proto), pl in sorted(by.items()):
+        pl = sorted(pl)
+        for i in range(0, len(pl), 15):  # multiport supports max 15 ports
+            print("iptables -t nat -A PREROUTING -i eth0 -p %s -m multiport --dports %s -j DNAT --to-destination %s"
+                  % (proto.lower(), ",".join(map(str, pl[i:i + 15])), ic))
+
+
+# ================================================================ main
+def main():
+    global CFG, ALLOWED_NETS, UUID_ROOT, UUID_WAN, UUID_CONN, ADVERTS
+    ap = argparse.ArgumentParser(description="fake-igd - fake UPnP IGD that only logs port mapping requests")
+    ap.add_argument("--config", default=DEFAULT_CONFIG)
+    ap.add_argument("--summary", action="store_true", help="print requested ports from the request log and exit")
+    ap.add_argument("--notify-test", action="store_true", help="send a test notification with the configured ntfy and exit")
+    ap.add_argument("--version", action="version", version="fake-igd " + VERSION)
+    args = ap.parse_args()
+
+    CFG = load_config(args.config)
+    if args.summary:
+        summary()
+        return
+    if args.notify_test:
+        if not CFG.get("ntfy_url"):
+            print("ntfy_url is not set - nothing to send to")
+            sys.exit(2)
+        ok, words = ntfy_send(CFG, "fake-igd test", "A test notification from fake-igd %s on %s."
+                              % (VERSION, socket.gethostname()), tags="white_check_mark")
+        print("%s: %s - %s" % ("sent" if ok else "FAILED", ntfy_words(CFG), words))
+        sys.exit(0 if ok else 1)
+    ALLOWED_NETS = parse_allowed(CFG["allowed_clients"])
+    setup_logging(CFG)
+    os.makedirs(CFG["state_dir"], exist_ok=True)
+
+    host = socket.gethostname()
+    UUID_ROOT = str(uuid.uuid5(uuid.NAMESPACE_DNS, "fake-igd-root-" + host))
+    UUID_WAN = str(uuid.uuid5(uuid.NAMESPACE_DNS, "fake-igd-wan-" + host))
+    UUID_CONN = str(uuid.uuid5(uuid.NAMESPACE_DNS, "fake-igd-conn-" + host))
+    ADVERTS = [
+        ("upnp:rootdevice", "uuid:%s::upnp:rootdevice" % UUID_ROOT),
+        ("uuid:" + UUID_ROOT, "uuid:" + UUID_ROOT), (T_IGD, "uuid:%s::%s" % (UUID_ROOT, T_IGD)),
+        ("uuid:" + UUID_WAN, "uuid:" + UUID_WAN), (T_WAN, "uuid:%s::%s" % (UUID_WAN, T_WAN)),
+        (S_CIC, "uuid:%s::%s" % (UUID_WAN, S_CIC)),
+        ("uuid:" + UUID_CONN, "uuid:" + UUID_CONN), (T_CONN, "uuid:%s::%s" % (UUID_CONN, T_CONN)),
+        (S_IPC, "uuid:%s::%s" % (UUID_CONN, S_IPC)),
+    ]
+
+    log.info("service: fake-igd %s starting (config %s)", VERSION, args.config)
+    if CFG["_unknown_keys"]:
+        log.warning("config: unknown keys ignored: %s", ", ".join(CFG["_unknown_keys"]))
+    resolve_external_ip()
+    log.info("service: mode %s, AddPortMapping answered: %s", CFG["mode"], CFG["mapping_response"])
+    log.info("service: HTTP port %d, public IP '%s', interfaces: %s, excluded: %s",
+             CFG["http_port"], EXTERNAL_IP, ", ".join(CFG["interfaces"]) or "all",
+             ", ".join(CFG["exclude_interfaces"]) or "-")
+    log.info("service: allowed clients: %s, notifications: %s", ", ".join(map(str, ALLOWED_NETS)) or "all",
+             ntfy_words(CFG))
+    log.info("service: log %s, requests %s, state %s", CFG["log_file"], CFG["request_log"], map_file())
+
+    try:
+        httpd = ThreadingHTTPServer(("0.0.0.0", CFG["http_port"]), Handler)
+    except OSError as e:
+        log.error("service: HTTP port %d cannot be opened: %s", CFG["http_port"], e)
+        sys.exit(1)
+    httpd.daemon_threads = True
+    try:
+        ssdp = SSDP()
+    except OSError as e:
+        log.error("service: SSDP port %d/udp cannot be opened: %s", SSDP_PORT, e)
+        sys.exit(1)
+    ssdp.sync_interfaces()
+
+    for target in (ssdp.listen, ssdp.rescan_loop, ssdp.notify_loop, expiry_loop):
+        threading.Thread(target=target, daemon=True).start()
+
+    def stop(signum, _frame):
+        log.info("service: stopping (signal %d)", signum)
+        threading.Thread(target=httpd.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    log.info("service: running - HTTP on 0.0.0.0:%d, SSDP on %d/udp", CFG["http_port"], SSDP_PORT)
+    httpd.serve_forever()
+    log.info("service: stopped")
+
+
+if __name__ == "__main__":
+    main()
