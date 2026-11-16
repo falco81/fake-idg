@@ -114,12 +114,13 @@ def node_name():
 
 
 def slug(text):
-    s = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(text or "")).strip("-.")
-    return s[:40] or "fake-igd"
+    """otp's rb_slug: no - in it, so that SITE-NODE-STAMP reads back as it was put."""
+    s = re.sub(r"[^A-Za-z0-9_.]+", "_", str(text or "")).strip("_.")
+    return s[:40] or "fake_igd"
 
 
 def site(ctx):
-    return slug(ctx.cfg.get("site_name") or "fake-igd")
+    return slug(ctx.cfg.get("site_name") or "fake_igd")
 
 
 def base_dir(ctx):
@@ -1235,7 +1236,8 @@ def verify(ctx, by, tid=None, name=None, progress=None):
         progress(1, "the list at %s" % t["name"])
         if not name:
             mine_ = [f for f in remote_list(ctx, t["id"]) if f["mine"]]
-            check("a backup of this machine is there", bool(mine_), "none at %s" % t["name"])
+            check("a backup of this machine is there", bool(mine_),
+                  "%d there, the newest taken" % len(mine_) if mine_ else "none at %s" % t["name"])
             name = mine_[0]["name"]
         row["file"] = name
         progress(2, "fetched back")

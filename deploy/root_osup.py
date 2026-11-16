@@ -166,11 +166,11 @@ def reboot():
 def serve(payload, ask):
     """One ask of the pages, answered at once - the work itself runs on by itself."""
     if not isinstance(payload, dict):
-        raise Refused("the request is not an object")
+        return {"ok": False, "said": ["the request is not an object"]}
     do = payload.get("do")
     if do not in ("check", "upgrade", "reboot"):
-        raise Refused("check, upgrade or reboot")
-    ident = re.sub(r"[^A-Za-z0-9]", "", str((ask or {}).get("id") or ""))[:40] or "%d" % int(time.time())
+        return {"ok": False, "said": ["check, upgrade or reboot - not %r" % str(do)[:40]]}
+    ident = re.sub(r"[^A-Za-z0-9-]", "", str((ask or {}).get("id") or ""))[:40] or "%d" % int(time.time())
     try:
         if do == "reboot":
             if running():
@@ -339,7 +339,7 @@ def main(argv):
         kind = argv[3]
         if kind not in ("check", "upgrade"):
             return 2
-        return job(re.sub(r"[^A-Za-z0-9]", "", argv[2])[:40], kind, len(argv) > 4 and argv[4] == "security")
+        return job(re.sub(r"[^A-Za-z0-9-]", "", argv[2])[:40], kind, len(argv) > 4 and argv[4] == "security")
     sys.stderr.write("root_osup.py is asked through fake_igd_web.py (the queue of root's asks)\n")
     return 2
 

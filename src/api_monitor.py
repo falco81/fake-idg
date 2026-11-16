@@ -140,22 +140,25 @@ def _esc(v):
 
 
 class Out(object):
+    """The samples of each metric together, in the order first said (as the text format wants)."""
+
     def __init__(self):
-        self.lines, self.said = [], set()
+        self.families = collections.OrderedDict()
 
     def add(self, name, kind, helptext, value, labels=None):
         if value is None:
             return
-        if name not in self.said:
-            self.said.add(name)
-            self.lines.append("# HELP %s %s" % (name, helptext))
-            self.lines.append("# TYPE %s %s" % (name, kind))
+        fam = self.families.setdefault(name, ["# HELP %s %s" % (name, helptext), "# TYPE %s %s" % (name, kind)])
         lab = ""
         if labels:
             lab = "{%s}" % ",".join('%s="%s"' % (k, _esc(v)) for k, v in labels.items())
         if isinstance(value, bool):
             value = int(value)
-        self.lines.append("%s%s %s" % (name, lab, repr(float(value)) if isinstance(value, float) else value))
+        fam.append("%s%s %s" % (name, lab, repr(float(value)) if isinstance(value, float) else value))
+
+    @property
+    def lines(self):
+        return [ln for fam in self.families.values() for ln in fam]
 
 
 def metrics_text(ctx):

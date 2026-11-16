@@ -55,6 +55,22 @@ IFACE_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,15}\Z")
 # The rules `upnp firewall | sh` of 1.3 put straight into INPUT, by hand (1.4.1): with the
 # chain in place they say nothing more, and they are taken out when it is put in place.
 OLD_RE = re.compile(r'^-A INPUT (?:.* )?-m comment --comment "?fake-igd"? -j ACCEPT$')
+# SSH's ports as the SSH pane set them (1.6.0): root_sshd says which; 22 when it cannot.
+SSH_PORTS_FROM_SSHD = True
+
+
+def ssh_ports():
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)          # -I keeps the script's folder out of the path
+        import root_sshd
+        got = [int(p) for p in root_sshd.ssh_ports() if 0 < int(p) < 65536]
+        return got or [22]
+    except Exception:                         # noqa: BLE001 - never without SSH
+        return [22]
+
+
 DEFAULT_ALLOW = ["192.168.0.0/16", "172.16.0.0/12", "10.0.0.0/8"]
 
 
@@ -359,10 +375,12 @@ def builtin(cfg, conf=None, pages_here=None):
                   "rules": [dict(show(0, "any", iface="lo"), words="everything on lo"),
                             dict(show(0, "any"), words="answers (ESTABLISHED, RELATED)"),
                             dict(show(6, "icmp"), words="ICMPv6 133-136 (neighbour discovery)")]})
+    sshp = ssh_ports()
     items.append({"key": "ssh", "title": "SSH", "fixed": False, "on": flag(cfg.get("firewall_ssh"), True),
                   "why": "to manage the machine - turned off, take care to keep a rule of your own for it",
-                  "lines": {f: ["-A %s -p tcp -m tcp --dport 22 %s -j ACCEPT" % (CHAIN, c("ssh"))] for f in (4, 6)},
-                  "rules": [show(4, "tcp", "22"), show(6, "tcp", "22")]})
+                  "lines": {f: ["-A %s -p tcp -m tcp --dport %d %s -j ACCEPT" % (CHAIN, p, c("ssh")) for p in sshp]
+                            for f in (4, 6)},
+                  "rules": [show(f, "tcp", str(p)) for f in (4, 6) for p in sshp]})
     items.append({"key": "icmp", "title": "ICMP / ICMPv6", "fixed": False, "on": flag(cfg.get("firewall_icmp"), True),
                   "why": "ping; IPv6 cannot work without ICMPv6 (neighbour discovery is let in above all the same)",
                   "lines": {4: ["-A %s -p icmp %s -j ACCEPT" % (CHAIN, c("ping"))],
