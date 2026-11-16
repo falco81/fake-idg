@@ -424,10 +424,38 @@ def builtin(cfg, conf=None, pages_here=None):
                 pages[f].append("-A %s%s -p tcp -m multiport --dports 80,443 %s -j ACCEPT"
                                 % (CHAIN, (" -s %s" % s) if s else "", c("the pages")))
                 shown.append(show(f, "tcp", "80,443", s or ""))
+        # ACME's HTTP-01 (1.6.0): the CA asks port 80 from the internet - from anywhere, only while
+        # the pages order their certificate that way (Settings → Automatic certificates).
+        if allow and acme_http01():
+            for f in (4, 6):
+                pages[f].append("-A %s -p tcp -m tcp --dport 80 %s -j ACCEPT" % (CHAIN, c("acme http-01")))
+            shown.append(dict(show(4, "tcp", "80"), words="tcp 80 from anywhere - ACME's HTTP-01"))
     items.append({"key": "pages", "title": "HTTP / HTTPS", "fixed": False, "on": "pages" not in off,
-                  "why": "these pages - from everybody, or from the networks of “Who may reach the pages”",
+                  "why": "these pages - from everybody, or from the networks of “Who may reach the pages”"
+                         " (and port 80 from anywhere while ACME checks names by HTTP-01)",
                   "lines": pages, "rules": shown})
     return items
+
+
+def module_settings():
+    """The settings saved on the pages for the panes (the database's meta "settings"), read only."""
+    db = os.environ.get("FAKE_IGD_DB") or os.path.join(STATE_DIR, "fake-igd.db")
+    try:
+        import sqlite3
+        con = sqlite3.connect("file:%s?mode=ro" % db, uri=True, timeout=5)
+        try:
+            row = con.execute("SELECT v FROM meta WHERE k = 'settings'").fetchone()
+        finally:
+            con.close()
+        got = json.loads(row[0]) if row and row[0] else {}
+        return got if isinstance(got, dict) else {}
+    except Exception:                         # noqa: BLE001 - no database yet: nothing set
+        return {}
+
+
+def acme_http01():
+    s = module_settings()
+    return s.get("acme") is True and str(s.get("acme_challenge") or "http-01") == "http-01"
 
 
 def chain_rules(cfg, fam=4, conf=None):

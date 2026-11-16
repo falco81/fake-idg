@@ -2,6 +2,13 @@
 (function () {
 'use strict';
 
+/* pre.wrap of otp.css - its .wrap is also the page's own box (max-width, centred): kept to the card. */
+function preBox(text) {
+  var pre = noI18n(el('pre', 'wrap mono small', text));
+  pre.style.maxWidth = 'none';
+  pre.style.margin = '0 0 10px';
+  return pre;
+}
 function drawMonitor() {
   var host = $('mon-host');
   if (!host) return;
@@ -56,7 +63,7 @@ function drawMonitor() {
   var y = 'scrape_configs:\n  - job_name: fake-igd\n    scheme: https\n    metrics_path: /metrics\n    bearer_token_file: /etc/prometheus/fake-igd.token\n'
     + '    tls_config:\n      # the CA of this server\'s certificate, if not a public one\n      # ca_file: /etc/prometheus/fake-igd-ca.pem\n      insecure_skip_verify: false\n'
     + '    static_configs:\n      - targets: [\'' + location.hostname + ':443\']\n';
-  card.appendChild(noI18n(el('pre', 'wrap mono small', y)));
+  card.appendChild(preBox(y));
   var cpy = cmdButton('Copy', 'copy', 'small');
   cpy.onclick = function () { copyText(y, cpy); };
   card.appendChild(cpy);
@@ -64,7 +71,7 @@ function drawMonitor() {
   var rules = 'groups:\n  - name: fake-igd\n    rules:\n      - alert: FakeIgdDown\n        expr: up{job="fake-igd"} == 0 or fake_igd_service_up == 0\n        for: 2m\n'
     + '      - alert: FakeIgdOtherRouter\n        expr: fake_igd_other_igd > 0\n      - alert: FakeIgdCertificate\n        expr: fake_igd_certificate_expiry_timestamp_seconds - time() < 14 * 86400\n'
     + '      - alert: FakeIgdDisk\n        expr: fake_igd_disk_bytes{kind="free"} / ignoring(kind) fake_igd_disk_bytes{kind="total"} < 0.1\n';
-  card.appendChild(noI18n(el('pre', 'wrap mono small', rules)));
+  card.appendChild(preBox(rules));
   host.appendChild(card);
 
   var sn = $('snmp-host');

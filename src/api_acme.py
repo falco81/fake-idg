@@ -1524,6 +1524,12 @@ ROUTES = {("GET", "/api/acme"): get_acme, ("POST", "/api/acme"): post_acme,
 
 def on_saved(ctx, changed):
     """Switched on, or the names or the CA changed: looked at within the minute."""
+    # The firewall's port 80 from anywhere follows HTTP-01 (1.6.0): root puts FAKE-IGD-IN in place again.
+    if any(k in changed for k in ("acme", "acme_challenge")):
+        try:
+            ctx.ask_root({"action": "apply"}, kind="fw")
+        except (OSError, ValueError):
+            pass
     if any(k in changed for k in ("acme", "acme_names", "acme_ca", "acme_url", "acme_key", "acme_challenge")):
         LAST["look"] = 0.0
     if ctx.setting("acme") and ctx.setting("acme_challenge") != "dns-01" and \
