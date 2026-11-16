@@ -95,9 +95,6 @@
   P.svcWords = function (s) {
     return !s || !s.state ? 'not known' : s.state === 'active' ? 'running' : s.state === 'unknown' ? 'not known (no systemd?)' : s.state;
   };
-  P.goLog = function (q) {
-    showTab('log');
-  };
 
   /* Interfaces chosen from a list, not typed (as otp's picks): the setting's own box kept,
      hidden, and written by the chips - so the save bar sees a change as it sees any other.
@@ -131,7 +128,7 @@
         var k = known[n];
         var t = noI18n(el('span', 'mono', n));
         c.appendChild(t);
-        if (!k) c.appendChild(el('span', 'tag warn', 'not on this server'));
+        if (!k) c.appendChild(el('span', 'tag warn', 'not here'));
         else if (k.ipv4) c.appendChild(noI18n(el('span', 'muted small mono', k.ipv4)));
         if (ADMIN) {
           var x = iconButton('close', 'Take it out');

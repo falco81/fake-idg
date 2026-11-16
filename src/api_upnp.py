@@ -210,6 +210,32 @@ def sockets(ports):
     return out
 
 
+_ANSWERED = {}
+
+
+def answered_24h(cfg):
+    """(requests, {result: AddPortMappings}) of the last 24 hours - read again only when the request
+    log changed or a minute went by (the pane asks every 5 s)."""
+    path = cfg.get("request_log") or ""
+    try:
+        st = os.stat(path)
+        sig = (path, st.st_size, st.st_mtime, int(time.time() // 60))
+    except OSError:
+        return 0, {}
+    if _ANSWERED.get("sig") == sig:
+        return _ANSWERED["got"]
+    try:
+        ev = U.read_events(cfg, since=datetime.now().astimezone() - timedelta(hours=24))
+    except (SystemExit, Exception):                      # noqa: BLE001 - an unreadable log says nothing
+        ev = []
+    counts = collections.Counter()
+    for e in ev:
+        if e.get("action") == "AddPortMapping" and e.get("description") != "upnp-cli-test":
+            counts[e.get("result") or "ok"] += 1
+    _ANSWERED.update(sig=sig, got=(len(ev), dict(counts)))
+    return _ANSWERED["got"]
+
+
 # ---- GET /api/upnp/here ---------------------------------------------------------------------------
 def here(ctx):
     cfg = ctx.cfg
@@ -223,15 +249,7 @@ def here(ctx):
     lg = since_start(log_tail(cfg))
     port = int(cfg.get("http_port") or 5000)
     socks = sockets({("tcp", port), ("udp", 1900)})
-    ev = []
-    try:
-        ev = U.read_events(cfg, since=datetime.now().astimezone() - timedelta(hours=24))
-    except (SystemExit, Exception):                      # noqa: BLE001 - an unreadable log says nothing
-        ev = []
-    answered = collections.Counter()
-    for e in ev:
-        if e.get("action") == "AddPortMapping":
-            answered[e.get("result") or "ok"] += 1
+    asked, answered = answered_24h(cfg)
     ext = str(cfg.get("external_ip") or "auto")
     public = {"set": ext, "now": ext if ext != "auto" else lg["public"],
               "from": "set by hand (external_ip)" if ext != "auto" else (lg["public_from"] or ""),
@@ -250,7 +268,7 @@ def here(ctx):
         "allowed_clients": cfg.get("allowed_clients") or [], "http_port": port,
         "interfaces_set": cfg.get("interfaces") or [], "exclude_set": cfg.get("exclude_interfaces") or [],
         "kernel": ifs, "listening": listening, "sockets": socks, "public": public, "other": lg["other"],
-        "said": lg["said"], "answered": dict(answered), "asked_24h": len(ev),
+        "said": lg["said"], "answered": answered, "asked_24h": asked,
         "rescan_s": cfg.get("interface_rescan_seconds"), "announce_s": cfg.get("notify_interval_seconds"),
     }
 

@@ -12,10 +12,39 @@ declare(strict_types=1);
 
 require_once dirname(__DIR__) . '/igd-page.php';
 require_once dirname(__DIR__) . '/igd-api.php';
+require_once dirname(__DIR__) . '/igd-art.php';
 
 if (isset($_GET['api'])) {
     $what = (string) $_GET['api'];
     $post = $_SERVER['REQUEST_METHOD'] === 'POST';
+    if ($what === 'about-software' && !$post) {
+        /* What this server runs on (otp's ?api=software, 1.0.99) - and of the pages, what this PHP
+           itself is: php-fpm's, not the command line's. */
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        [$status, $body] = igd_call('/api/about/software', 'GET', null, 20.0);
+        $data = json_decode((string) $body, true);
+        if ($status !== 200 || !is_array($data)) {
+            http_response_code($status ?: 503);
+            echo $body ?: json_encode(['ok' => false, 'error' => igd_down_words()]);
+            exit;
+        }
+        $ext = [];
+        foreach (get_loaded_extensions() as $e) {
+            $v = phpversion($e);
+            $ext[$e] = ($v === false || $v === PHP_VERSION) ? '' : (string) $v;
+        }
+        ksort($ext, SORT_NATURAL | SORT_FLAG_CASE);
+        $data['pages'] = [
+            'php' => PHP_VERSION, 'sapi' => PHP_SAPI, 'extensions' => $ext,
+            'opcache' => function_exists('opcache_get_status') && is_array(@opcache_get_status(false))
+                && !empty(@opcache_get_status(false)['opcache_enabled']),
+            'server' => (string) ($_SERVER['SERVER_SOFTWARE'] ?? ''),
+            'os' => PHP_OS_FAMILY,
+        ];
+        echo json_encode($data);
+        exit;
+    }
     if ($post) {
         igd_guard_post();
     }
@@ -59,12 +88,15 @@ if (isset($_GET['api'])) {
         'settings' => '/api/settings', 'users' => '/api/users', 'upgrade' => '/api/upgrade',
         'whoami' => '/api/auth/whoami', 'root-result' => '/api/root-result',
         'mdns' => '/api/mdns', 'mdns-services' => '/api/mdns/services', 'mdns-log' => '/api/mdns/log',
+        'my-settings' => '/api/auth/settings', 'load' => '/api/load', 'suggest' => '/api/suggest',
+        'request' => '/api/request',
     ];
     $writes = [
         'settings' => '/api/settings', 'apply' => '/api/apply', 'notify-test' => '/api/notify-test',
         'users' => '/api/users', 'upgrade' => '/api/upgrade', 'upgrade-package' => '/api/upgrade-package',
         'password' => '/api/auth/passwd',
         'mdns' => '/api/mdns',
+        'prefs' => '/api/auth/prefs', 'columns' => '/api/auth/columns', 'my-settings' => '/api/auth/settings',
     ];
     /* The panes of Settings (1.6.0): ?api=a-b-c is /api/a/b/c - the API says what it answers, and
        a GET never reaches what only a POST does there. */
@@ -96,28 +128,39 @@ if (isset($_GET['api'])) {
 
 /* ---- the page ------------------------------------------------------------ */
 $me      = igd_whoami();
+/* Signed in with the password, the second step still to give (otp 1.0.125): the sign-in page,
+   asking for it - nothing of the pages yet. The API says who it is only once it is given. */
+$mfa = '';
+if (!$me && igd_session() !== '') {
+    $pending = igd_get('/api/auth/whoami', 5.0);
+    $mfa = is_array($pending) ? (string) ($pending['mfa'] ?? '') : '';
+}
 $health  = igd_get('/api/health', 5.0);
 $alive   = is_array($health);
 $token_there = file_exists(IGD_TOKEN);
 $token_ok    = igd_token() !== null;
 $web_user    = function_exists('posix_getpwuid') && function_exists('posix_geteuid')
     ? (posix_getpwuid(posix_geteuid())['name'] ?? '?') : '?';
-/* What is wrong is said in full only to the operator at the console (as otp's). */
+/* What the sign-in page says when something is wrong is for the operator at the console:
+   which account the pages run as, where the token is, whether any account exists yet. From
+   anywhere but this machine the page says only that the API is not answering (as otp's). */
 if (!$me && !igd_local()) {
     $token_there = false;
     if (!$token_ok || empty($health['database']['ok']) || empty($health['users'])) {
         $alive = false;
     }
+    $health = ['database' => ['ok' => true], 'users' => 1, 'site' => (string) ($health['site'] ?? '')];
 }
 $initial = $me ? (igd_get('/api/status', 8.0) ?: null) : null;
 $host    = (string) ($_SERVER['HTTP_HOST'] ?? php_uname('n'));
-$site    = (string) ($health['site'] ?? '');
+$site    = (string) ($initial['site'] ?? ($health['site'] ?? ''));
 $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
 ?>
 <!doctype html>
 <html lang="en" class="app-shell-root">
 <head>
 <?php igd_head($title, $nonce); ?>
+<link rel="stylesheet" nonce="<?= h($nonce) ?>" href="/assets/hload.css?v=<?= h(IGD_VERSION) ?>-<?= (int) @filemtime(dirname(__DIR__) . '/assets/hload.css') ?>">
 </head>
 <body class="app-shell fold-words<?= $me ? ' framed' : '' ?>">
 <div class="wrap">
@@ -125,6 +168,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
 <?php if (!$me): ?>
 <div class="signin">
   <div class="signbox">
+    <?= igd_art_svg() ?>
     <div class="card">
     <h1 data-no-i18n><?= h($title) ?></h1>
     <p class="lede">The fake UPnP router on <span data-no-i18n><?= h($host) ?></span>. Sign in to go on.</p>
@@ -149,7 +193,8 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
       <div class="offline">There is no account on this machine yet. Make one on the server:<br>
         <span class="mono">sudo upnp user add yourname</span></div>
     <?php endif; ?>
-    <form id="signin-form" autocomplete="on">
+    <div id="mfa-box" data-stage="<?= h($mfa) ?>" hidden></div>
+    <form id="signin-form" autocomplete="on"<?= $mfa !== '' ? ' hidden' : '' ?>>
       <input type="text" id="in-name" name="username" placeholder="name" autocomplete="username"
              autocapitalize="none" spellcheck="false" required>
       <input type="password" id="in-pass" name="password" placeholder="password"
@@ -163,7 +208,6 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     </form>
     <div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">
       <span class="muted small">fake-igd <?= h(IGD_VERSION) ?></span>
-      <span class="langpick" id="langpick"></span>
     </div>
     </div>
   </div>
@@ -180,7 +224,8 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     go.disabled = true;
     var words = go.querySelector('span');
     words.textContent = 'Signing in…';
-    api('login', {name: $('in-name').value, password: $('in-pass').value}).then(function () {
+    api('login', {name: $('in-name').value, password: $('in-pass').value}).then(function (d) {
+      if (d && d.mfa) { form.hidden = true; mfaStep(); return; }
       said.className = 'said good';
       said.textContent = 'Welcome back.';
       location.reload();
@@ -193,7 +238,8 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
       $('in-pass').focus();
     });
   });
-  $('in-name').focus();
+  if ($('mfa-box').dataset.stage) mfaStep();
+  else $('in-name').focus();
 }());
 </script>
 </body>
@@ -203,10 +249,11 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
 <header>
   <h1 data-no-i18n><?= h($site ?: 'fake-igd') ?> <span class="host"><?= h($host) ?></span></h1>
   <span id="state-pill" class="pill unknown"><span class="dot"></span><span>…</span></span>
+  <div class="hload" id="hload" hidden aria-live="off"></div>
   <div class="spacer"></div>
   <div class="btnrow">
     <button type="button" class="btn small mebtn" id="me-btn" data-icon="person"
-            title="The account you are signed in as: what it may do, and its password."><span class="me-name" data-no-i18n><?= h($me['name']) ?></span></button>
+            title="The account you are signed in as: what it may do, its password, the columns of the tables and your settings in a file."><span class="me-name" data-no-i18n><?= h($me['name']) ?></span></button>
     <button class="btn small" id="signout" data-icon="out">Sign out</button>
   </div>
   <div class="updated" id="updated" title="Click to pause or resume the live updates">
@@ -214,17 +261,19 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
 </header>
 
 <div id="offline" class="offline" hidden></div>
+<div id="phpsafety" class="offline" hidden></div>
 <div id="problems" class="offline warnish" hidden></div>
+<div id="trials" class="trials" hidden></div>
 
 <div class="tabs" role="tablist">
   <button role="tab" aria-selected="true" data-tab="overview" data-icon="chart"
-          title="The shape of the day: who looked for a UPnP router, which ports were asked for, by whom.">Overview</button>
+          title="The shape of the day: who looked for a UPnP router, which ports were asked for, what was answered.">Overview</button>
   <button role="tab" aria-selected="false" data-tab="ports" data-icon="net"
-          title="Every port a client asked for with AddPortMapping, one row per client, protocol and port - and the rules for the router made from them.">Ports<span class="count" id="tabn-ports"></span></button>
+          title="Every port a client asked for with AddPortMapping, one row per client, protocol and port. Click a row for every request of it - and the rules for the router are made from them.">Ports<span class="count" id="tabn-ports"></span></button>
   <button role="tab" aria-selected="false" data-tab="requests" data-icon="list"
-          title="Every SOAP request, one by one, newest first. Click a row for all it carried.">Requests<span class="count" id="tabn-requests"></span></button>
+          title="Every SOAP request, newest first. Click a row for everything it carried and every step of the answer.">Requests<span class="count" id="tabn-requests"></span></button>
   <button role="tab" aria-selected="false" data-tab="clients" data-icon="people"
-          title="The devices that looked for a UPnP router or asked for ports.">Clients<span class="count" id="tabn-clients"></span></button>
+          title="The devices that looked for a UPnP router or asked for ports. Click a row for all of one.">Clients<span class="count" id="tabn-clients"></span></button>
   <button role="tab" aria-selected="false" data-tab="mappings" data-icon="router"
           title="What the clients believe is open now, with the lease left. Nothing is open on the router.">Mappings<span class="count" id="tabn-mappings"></span></button>
   <button role="tab" aria-selected="false" data-tab="mdns" data-icon="wifi"
@@ -232,9 +281,9 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
   <button role="tab" aria-selected="false" data-tab="log" data-icon="log"
           title="fake-igd's own log, as upnp log shows it - followed live.">Log</button>
   <button role="tab" aria-selected="false" data-tab="events" data-icon="history"
-          title="Every change of a setting, every account made or taken away, every sign-in and every upgrade.">Events</button>
+          title="Every change of a setting, every account made or taken away, every sign-in and every upgrade - and the service's own log.">Events</button>
   <button role="tab" aria-selected="false" data-tab="settings" data-icon="gear"
-          title="How fake-igd answers, the network, the notifications, the accounts of these pages, the firewall and the upgrades.">Settings</button>
+          title="How fake-igd answers, the network, the notifications, the accounts of these pages, the firewall, the server, the data and the upgrades.">Settings<span class="count after-n" id="tabn-settings"></span></button>
 </div>
 
 <!-- ===================== Overview ===================== -->
@@ -271,36 +320,40 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
         </select>
       </span></h2>
     <p class="note">Every SOAP request, as one line of time: green a port asked for and confirmed,
-      red refused, blue the other questions (the description, the public IP, the status).</p>
+      red refused, blue the other questions. Press a bar to open that hour.</p>
     <div class="chart" id="ov-chart"><div class="empty">…</div><div class="tip"></div></div>
     <div class="legend">
-      <span><i style="background:#3fb950"></i>port asked for</span>
+      <span><i style="background:#3fb950"></i>confirmed</span>
       <span><i style="background:#f85149"></i>refused</span>
       <span><i style="background:#58a6ff"></i>other questions</span>
     </div>
   </div>
   <div class="grid halves" style="margin-top:14px">
-    <div class="card facet"><h2>Asked the most</h2><div id="ov-ports"></div></div>
+    <div class="card facet"><h2>Asked for the most</h2><div id="ov-ports"></div></div>
+    <div class="card facet"><h2>What was answered</h2><div id="ov-results"></div></div>
     <div class="card facet"><h2>Who asks</h2><div id="ov-clients"></div></div>
     <div class="card facet"><h2>What is asked</h2><div id="ov-actions"></div></div>
-    <div class="card facet"><h2>Where it listens</h2><div id="ov-ifaces"></div></div>
   </div>
 </section>
 
 <!-- ===================== Ports ===================== -->
 <section class="panel" id="tab-ports" hidden>
   <div class="card full" data-hold>
-    <h2>Requested ports <span class="right" id="pt-said"></span></h2>
+    <h2>Ports asked for <span class="right" id="pt-said"></span></h2>
     <p class="note">Every port a client asked for (AddPortMapping), one row per client, protocol
-      and port: how many times, when first and last, what it said it was for. This is what to
-      forward on the real router - <b>Rules for the router</b> makes them (as <span class="mono">upnp dnat</span>).</p>
+      and port: how many times, when first and last, what it said it was for and what it was
+      answered. Click a row for every request of it. This is what to forward on the real router -
+      <b>Rules for the router</b> makes them (as <span class="mono">upnp dnat</span>).</p>
     <div class="filterbar btnrow filters">
-      <input type="search" id="pt-q" placeholder="an address, a port, a description…" style="flex:1;min-width:200px">
-      <select id="pt-proto"><option value="">TCP and UDP</option><option value="TCP">TCP</option><option value="UDP">UDP</option></select>
+      <input type="search" id="pt-q" placeholder="an address, a port, a description - or client:, port:, proto:…" style="flex:1;min-width:200px">
+      <select id="pt-proto"><option value="">TCP and UDP</option><option value="TCP">TCP only</option><option value="UDP">UDP only</option></select>
+      <select id="pt-result"><option value="">every answer</option><option value="accepted">confirmed</option><option value="refused">refused</option></select>
       <span id="pt-hours" title="How far back the ports are counted."></span>
+      <select id="pt-per"><option>50</option><option selected>100</option><option>500</option></select>
       <button class="btn cmd" id="dn-open" data-icon="router" title="Port forwarding rules for the real router, made from these ports - consecutive ports merged into ranges.">Rules for the router</button>
     </div>
     <div id="pt-table" class="scroll rowsonly"></div>
+    <div class="pager" id="pt-pager"></div>
   </div>
 </section>
 
@@ -309,10 +362,18 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
   <div class="card full" data-hold>
     <h2>Requests <span class="right" id="rq-said"></span></h2>
     <p class="note">Every SOAP request fake-igd was asked, newest first - from
-      <span class="mono">requests.jsonl</span>. Click a row for everything it carried.</p>
+      <span class="mono">requests.jsonl</span>. Click a row for everything it carried, every step
+      of the answer and what the log said at that moment. Old lines go with the log's rotation
+      (Settings → Disks and logs).</p>
     <div class="btnrow filters">
-      <input type="search" id="rq-q" placeholder="an address, a port, a description…" style="flex:1;min-width:200px">
+      <input type="search" id="rq-q" placeholder="an address, a port, a description - or client:, port:, result:…" style="flex:1;min-width:200px">
+      <select id="rq-result">
+        <option value="">everything</option><option value="ports">ports asked for only</option>
+        <option value="accepted">confirmed</option><option value="refused">refused</option>
+        <option value="other">the other questions</option>
+      </select>
       <select id="rq-action"><option value="">every action</option></select>
+      <select id="rq-client"><option value="">every client</option></select>
       <span id="rq-hours" title="How far back the requests go."></span>
       <select id="rq-per"><option>50</option><option selected>100</option><option>500</option></select>
     </div>
@@ -326,22 +387,29 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
   <div class="card full" data-hold>
     <h2>Clients <span class="right" id="cl-said"></span></h2>
     <p class="note">Every device that looked for a UPnP router (SSDP M-SEARCH) or asked for
-      ports - with its PTR name, what it said it is, and the ports it asked for.</p>
-    <div class="btnrow filters">
-      <input type="search" id="cl-q" placeholder="an address, a name…" style="flex:1;min-width:200px">
+      ports - with its PTR name, what it said it is, and the ports it asked for. Click a row for
+      all of one.</p>
+    <div class="filterbar btnrow filters">
+      <input type="search" id="cl-q" placeholder="an address, a name - or agent:, port:…" style="flex:1;min-width:200px">
       <span id="cl-hours" title="How far back the clients are counted."></span>
+      <select id="cl-per"><option>50</option><option selected>100</option><option>500</option></select>
     </div>
     <div id="cl-table" class="scroll rowsonly"></div>
+    <div class="pager" id="cl-pager"></div>
   </div>
 </section>
 
 <!-- ===================== Mappings ===================== -->
 <section class="panel" id="tab-mappings" hidden>
   <div class="card full" data-hold>
-    <h2>Mappings now</h2>
+    <h2>Mappings now <span class="right" id="mp-said"></span></h2>
     <p class="note">What the clients <b>believe</b> is open now, and the lease left. Nothing is open on
       the router: fake-igd only says so. Kept only while the answer is <i>accept</i> and the mode
-      <i>active</i>.</p>
+      <i>active</i>. Click a row for all of one.</p>
+    <div class="filterbar btnrow filters">
+      <input type="search" id="mp-q" placeholder="an address, a port, a description…" style="flex:1;min-width:200px">
+      <select id="mp-proto"><option value="">TCP and UDP</option><option value="TCP">TCP only</option><option value="UDP">UDP only</option></select>
+    </div>
     <div id="mp-table" class="scroll rowsonly"></div>
   </div>
 </section>
@@ -351,9 +419,11 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
 <!-- ===================== Log ===================== -->
 <section class="panel" id="tab-log" hidden>
   <div class="card full" data-hold>
-    <h2>The log <span class="right mono small muted" id="lg-file" data-no-i18n></span></h2>
+    <h2>The service's own log <span class="right mono small muted" id="lg-file" data-no-i18n></span></h2>
     <p class="note">The tail of fake-igd's own log, coloured as <span class="mono">upnp log</span>
-      colours it, followed live. What is typed keeps only the lines with it (a regular expression works).</p>
+      colours it, followed live. What is typed keeps only the lines with it (a regular expression
+      works). Switch the log level to <i>DEBUG</i> in Settings → Logs and state to have it say every
+      step of every request.</p>
     <div class="btnrow filters">
       <input type="search" id="lg-q" placeholder="grep: an address, port:, ssdp:, 3478|3479…" style="flex:1;min-width:200px" spellcheck="false">
       <select id="lg-lines"><option>200</option><option selected>600</option><option>2000</option><option>10000</option></select>
@@ -366,9 +436,10 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
 <!-- ===================== Events ===================== -->
 <section class="panel" id="tab-events" hidden>
   <div class="card full" data-hold>
-    <h2>What was done</h2>
+    <h2>What fake-igd has done</h2>
     <p class="note">Every change of a setting, every account made or taken away, every sign-in and
-      every upgrade - on these pages and on the command line. Kept in the database.</p>
+      every upgrade - on these pages and on the command line. Kept in the database, so it survives
+      a restart.</p>
     <div class="btnrow filters">
       <input type="search" id="ev-q" placeholder="anything in an event…" style="flex:1;min-width:200px">
       <select id="ev-kind"><option value="">everything</option></select>
@@ -376,6 +447,15 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     </div>
     <div id="ev-table" class="scroll rowsonly"></div>
     <div class="pager" id="ev-pager"></div>
+  </div>
+  <div class="card full fulladmin-only aside">
+    <h2>The service's own log</h2>
+    <p class="note">The tail of <span class="mono" id="log-file" data-no-i18n>/var/log/fake-igd/fake-igd.log</span>.
+      Switch the log level to <i>DEBUG</i> in Settings → Logs and state to have it say every step
+      of every request; the Log tab follows it live.</p>
+    <div class="btnrow"><button class="btn cmd" id="log-read" data-icon="log">Read it</button>
+      <select id="log-lines"><option>200</option><option selected>600</option><option>2000</option></select></div>
+    <pre class="lines" id="log-out" style="margin-top:12px" hidden></pre>
   </div>
 </section>
 
@@ -459,9 +539,11 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
 <script nonce="<?= h($nonce) ?>">
 var ME = <?= json_encode($me, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) ?>;
 var STATUS = <?= $initial ? json_encode($initial, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) : 'null' ?>;
+var PHP_SAFETY = <?= ($me['role'] ?? '') === 'fulladmin' ? json_encode(igd_php_safety(), JSON_HEX_TAG | JSON_HEX_AMP) : 'null' ?>;
 </script>
-<script nonce="<?= h($nonce) ?>" src="/assets/core.js?v=<?= h(IGD_VERSION) ?>"></script>
-<script nonce="<?= h($nonce) ?>" src="/assets/admin.js?v=<?= h(IGD_VERSION) ?>"></script>
+<?php foreach (['core.js', 'cols.js', 'hload.js', 'admin.js'] as $igd_js): ?>
+<script nonce="<?= h($nonce) ?>" src="/assets/<?= $igd_js ?>?v=<?= h(IGD_VERSION) ?>-<?= (int) @filemtime(dirname(__DIR__) . '/assets/' . $igd_js) ?>"></script>
+<?php endforeach; ?>
 <?php foreach (glob(dirname(__DIR__) . '/assets/pane-*.js') ?: [] as $igd_js): ?>
 <script nonce="<?= h($nonce) ?>" src="/assets/<?= h(basename($igd_js)) ?>?v=<?= h(IGD_VERSION) ?>-<?= (int) @filemtime($igd_js) ?>"></script>
 <?php endforeach; ?>

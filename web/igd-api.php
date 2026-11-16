@@ -208,5 +208,44 @@ function igd_whoami(): ?array
     }
     $got = igd_get('/api/auth/whoami', 5.0);
     $who = is_array($got) ? ($got['who'] ?? null) : null;
-    return is_array($who) ? $who : null;
+    if (!is_array($who)) {
+        return null;
+    }
+    /* An empty layout is an object, not a list, to the page (as otp's). */
+    foreach (['prefs', 'cols'] as $k) {
+        $v = $who[$k] ?? null;
+        $who[$k] = (is_array($v) && $v) ? $v : new stdClass();
+    }
+    return $who;
+}
+
+/** PHP and php2shell (CVE-2026-109618, CVE-2026-109619), said to a full administrator at the top
+    of the pages until it is fixed (otp's otp_php_safety): the version running this page, the one
+    with the fix, and whether the two settings that close the way in are off
+    (deploy/99-php2shell.ini). */
+function igd_php_safety(): array
+{
+    $fixed = ['8.2' => '8.2.35', '8.3' => '8.3.36', '8.4' => '8.4.27', '8.5' => '8.5.12'];
+    $branch = PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION;
+    if (isset($fixed[$branch])) {
+        $patched = version_compare(PHP_VERSION, $fixed[$branch], '>=');
+        $needs = $fixed[$branch];
+    } else {
+        $patched = version_compare($branch, '8.5', '>');
+        $needs = $patched ? '' : '8.2.35';
+    }
+    $reading = (string) ini_get('enable_post_data_reading');
+    $progress = (string) ini_get('session.upload_progress.enabled');
+    $off = function (string $v): bool {
+        return in_array(strtolower($v), ['0', '', 'off', 'false', 'no'], true);
+    };
+    return [
+        'version'  => PHP_VERSION,
+        'sapi'     => PHP_SAPI,
+        'patched'  => $patched,
+        'needs'    => $needs,
+        'guarded'  => $off($reading) && $off($progress),
+        'post_reading' => !$off($reading),
+        'upload_progress' => !$off($progress),
+    ];
 }

@@ -16,6 +16,11 @@ the ask is trusted - every value is checked against the one shape it may have.
             location /.well-known/acme-challenge/ → acme.php put in where it is missing (a
             fake-igd.conf of an older version), the names ordered added to its server_name, so
             that nginx gives a request for any of them to fake-igd (as otp's acme_into).
+  osroots   {do: list | sync, certs?: [pem], force?}: the system's trusted roots (otp's osroots, 1.0.265) -
+            certificate authorities of one's own put into the operating system's trust by its own way
+            (RHEL: /etc/pki/ca-trust/source/anchors + update-ca-trust extract; Debian:
+            /usr/local/share/ca-certificates + update-ca-certificates), fake-igd's files named
+            fake-igd-<sha256 16>.pem; anything else there only shown.
   policy    {protocols, ciphers, prefer, dh, hsts}: ssl_protocols, ssl_ciphers,
             ssl_prefer_server_ciphers, ssl_dhparam (an RFC 7919 group, or made here) and the
             Strict-Transport-Security header in fake-igd.conf's server on 443.
@@ -24,11 +29,18 @@ Every change: the files written beside their place and renamed, a copy of each k
 asked - and everything put back as it was when it says no; then nginx is reloaded.
 
 Paths for tests: FAKE_IGD_CERT_DIR, FAKE_IGD_NGINX, FAKE_IGD_NGINX_BIN (nginx -t),
-FAKE_IGD_NGINX_RELOAD (the reload command, words split on spaces), FAKE_IGD_OPENSSL.
+FAKE_IGD_NGINX_RELOAD (the reload command, words split on spaces), FAKE_IGD_OPENSSL,
+FAKE_IGD_OSROOTS_FLAVOUR (rhel | debian), FAKE_IGD_OSROOTS_DIR, FAKE_IGD_OSROOTS_BUNDLE,
+FAKE_IGD_OSROOTS_EXTRACT (the tool, words split on spaces), FAKE_IGD_OSROOTS_PKG.
 """
+import base64
+import errno
+import hashlib
 import os
 import re
 import shlex
+import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -471,11 +483,407 @@ def do_policy(payload, said):
     return ok
 
 
+# ---- the system's trusted roots (otp's osroots, 1.0.265) ---------------------------------------
+# LDAPS, SMTP, syslog over TLS, ntfy, ACME, fake-igd's own connections: every program that uses the
+# system's trust. Only by the system's own way of adding to it, never by touching the
+# distribution's bundle: a file in the folder of local additions, then its own tool. Both tools merge
+# that folder with the distribution's list every time they run - also when an update of the
+# ca-certificates package runs them. fake-igd's files are named fake-igd-<sha256 16>.pem (.crt):
+# only those are written and removed; anything else in the folder is only shown. What is asked is
+# always the whole set wanted (`sync`).
+OSROOTS_MAX = 50
+OSROOTS_PEM_MAX = 20480
+OSROOTS_NAME_RE = re.compile(r"^fake-igd-[0-9a-f]{16}\.(pem|crt)\Z")
+OSROOTS_BLOCK_RE = re.compile(r"-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]*?)-----END CERTIFICATE-----")
+OSROOTS_FLAVOURS = {
+    "rhel": {"dir": "/etc/pki/ca-trust/source/anchors", "ext": ".pem", "tool": ["update-ca-trust", "extract"],
+             "bundle": "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", "pkg": ["rpm", "-q", "ca-certificates"]},
+    "debian": {"dir": "/usr/local/share/ca-certificates", "ext": ".crt", "tool": ["update-ca-certificates"],
+               "bundle": "/etc/ssl/certs/ca-certificates.crt",
+               "pkg": ["dpkg-query", "-W", "-f=ca-certificates-${Version}", "ca-certificates"]}}
+
+
+def osroots_where():
+    fl = os.environ.get("FAKE_IGD_OSROOTS_FLAVOUR", "")
+    if fl not in OSROOTS_FLAVOURS:
+        fl = ""
+        if os.path.isdir("/etc/pki/ca-trust/source") or shutil.which("update-ca-trust"):
+            fl = "rhel"
+        elif os.path.isdir("/usr/local/share/ca-certificates") or shutil.which("update-ca-certificates"):
+            fl = "debian"
+    if not fl:
+        return None
+    w = dict(OSROOTS_FLAVOURS[fl], flavour=fl)
+    w["dir"] = os.environ.get("FAKE_IGD_OSROOTS_DIR") or w["dir"]
+    w["bundle"] = os.environ.get("FAKE_IGD_OSROOTS_BUNDLE") or w["bundle"]
+    if os.environ.get("FAKE_IGD_OSROOTS_EXTRACT"):
+        w["tool"] = os.environ["FAKE_IGD_OSROOTS_EXTRACT"].split()
+    if "FAKE_IGD_OSROOTS_PKG" in os.environ:
+        w["pkg"] = os.environ["FAKE_IGD_OSROOTS_PKG"].split()
+    return w
+
+
+def osroots_blocks(text):
+    """Each certificate of a text as (pem, der) - nothing but certificates."""
+    text = str(text or "")
+    if re.search(r"PRIVATE KEY|BEGIN ENCRYPTED|BEGIN PKCS7|BEGIN TRUSTED CERTIFICATE", text):
+        raise Refused("no private key and nothing but certificates (-----BEGIN CERTIFICATE-----)")
+    out = []
+    for body in OSROOTS_BLOCK_RE.findall(text):
+        b64 = re.sub(r"\s+", "", body)
+        try:
+            der = base64.b64decode(b64, validate=True)
+        except ValueError:
+            raise Refused("a certificate that is not base64")
+        if not der or len(der) > OSROOTS_PEM_MAX * 3 // 4:
+            raise Refused("a certificate of %d bytes - one is a few kB at most" % len(der))
+        enc = base64.b64encode(der).decode("ascii")
+        pem = "-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n" % "\n".join(
+            enc[i:i + 64] for i in range(0, len(enc), 64))
+        out.append((pem, der))
+    if not out:
+        raise Refused("no certificate in it (-----BEGIN CERTIFICATE-----)")
+    return out
+
+
+def _osroots_time(s):
+    import calendar
+    try:
+        return calendar.timegm(time.strptime(re.sub(r"\s+", " ", s.strip()), "%b %d %H:%M:%S %Y %Z"))
+    except ValueError:
+        return 0
+
+
+def osroots_facts(pem, der=None):
+    """What one certificate is, as openssl reads it - and what stands against it (refused) or is to
+    be known (warn)."""
+    if der is None:
+        der = osroots_blocks(pem)[0][1]
+    txt = openssl(["x509", "-noout", "-text", "-nameopt", "RFC2253"], "not a certificate openssl reads", pem)
+
+    def one(rx):
+        m = re.search(rx, txt, re.M)
+        return m.group(1).strip() if m else ""
+    f = {"fp": hashlib.sha256(der).hexdigest(), "subject": one(r"^\s*Subject: ?(.*)$")[:400],
+         "issuer": one(r"^\s*Issuer: ?(.*)$")[:400],
+         "not_before": _osroots_time(one(r"Not Before\s*: (.*)$")),
+         "not_after": _osroots_time(one(r"Not After\s*: (.*)$")),
+         "sig": one(r"Signature Algorithm: (\S+)")[:60]}
+    cn = re.search(r"(?:^|,)CN=((?:\\.|[^,])*)", f["subject"])
+    f["cn"] = (cn.group(1) if cn else f["subject"])[:200]
+    alg = one(r"Public Key Algorithm: (\S+)")
+    bits = one(r"Public-Key: \((\d+) bit\)")
+    curve = one(r"NIST CURVE: (\S+)") or one(r"ASN1 OID: (\S+)")
+    if alg == "rsaEncryption":
+        f["key"] = "RSA %s" % bits
+    elif alg == "id-ecPublicKey":
+        f["key"] = "EC %s" % (curve or bits)
+    elif alg:
+        f["key"] = alg.replace("ED25519", "Ed25519").replace("ED448", "Ed448")[:40]
+    else:
+        f["key"] = "?"
+    f["bits"] = int(bits) if bits.isdigit() else 0
+    bc = re.search(r"X509v3 Basic Constraints:.*\n\s*(CA:(TRUE|FALSE))", txt)
+    f["ca"] = bool(bc and bc.group(2) == "TRUE")
+    ku = re.search(r"X509v3 Key Usage:.*\n\s*(.*)", txt)
+    f["ku_sign"] = None if not ku else ("Certificate Sign" in ku.group(1))
+    f["root"] = f["subject"] == f["issuer"]
+    f["kind"] = "root" if f["root"] else "intermediate"
+    refused, warn = [], []
+    now = time.time()
+    if not bc:
+        refused.append("it says nothing of being an authority (no basicConstraints CA:TRUE) - only a certificate "
+                       "authority goes here")
+    elif not f["ca"]:
+        refused.append("it is not a certificate authority (CA:FALSE) - a server's own certificate does not go here")
+    if f["ku_sign"] is False:
+        refused.append("its key usage does not let it sign certificates (no keyCertSign)")
+    if f["not_after"] and f["not_after"] < now:
+        warn.append("it ran out on %s - nothing it signed is trusted" % time.strftime("%Y-%m-%d", time.gmtime(f["not_after"])))
+    if f["not_before"] and f["not_before"] > now + 300:
+        warn.append("it is valid only from %s" % time.strftime("%Y-%m-%d", time.gmtime(f["not_before"])))
+    if not f["root"] and re.match(r"(?i)(sha1|md5|md2)", f["sig"]):
+        warn.append("it is signed with %s - the system's crypto policy (DEFAULT) refuses it, and every chain "
+                    "through it" % f["sig"])
+    if f["key"].startswith("RSA") and 0 < f["bits"] < 2048:
+        warn.append("its key has %d bits - the system's crypto policy (DEFAULT) refuses fewer than 2048" % f["bits"])
+    f["refused"], f["warn"] = refused, warn
+    return f
+
+
+def osroots_dir_ok(d, make=False):
+    """The folder of local additions: a folder of root's, never a link."""
+    try:
+        st = os.lstat(d)
+    except FileNotFoundError:
+        if not make:
+            return False
+        os.makedirs(d, 0o755, exist_ok=True)
+        st = os.lstat(d)
+    if not stat.S_ISDIR(st.st_mode):
+        raise Refused("%s is not a folder (a link?) - nothing is written there" % d)
+    group_ok = False
+    if st.st_mode & 0o020 and not st.st_mode & 0o002:
+        try:
+            up = os.stat(os.path.dirname(os.path.abspath(d)))
+            group_ok = st.st_gid == 0 or (up.st_uid == 0 and up.st_gid == st.st_gid and up.st_mode & 0o020
+                                          and not up.st_mode & 0o002)
+        except OSError:
+            group_ok = False
+    if (st.st_uid != 0 and not os.environ.get("FAKE_IGD_OSROOTS_DIR")) or st.st_mode & 0o002 or \
+            (st.st_mode & 0o020 and not group_ok):
+        raise Refused("%s is not root's alone (owner %d, mode %o) - nothing is written there"
+                      % (d, st.st_uid, stat.S_IMODE(st.st_mode)))
+    return True
+
+
+def _osroots_read(p, most=1048576):
+    """A plain file's bytes - None for a link (never followed), a folder, a pipe."""
+    try:
+        fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as e:
+        if e.errno in (errno.ELOOP, errno.EISDIR, errno.ENXIO):
+            return None
+        raise
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        data = os.read(fd, most + 1)
+    finally:
+        os.close(fd)
+    return data[:most]
+
+
+def osroots_files(d):
+    out = []
+    try:
+        top = sorted(os.listdir(d))
+    except OSError:
+        return out
+    for n in top[:500]:
+        p = os.path.join(d, n)
+        if os.path.isdir(p) and not os.path.islink(p):
+            try:
+                out += [(n + "/" + m, os.path.join(p, m)) for m in sorted(os.listdir(p))[:200]]
+            except OSError:
+                pass
+        else:
+            out.append((n, p))
+    return out
+
+
+def osroots_cert_of_file(p):
+    raw = _osroots_read(p)
+    if raw is None:
+        return None
+    text = raw.decode("ascii", "replace")
+    if "-----BEGIN CERTIFICATE-----" not in text:
+        try:
+            got = subprocess.run([OPENSSL, "x509", "-inform", "DER"], input=raw, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, timeout=30)
+            if got.returncode != 0:
+                return []
+            text = got.stdout.decode("ascii", "replace")
+        except (OSError, subprocess.SubprocessError):
+            return []
+    out = []
+    try:
+        blocks = OSROOTS_BLOCK_RE.findall(text) and osroots_blocks(
+            "\n".join(m.group(0) for m in OSROOTS_BLOCK_RE.finditer(text)))
+    except Refused:
+        return []
+    for pem, der in (blocks or [])[:20]:
+        try:
+            f = osroots_facts(pem, der)
+            out.append({k: f[k] for k in ("fp", "cn", "subject", "issuer", "not_before", "not_after", "key", "kind", "ca")})
+        except Refused:
+            continue
+    return out
+
+
+def osroots_bundle(w):
+    out = {"path": w["bundle"], "count": 0, "bytes": 0, "at": 0}
+    try:
+        st = os.stat(w["bundle"])
+        out.update(bytes=st.st_size, at=st.st_mtime)
+        with open(w["bundle"], "rb") as f:
+            out["count"] = f.read(64 * 1048576).count(b"-----BEGIN CERTIFICATE-----")
+    except OSError:
+        out["missing"] = True
+    pkg = ""
+    if w.get("pkg"):
+        try:
+            got = subprocess.run(w["pkg"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                                 timeout=30)
+            if got.returncode == 0 and got.stdout.strip():
+                pkg = got.stdout.strip().splitlines()[0][:120]
+        except (OSError, subprocess.SubprocessError, IndexError):
+            pkg = ""
+    out["package"] = pkg
+    return out
+
+
+def _osroots_in_bundle(w, ders):
+    try:
+        with open(w["bundle"], "rb") as f:
+            flat = re.sub(rb"\s+", b"", f.read(64 * 1048576))
+    except OSError:
+        return {}
+    return {hashlib.sha256(d).hexdigest(): base64.b64encode(d) in flat for d in ders}
+
+
+def osroots_read(w):
+    """fake-igd's own, the others', the system's list."""
+    ours, others = [], []
+    if w and os.path.isdir(w["dir"]):
+        for rel, p in osroots_files(w["dir"]):
+            if OSROOTS_NAME_RE.match(rel):
+                raw = _osroots_read(p, 65536)
+                if raw is None:
+                    others.append({"file": rel, "certs": [], "link": os.path.islink(p)})
+                    continue
+                try:
+                    (pem, der), = osroots_blocks(raw.decode("ascii", "replace"))
+                    f = osroots_facts(pem, der)
+                    f.pop("refused", None)
+                    f.update(file=rel, der=der, pem=pem)
+                    ours.append(f)
+                except (Refused, ValueError):
+                    ours.append({"file": rel, "broken": True})
+            else:
+                if os.path.islink(p):
+                    try:
+                        to = os.readlink(p)[:300]
+                    except OSError:
+                        to = "?"
+                    others.append({"file": rel, "link": to, "certs": []})
+                    continue
+                read_others = sum(1 for o in others if o.get("certs"))
+                others.append({"file": rel, "certs": (osroots_cert_of_file(p) or []) if read_others < 60 else []})
+    inb = _osroots_in_bundle(w, [f["der"] for f in ours if f.get("der")]) if w else {}
+    for f in ours:
+        f.pop("der", None)
+        if f.get("fp"):
+            f["in_bundle"] = inb.get(f["fp"])
+    return {"ours": ours, "others": others[:200], "system": osroots_bundle(w) if w else {},
+            "flavour": (w or {}).get("flavour", ""), "dir": (w or {}).get("dir", ""),
+            "tool": " ".join((w or {}).get("tool") or []),
+            "tool_there": bool(w and shutil.which(w["tool"][0]))}
+
+
+def _osroots_put(d, name, pem):
+    fd, tmp = tempfile.mkstemp(prefix=".fake-igd-", dir=d)
+    try:
+        os.fchmod(fd, 0o644)
+        try:
+            os.fchown(fd, 0, 0)
+        except OSError:
+            pass
+        with os.fdopen(fd, "w") as f:
+            fd = None
+            f.write(pem)
+        os.replace(tmp, os.path.join(d, name))
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def osroots_sync(w, certs, force=False):
+    if not w:
+        raise Refused("this system has neither update-ca-trust (RHEL, AlmaLinux, Rocky) nor update-ca-certificates "
+                      "(Debian, Ubuntu)")
+    if not isinstance(certs, list) or len(certs) > OSROOTS_MAX:
+        raise Refused("the certificates wanted: a list of %d at most" % OSROOTS_MAX)
+    want, refused = {}, []
+    for c in certs:
+        if not isinstance(c, str) or len(c) > OSROOTS_PEM_MAX:
+            raise Refused("each certificate as PEM text of %d bytes at most" % OSROOTS_PEM_MAX)
+        blocks = osroots_blocks(c)
+        if len(blocks) != 1:
+            raise Refused("one certificate in each")
+        pem, der = blocks[0]
+        f = osroots_facts(pem, der)
+        if f["refused"]:
+            refused.append({"fp": f["fp"], "cn": f["cn"], "why": "; ".join(f["refused"])})
+            continue
+        want["fake-igd-%s%s" % (f["fp"][:16], w["ext"])] = pem
+    osroots_dir_ok(w["dir"], make=bool(want))
+    said, changed = [], False
+    have = {rel: p for rel, p in osroots_files(w["dir"]) if OSROOTS_NAME_RE.match(rel)} \
+        if os.path.isdir(w["dir"]) else {}
+    for name, pem in sorted(want.items()):
+        p = have.get(name)
+        if p is not None:
+            raw = _osroots_read(p, 65536)
+            if raw is not None and raw.decode("ascii", "replace") == pem and not os.path.islink(p):
+                continue
+            os.unlink(p)
+        _osroots_put(w["dir"], name, pem)
+        said.append("added %s" % name)
+        changed = True
+        if shutil.which("restorecon") and os.path.isdir("/sys/fs/selinux") and \
+                not os.environ.get("FAKE_IGD_OSROOTS_DIR"):
+            subprocess.run(["restorecon", "-F", os.path.join(w["dir"], name)], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+    for name, p in sorted(have.items()):
+        if name not in want:
+            os.unlink(p)
+            said.append("removed %s" % name)
+            changed = True
+    if not changed and not force and want:
+        inb = _osroots_in_bundle(w, [base64.b64decode(re.sub(r"-----[A-Z ]+-----|\s+", "", pem))
+                                     for pem in want.values()])
+        if inb and not all(inb.values()):
+            said.append("the system's list lacked %d of them" % sum(1 for v in inb.values() if not v))
+            changed = True
+    if changed or force:
+        if not shutil.which(w["tool"][0]):
+            raise Refused("%s is not on this machine - the files are in %s, the system's list is not made again "
+                          "until it runs" % (w["tool"][0], w["dir"]))
+        got = subprocess.run(w["tool"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                             timeout=300)
+        if got.returncode != 0:
+            raise Refused("%s ended with %d: %s" % (" ".join(w["tool"]), got.returncode,
+                                                    ((got.stderr or got.stdout).strip() or "-")[-300:]))
+        said.append("%s run" % " ".join(w["tool"]))
+    return said, refused
+
+
+def do_osroots(payload, said):
+    w = osroots_where()
+    do = payload.get("do")
+    if do == "list":
+        got = osroots_read(w)
+        said.append("read: %d of fake-igd's, %d of others'" % (len(got["ours"]), len(got["others"])))
+        return dict(got, refused=[])
+    if do == "sync":
+        s2, refused = osroots_sync(w, payload.get("certs"), payload.get("force") is True)
+        said.extend(s2 or ["nothing to change"])
+        return dict(osroots_read(w), refused=refused)
+    raise Refused("list or sync")
+
+
 def serve(payload, ask=None):
     said = []
     act = payload.get("action") if isinstance(payload, dict) else None
-    if act not in ("put", "put_back", "policy", "acme_http"):
+    if act not in ("put", "put_back", "policy", "acme_http", "osroots"):
         return {"ok": False, "action": str(act)[:20], "said": ["no such action"]}
+    if act == "osroots":
+        try:
+            got = do_osroots(payload, said)
+        except Refused as e:
+            w = osroots_where()
+            try:
+                facts = osroots_read(w)
+            except Exception:                    # noqa: BLE001 - what is there, when it reads
+                facts = {}
+            return dict(facts, ok=False, action=act, said=said + [str(e)], osroots=True)
+        return dict(got, ok=True, action=act, said=said, osroots=True)
     try:
         if act == "put":
             ok = do_put(payload, said)

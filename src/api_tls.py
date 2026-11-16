@@ -552,6 +552,12 @@ def ask_state(ctx):
     """How root's last ask of this pane went: waiting, done, failed."""
     asked = meta(ctx.store, "tls:asked") or {}
     res = ctx.root_result("tls")
+    # The trusted roots' asks share the kind: their answers are theirs, not the certificate's.
+    if res.get("osroots"):
+        osr_seen(ctx)
+        res = meta(ctx.store, "tls:lastres") or {}
+    elif res.get("id") and res.get("id") != (meta(ctx.store, "tls:lastres") or {}).get("id"):
+        set_meta(ctx.store, "tls:lastres", {k: res.get(k) for k in ("id", "ok", "action", "at", "said", "by")})
     if asked.get("id") and res.get("id") != asked["id"]:
         late = time.time() - float(asked.get("at") or 0) > 120
         return {"state": "late" if late else "waiting", "action": asked.get("action"), "at": asked.get("at"),
@@ -732,4 +738,180 @@ def post_tls(ctx):
     raise ValueError("no such action: %s" % act[:40])
 
 
-ROUTES = {("GET", "/api/tls"): get_tls, ("POST", "/api/tls"): post_tls}
+# ---- the system's trusted roots (otp's osroots, 1.0.265) -----------------------------------------
+# Certificate authorities of one's own put into the operating system's trust by root (root_tls.py,
+# action osroots: the whole set wanted, synced). What is wanted is kept here; what root found when it
+# last read the folder of local additions comes back in its answer and is kept beside it.
+def _root_tls():
+    import importlib.util
+    import sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    for d in (os.path.join(os.path.dirname(here), "deploy"), here, "/opt/fake-igd"):
+        p = os.path.join(d, "root_tls.py")
+        if os.path.isfile(p):
+            mod = sys.modules.get("_igd_root_tls")
+            if mod is None:
+                spec = importlib.util.spec_from_file_location("_igd_root_tls", p)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                sys.modules["_igd_root_tls"] = mod
+            return mod
+    raise ValueError("root_tls.py is not beside the API")
+
+
+OSR_EVERY = 1800
+
+
+def osr_want(store):
+    w = meta(store, "tls:osroots:want")
+    return [x for x in w if isinstance(x, str)] if isinstance(w, list) else []
+
+
+def osr_seen(ctx):
+    """What root last read, taken from its answer when it is newer than what is kept."""
+    seen = meta(ctx.store, "tls:osroots:seen") or {}
+    res = ctx.root_result("tls")
+    if res.get("osroots") and float(res.get("at") or 0) > float(seen.get("at") or 0):
+        seen = {k: res.get(k) for k in ("ours", "others", "system", "flavour", "dir", "tool", "tool_there",
+                                        "refused", "ok", "said", "at", "id")}
+        set_meta(ctx.store, "tls:osroots:seen", seen)
+    return seen
+
+
+def osr_ask(ctx, do, by=""):
+    pay = {"action": "osroots", "do": do}
+    if do == "sync":
+        pay["certs"] = osr_want(ctx.store)
+    ident = ctx.ask_root(pay, kind="tls")
+    set_meta(ctx.store, "tls:osroots:asked", {"id": ident, "at": time.time(), "do": do, "by": by})
+    return ident
+
+
+def osr_view(ctx):
+    seen = osr_seen(ctx)
+    asked = meta(ctx.store, "tls:osroots:asked") or {}
+    waiting = bool(asked.get("id")) and asked.get("id") != seen.get("id") and time.time() - float(asked.get("at") or 0) < 600
+    if not waiting and time.time() - float(seen.get("at") or 0) > OSR_EVERY and ctx.me:
+        osr_ask(ctx, "list")
+        waiting = True
+    R = _root_tls()
+    ours = {f.get("fp"): f for f in (seen.get("ours") or []) if f.get("fp")}
+    certs = []
+    for pem in osr_want(ctx.store):
+        try:
+            (p2, der), = R.osroots_blocks(pem)
+            f = R.osroots_facts(p2, der)
+        except Exception:                                   # noqa: BLE001 - kept, said broken
+            continue
+        o = ours.get(f["fp"]) or {}
+        c = {k: f.get(k) for k in ("fp", "cn", "subject", "issuer", "not_before", "not_after", "key", "kind", "warn")}
+        c.update(pem=p2, on=bool(o) and o.get("in_bundle") is not False)
+        certs.append(c)
+    status = "waiting" if waiting else ("failed" if seen.get("ok") is False else
+                                        ("applied" if certs and all(c["on"] for c in certs) else
+                                         ("none" if not certs and not ours else "waiting")))
+    why = ""
+    if seen.get("ok") is False:
+        why = (seen.get("said") or [""])[-1]
+    elif seen.get("refused"):
+        why = "; ".join("%s: %s" % (r.get("cn"), r.get("why")) for r in seen["refused"])
+    return {"may": (ctx.me or {}).get("role") == "fulladmin", "certs": certs, "max": R.OSROOTS_MAX,
+            "node": {"name": socket.gethostname(), "status": status, "why": why, "system": seen.get("system") or {},
+                     "dir": seen.get("dir") or "", "tool": seen.get("tool") or "", "tool_there": seen.get("tool_there"),
+                     "ours": [{k: f.get(k) for k in ("fp", "cn", "file", "in_bundle", "broken")} for f in seen.get("ours") or []],
+                     "others": seen.get("others") or [], "at": seen.get("at")},
+            "python": {"cafile": ca_file()}}
+
+
+def get_osroots(ctx):
+    ctx.need("readonly")
+    return osr_view(ctx)
+
+
+def post_osroots(ctx):
+    me = ctx.need("fulladmin")
+    who = me.get("name", "")
+    b = ctx.body()
+    act = str(b.get("action") or "")
+    R = _root_tls()
+    if act == "check":
+        text = b.get("text")
+        if not isinstance(text, str) or len(text) > R.OSROOTS_MAX * R.OSROOTS_PEM_MAX:
+            raise ValueError("the certificates as PEM text")
+        have = set()
+        for pem in osr_want(ctx.store):
+            try:
+                have.add(R.osroots_facts(pem)["fp"])
+            except Exception:                               # noqa: BLE001
+                pass
+        out = []
+        try:
+            for pem, der in R.osroots_blocks(text)[:R.OSROOTS_MAX + 1]:
+                f = R.osroots_facts(pem, der)
+                out.append(dict(f, pem=pem, already=f["fp"] in have))
+        except R.Refused as e:
+            raise ValueError(str(e))
+        return {"certs": out}
+    if act == "add":
+        try:
+            blocks = R.osroots_blocks(str(b.get("text") or ""))
+        except R.Refused as e:
+            raise ValueError(str(e))
+        want = osr_want(ctx.store)
+        fps = set()
+        for pem in want:
+            try:
+                fps.add(R.osroots_facts(pem)["fp"])
+            except Exception:                               # noqa: BLE001
+                pass
+        added, refused = [], []
+        for pem, der in blocks:
+            try:
+                f = R.osroots_facts(pem, der)
+            except R.Refused as e:
+                raise ValueError(str(e))
+            if f["refused"]:
+                refused.append("%s: %s" % (f["cn"], "; ".join(f["refused"])))
+                continue
+            if f["fp"] in fps:
+                continue
+            want.append(pem)
+            fps.add(f["fp"])
+            added.append(f["cn"])
+        if refused and not added:
+            raise ValueError("; ".join(refused))
+        if len(want) > R.OSROOTS_MAX:
+            raise ValueError("%d at most" % R.OSROOTS_MAX)
+        if not added:
+            raise ValueError("there already - nothing new in it")
+        set_meta(ctx.store, "tls:osroots:want", want)
+        osr_ask(ctx, "sync", who)
+        ctx.event("%s added to the system's trust: %s - root puts it in" % (who, ", ".join(added)), "warn")
+        return dict(osr_view(ctx), message="added - root puts it into the system's trust in a moment" +
+                    ("; not taken: %s" % "; ".join(refused) if refused else ""))
+    if act == "remove":
+        fp = str(b.get("fp") or "")
+        want, gone = [], ""
+        for pem in osr_want(ctx.store):
+            try:
+                f = R.osroots_facts(pem)
+            except Exception:                               # noqa: BLE001
+                continue
+            if f["fp"] == fp:
+                gone = f["cn"]
+            else:
+                want.append(pem)
+        if not gone:
+            raise ValueError("no such authority here")
+        set_meta(ctx.store, "tls:osroots:want", want)
+        osr_ask(ctx, "sync", who)
+        ctx.event("%s took %s out of the system's trust - root takes it away" % (who, gone), "warn")
+        return dict(osr_view(ctx), message="taken away - root takes it out of the system's trust in a moment")
+    if act == "refresh":
+        osr_ask(ctx, "list", who)
+        return dict(osr_view(ctx), message="root reads it again - a moment")
+    raise ValueError("check, add, remove or refresh")
+
+
+ROUTES = {("GET", "/api/tls"): get_tls, ("POST", "/api/tls"): post_tls,
+          ("GET", "/api/osroots"): get_osroots, ("POST", "/api/osroots"): post_osroots}
