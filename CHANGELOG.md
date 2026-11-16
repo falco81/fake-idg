@@ -2,6 +2,16 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.5.3 (2026-11-16)
+
+- **No double scrollbar on a long list**: a table of more than 50 rows (156 mDNS services) was paged
+  into a box that scrolled by itself inside the held one. A list in a held card is drawn whole now, in
+  its one scrolling box (mDNS, Ports, Clients, Mappings), and nothing inside a held box ever scrolls by
+  itself. Checked with 160 services, 100 ports and 70 clients at 1920×960, 1366×768 and 1280×720.
+- mDNS: the four large cards over the list became otp's tiles inside the list's card (as otp's
+  Enrolment) - on a smaller screen they pushed the list into a second scroller.
+- The package is made from what is committed (git archive), never from what lies in the working folder.
+
 ## 1.5.2 (2026-11-16)
 
 - **The upgrade to 1.5.1 did not start** (`No module named 'igd_panes'`): install.sh put in the

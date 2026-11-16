@@ -348,21 +348,12 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
 
 <!-- ===================== mDNS ===================== -->
 <section class="panel" id="tab-mdns" hidden>
-  <div class="grid top">
-    <div class="card metric ok" id="card-avahi"><div class="label">avahi-daemon</div>
-      <div class="value" id="m-avahi">–</div><div class="sub" id="m-avahi-sub">&nbsp;</div></div>
-    <div class="card metric info" id="card-refl"><div class="label">The reflector</div>
-      <div class="value" id="m-refl">–</div><div class="sub" id="m-refl-sub">&nbsp;</div></div>
-    <div class="card metric info" id="card-mifs"><div class="label">Interfaces</div>
-      <div class="value" id="m-mifs">–</div><div class="sub" id="m-mifs-sub">&nbsp;</div></div>
-    <div class="card metric info" id="card-msvc"><div class="label">Services seen</div>
-      <div class="value" id="m-msvc">–</div><div class="sub" id="m-msvc-sub">&nbsp;</div></div>
-  </div>
-  <div class="card full" data-hold style="margin-top:14px">
+  <div class="card full" data-hold>
     <h2>Services on the network <span class="right" id="ms-said"></span></h2>
     <p class="note">What mDNS shows now on every interface avahi uses - AirPlay, Chromecast, printers,
       the PS5 - asked of avahi-daemon (<span class="mono">avahi-browse -a -r</span>, as
       <span class="mono">upnp mdns services</span>). Click a row for all it says.</p>
+    <div class="facts" id="ms-tiles"></div>
     <div class="btnrow filters">
       <input type="search" id="ms-q" placeholder="a name, a type (_airplay), an address, an interface…" style="flex:1;min-width:200px">
       <select id="ms-iface"><option value="">every interface</option></select>

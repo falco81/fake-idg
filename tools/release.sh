@@ -18,7 +18,9 @@ KEY="${1:-${FAKE_IGD_RELEASE_KEY:-}}"
 cd "$ROOT"
 V="$(sed -n "s/^__version__ = '\(.*\)'.*/\1/p" src/fake-igd.py | head -n1)"
 [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "src/fake-igd.py has no __version__ X.Y.Z" >&2; exit 1; }
-# Every place that says the version says the same one.
+# Every place that says the version says the same one - as committed.
+git diff --quiet HEAD -- src/fake-igd.py src/upnp.py web/igd-page.php CHANGELOG.md README.md \
+  || { echo "commit the version first: the package is made from HEAD" >&2; exit 1; }
 grep -q "^VERSION = \"$V\"" src/upnp.py || { echo "src/upnp.py VERSION is not $V" >&2; exit 1; }
 grep -q "const IGD_VERSION = '$V';" web/igd-page.php || { echo "web/igd-page.php IGD_VERSION is not $V" >&2; exit 1; }
 grep -q "^## $V\b" CHANGELOG.md || { echo "CHANGELOG.md has no ## $V" >&2; exit 1; }
@@ -31,14 +33,12 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 TOP="fake-igd-$V"
 mkdir "$WORK/$TOP"
-# What goes in: everything of the repository but the releases, the tools, git's own.
-git ls-files -z --cached --others --exclude-standard \
-  | grep -zvE '^(release/|tools/|\.git|\.github/)' \
-  | grep -zvE '(__pycache__|\.pyc$)' \
-  | while IFS= read -r -d '' f; do
-      [[ -f "$f" ]] || continue
-      install -D -m "$( [[ -x "$f" ]] && echo 0755 || echo 0644 )" "$f" "$WORK/$TOP/$f"
-    done
+# What goes in (1.5.3): the committed tree of HEAD - never what is lying in the working folder
+# (work in progress, files of somebody else's), and never the releases, the tools, git's own.
+git archive --format=tar HEAD | tar -x -C "$WORK/$TOP"
+rm -rf "$WORK/$TOP/release" "$WORK/$TOP/tools" "$WORK/$TOP/.gitignore" "$WORK/$TOP/.github"
+find "$WORK/$TOP" -name __pycache__ -prune -exec rm -rf {} +
+find "$WORK/$TOP" -type d -empty -delete
 ( cd "$WORK/$TOP" && find . -type f ! -name MANIFEST ! -name MANIFEST.sig -printf '%P\n' | LC_ALL=C sort \
     | while IFS= read -r f; do printf '%s  %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$f"; done > MANIFEST )
 openssl pkeyutl -sign -inkey "$KEY" -rawin -in "$WORK/$TOP/MANIFEST" -out "$WORK/$TOP/MANIFEST.sig"

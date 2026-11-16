@@ -377,7 +377,7 @@ function loadPorts() {
       tr.appendChild(noI18n(el('td', '', r.description || '')));
       tr.onclick = function () { $('rq-q').value = String(r.port); showTab('requests'); };
       return tr;
-    }, 'plain|No port has been asked for in this window'));
+    }, 'plain|No port has been asked for in this window', {own: true}));
     explainWhatWasDrawn(host);
   }).catch(oops);
 }
@@ -470,7 +470,7 @@ function loadClients() {
       tr.appendChild(noI18n(el('td', 'muted small', r.user_agent || '')));
       tr.onclick = function () { $('rq-q').value = r.client; showTab('requests'); };
       return tr;
-    }, 'plain|No client in this window'));
+    }, 'plain|No client in this window', {own: true}));
     explainWhatWasDrawn(host);
   }).catch(oops);
 }
@@ -493,7 +493,7 @@ function loadMappings() {
       tr.appendChild(noI18n(el('td', 'mono', m.requested_by || '')));
       tr.appendChild(noI18n(el('td', '', m.description || '')));
       return tr;
-    }, 'plain|No mapping now - they are kept only while the answer is accept and the mode active'));
+    }, 'plain|No mapping now - they are kept only while the answer is accept and the mode active', {own: true}));
   }).catch(oops);
 }
 
@@ -924,19 +924,26 @@ function avahiSetting(k) {
           bool: k.bool, source: k.source, source_says: k.source_says, secret: false,
           list: k.kind === 'ifaces' || k.kind === 'list', restarts: false, root: true};
 }
+/* The reflector at a glance, as otp's tiles over a list (Enrolment): in the one held card. */
 function paintMdnsCards(d) {
+  var host = $('ms-tiles');
+  clear(host);
   if (!d.installed) {
-    setCard('avahi', 'none', d.error || 'avahi is not installed: dnf install avahi avahi-tools', 'info');
-    ['refl', 'mifs', 'msvc'].forEach(function (c) { setCard(c, '–', '\u00a0', 'info'); });
+    host.appendChild(peekFacts([['avahi-daemon', 'not installed'], ['What to do', d.error || 'dnf install avahi avahi-tools']]));
     return;
   }
-  var on = d.service.state === 'active';
-  setCard('avahi', on ? 'running' : d.service.state, (d.version ? 'avahi ' + d.version + ' · ' : '') + 'since ' + (d.service.since || '?'),
-          on ? 'ok' : 'crit');
-  setCard('refl', d.reflector ? 'on' : 'off', d.reflect_filters.length ? 'only ' + d.reflect_filters.join(', ') : 'every service type'
-          + (d.reflect_ipv ? ' · between IPv4 and IPv6' : ''), d.reflector ? 'ok' : 'warn');
-  setCard('mifs', num(d.interfaces.length), d.interfaces.map(function (i) { return i.name + (i.ipv4[0] ? ' ' + i.ipv4[0] : ''); }).join(' · ')
-          + (d.missing_interfaces.length ? ' · missing: ' + d.missing_interfaces.join(', ') : ''), d.missing_interfaces.length ? 'warn' : 'info');
+  var svc = AV.svc ? AV.svc.services : null, types = {};
+  (svc || []).forEach(function (s) { types[s.type] = 1; });
+  var tiles = peekFacts([
+    ['avahi-daemon', d.service.state === 'active' ? 'running' + (d.version ? ' · avahi ' + d.version : '') : d.service.state],
+    ['The reflector', d.reflector ? 'on' + (d.reflect_filters.length ? ' · only ' + d.reflect_filters.join(', ') : ' · every type') : 'off'],
+    ['Interfaces', d.interfaces.map(function (i) { return i.name; }).join(', ') + (d.missing_interfaces.length ? ' · missing: ' + d.missing_interfaces.join(', ') : '')],
+    ['Services seen', svc ? num(svc.length) + ' · ' + num(Object.keys(types).length) + ' type(s)' : '…']
+  ]);
+  var cells = tiles.querySelectorAll('.fact');
+  if (cells[0]) cells[0].classList.add(d.service.state === 'active' ? 'good' : 'bad');
+  cells[0].onclick = cells[1].onclick = function () { PANE = 'mdns'; showTab('settings'); };
+  host.appendChild(tiles);
 }
 function loadMdnsTab() {
   apiLatest('mdns', 'mdns').then(function (d) {
@@ -976,7 +983,7 @@ function drawServices() {
   });
   var types = {};
   d.services.forEach(function (s) { types[s.type] = 1; });
-  setCard('msvc', num(d.services.length), num(Object.keys(types).length) + ' type(s) · asked ' + ago(d.at), 'info');
+  if (AV.d) paintMdnsCards(AV.d);
   $('tabn-mdns').textContent = d.services.length ? num(d.services.length) : '';
   $('ms-said').textContent = num(rows.length) + ' of ' + num(d.services.length);
   var host = $('ms-table');
@@ -997,14 +1004,12 @@ function drawServices() {
       });
     };
     return tr;
-  }, 'plain|' + (d.hint || 'Nothing is shown on mDNS now - or avahi-daemon is not running')));
+  }, 'plain|' + (d.hint || 'Nothing is shown on mDNS now - or avahi-daemon is not running'), {own: true}));
   explainWhatWasDrawn(host);
 }
 $('ms-look').onclick = loadServices;
 ['ms-iface', 'ms-proto'].forEach(function (id) { $(id).onchange = drawServices; });
 $('ms-q').addEventListener('input', debounce(drawServices, 200));
-cardGo('avahi', function () { PANE = 'mdns'; showTab('settings'); });
-cardGo('refl', function () { PANE = 'mdns'; showTab('settings'); });
 
 function loadAvahiPane() {
   api('mdns').then(function (d) {
