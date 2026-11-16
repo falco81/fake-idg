@@ -2,6 +2,42 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.7.2 (2026-11-17)
+
+Everything gone through once more against otp 1.0.288, in its code and side by side on the screen.
+
+- **SNMPv3, as otp's** (Settings → Monitoring): the pages' API answers it itself - GET, GETNEXT, GETBULK,
+  authPriv only (USM: HMAC-SHA-1/-256/-512, AES-128/-256; otp's AES in Python where `cryptography` is not
+  there), the system group and FAKE-IGD-MIB (deploy/FAKE-IGD-MIB.txt: services, requests and ports
+  asked/refused, devices, mappings, mDNS reflector, alerts, certificate, machine, disks, mail, logs,
+  upgrade, every /metrics sample as a table). Traps when something goes wrong and when it is right again,
+  a test and a test trap on the pane, the MIB to download, the alert "The SNMP agent not listening". The
+  firewall opens its UDP port while it is on; fake-igd-api.service gets CAP_NET_BIND_SERVICE (port 161).
+- **Upgrades in maintenance, as otp's**: no red "not answering" while an upgrade runs. Root's helper and
+  install.sh --upgrade (by hand too) write their progress where the pages read it without the API: a band
+  on every page (percent, step N of M, how long, "not answering for N s" while the API or nginx/PHP
+  restart), the pill "in maintenance", the cards "maintenance" / "upgrading", no service-down alert; at
+  the end the page loads the new version by itself. /healthz says "maintenance". A failed one: a red band.
+- **Certificates and TLS, every function of otp's**: the chain checked and completed (missing authorities
+  fetched from their CA Issuers address, or uploaded), a private CA's root kept to check with, RSA and
+  ECDSA together, the second certificate's chain, Download in otp's formats (PEM, full chain, DER,
+  PKCS#7, PFX with the key, PEM with a locked key), Back to the one before; **DH parameters made with
+  otp's progress bar**, and made once (not again at every save). No false "root has not taken it yet":
+  a long DH, or an answer overwritten before the pages saw it, is no longer "late"; the trusted roots
+  are "nothing added", green, as otp's.
+- **The service**: the buttons of the units in columns by their kind (log, Reload, Restart, Stop/Start).
+- **Network**: IPv4 and IPv6 in one grid of five columns, each field under its fellow; the warning as
+  wide as the sections, 14 px from them.
+- **UPnP network** and **mDNS reflector**: the interfaces in a card of their own across the page, the
+  description's address and its copy button on one line, each address on its own line, what avahi
+  does on each interface.
+- Settings asleep while a switch is off woke up again when it was switched on only after a save - they
+  wake at once now (a switch says 1/0, the rules true/false).
+- Mail and ntfy: the authority pasted is saved with the save bar (otp's way, no "Add it"); Outgoing mail
+  suggests its fields; System updates shows any dnf run with otp's progress card; Overview's service card
+  "vm · version · up N"; the popups of Ports and Clients no longer overflow; smaller fixes in How it
+  answers, Alerts, Syslog and SIEM, Time, Backups and About (otp's words for its settings).
+
 ## 1.7.1 (2026-11-16)
 
 - **Certificates and TLS**: "root has not taken it yet" no longer said of a certificate root did put in -

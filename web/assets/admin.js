@@ -1941,6 +1941,8 @@ function applyOnlyWhenNow() {
     if (!up.live) return (seen[key] = up);
     var now = valueOf(master);
     var want = String(rule[1]);
+    /* A switch says 1/0 (wrap._get), a rule true/false (igd_panes: only_when (key, True)) - one word for both. */
+    if (want === 'true' || want === 'false') now = (now === '1' || now === 'true') ? 'true' : (now === '0' || now === 'false' || now === '' ? 'false' : now);
     var live = want === '*' ? !!now.trim() : (want.slice(-4) === '-not' ? now !== want.slice(0, -4) : now === want);
     return (seen[key] = {live: live, by: rule[0], want: want, now: now});
   }

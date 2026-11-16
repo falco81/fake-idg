@@ -260,8 +260,8 @@ FW_PROTOS = ("tcp", "udp", "icmp", "vrrp", "any")
 FW_ACTIONS = ("accept", "drop", "reject")
 # What can be switched off: ssh and icmp are config.json's firewall_ssh / firewall_icmp (as before),
 # the rest are kept in firewall-rules.json ("off").
-FW_OPTIONAL = ("ssh", "icmp", "dhcpv6", "upnp", "pages")
-FW_OFF_KEYS = ("dhcpv6", "upnp", "pages")
+FW_OPTIONAL = ("ssh", "icmp", "dhcpv6", "upnp", "pages", "snmp")
+FW_OFF_KEYS = ("dhcpv6", "upnp", "pages", "snmp")
 FW_MOST_RULES = 100
 NOTE_RE = re.compile(r"[^A-Za-z0-9 ._:/@()+,-]")
 RULE_ID_RE = re.compile(r"^[A-Za-z0-9]{1,24}\Z")
@@ -517,6 +517,14 @@ def builtin(cfg, conf=None, pages_here=None):
                   "why": "these pages - from everybody, or from the networks of “Who may reach the pages”"
                          " (and port 80 from anywhere while ACME checks names by HTTP-01)",
                   "lines": pages, "rules": shown})
+    # SNMPv3 (1.7.2): its UDP port while it is on - deploy/root_fw.py builds it from the settings.
+    try:
+        import root_fw
+        snmp = root_fw.snmp_item(off)
+    except Exception:                         # noqa: BLE001 - the rest of the chain all the same
+        snmp = None
+    if snmp:
+        items.append(snmp)
     return items
 
 

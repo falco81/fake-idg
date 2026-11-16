@@ -315,6 +315,8 @@ install_program() {
         case "$(basename "$m")" in fake-igd.py|upnp.py|fake_igd_api.py) continue;; esac
         install -m 0644 "$m" "$OPT_DIR/$(basename "$m")"
     done
+    # FAKE-IGD-MIB (1.7.2): Settings → Monitoring hands it out (api_monitor.py looks beside itself)
+    [[ -f "$SOURCE_DIR/deploy/FAKE-IGD-MIB.txt" ]] && install -m 0644 "$SOURCE_DIR/deploy/FAKE-IGD-MIB.txt" "$OPT_DIR/FAKE-IGD-MIB.txt"
     # ...and none that a version before shipped and this one does not (an old pane's API).
     for m in "$OPT_DIR"/api_*.py; do
         [[ -f "$m" && ! -f "$SOURCE_DIR/src/$(basename "$m")" ]] && rm -f "$m"

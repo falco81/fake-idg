@@ -84,6 +84,9 @@ SETTINGS = [
                               "none that went in time."},
     {"key": "alerts_logs", "name": "Logs not reaching the syslog servers", "kind": "bool", "default": True,
      "only_when": ON, "says": "Sending to the syslog servers (SIEM) failing - not reached, refused."},
+    {"key": "alerts_snmp", "name": "The SNMP agent not listening", "kind": "bool", "default": True,
+     "only_when": ON, "says": "SNMPv3 switched on and its agent not listening (the port taken, refused), "
+                              "or its traps not going out."},
     {"key": "alerts_newer", "name": "A new version is out", "kind": "bool", "default": True, "only_when": ON,
      "says": "A newer fake-igd at the address of Upgrades (looked for every day, when that is on)."},
     {"key": "alerts_disk_pct", "name": "A disk fuller than (%)", "kind": "int", "default": 85, "min": 0, "max": 99,
@@ -165,8 +168,8 @@ def problems(ctx, c=None):
     if c.get("alerts_service") or c.get("alerts_avahi"):
         units = mon.unit_states()
         st = units.get("fake-igd.service")
-        import igd_online as ON
-        if c.get("alerts_service") and st != "active" and not ON.status().get("busy"):
+        import igd_online as UPG_ON
+        if c.get("alerts_service") and st != "active" and not UPG_ON.status().get("busy"):
             out["service"] = {"level": "bad", "title": "fake-igd.service is %s" % st, "pane": "service",
                               "said": "Nothing on the network is answered - Settings → The service, or sudo upnp start."}
         av = units.get("avahi-daemon.service")
@@ -259,6 +262,19 @@ def problems(ctx, c=None):
         if osup.get("security"):
             out["updates"] = {"level": "warn", "title": "%d security update(s) waiting" % osup["security"],
                               "pane": "osup", "said": "As System updates found them %s." % _ago(osup.get("at"))}
+    if c.get("alerts_snmp", True):
+        try:
+            mon = __import__("api_monitor")
+            if mon._setting(ctx.store, "snmp"):
+                sn = mon.snmp_view(ctx).get("agent") or {}
+                if sn and "listening" in sn and not sn.get("listening"):
+                    out["snmp"] = {"level": "warn", "title": "The SNMP agent is not listening", "pane": "monitor",
+                                   "said": str(sn.get("error") or "Its port could not be opened.")[:300]}
+                elif sn.get("trap_error") and mon._setting(ctx.store, "snmp_traps"):
+                    out["snmp:trap"] = {"level": "warn", "title": "SNMP traps do not go", "pane": "monitor",
+                                        "said": str(sn["trap_error"])[:300]}
+        except Exception:                               # noqa: BLE001
+            pass
     return out
 
 
