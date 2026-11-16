@@ -17,7 +17,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from xml.etree import ElementTree as ET
 
-VERSION = "1.3"
+VERSION = "1.4.0"
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 APP = "fake-igd"
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
@@ -46,6 +46,15 @@ DEFAULTS = {
     "state_dir": "/var/lib/fake-igd",
     "interface_rescan_seconds": 60,
     "notify_interval_seconds": 300,
+    "site_name": "",
+    "api_port": 9862,
+    "session_idle_minutes": 120,
+    "web_allow": ["192.168.0.0/16", "172.16.0.0/12", "10.0.0.0/8"],
+    "firewall": False,
+    "firewall_ssh": True,
+    "firewall_icmp": True,
+    "upgrade_url": "https://github.com/falco81/fake-idg/tree/main/release",
+    "upgrade_check": True,
 }
 KEY_HELP = {
     "mode": "active = answer like a UPnP router, passive = only listen and log",
@@ -70,10 +79,19 @@ KEY_HELP = {
     "state_dir": "state directory (mappings.json)",
     "interface_rescan_seconds": "how often to check for interface changes",
     "notify_interval_seconds": "SSDP announcement interval in active mode",
+    "site_name": "what the web pages call this installation (empty = the host name)",
+    "api_port": "TCP port of the API the web pages ask, on 127.0.0.1 only (fake-igd-api.service)",
+    "session_idle_minutes": "a sign-in to the web pages ends after this many minutes without a request",
+    "web_allow": "who may reach the web pages: addresses or networks (nginx allow, and the firewall's 80/443); empty = everybody",
+    "firewall": "iptables: fake-igd's own chain FAKE-IGD-IN, jumped to first from INPUT, lets in what fake-igd needs (as otp's OTP-IN)",
+    "firewall_ssh": "the chain lets SSH (tcp 22) in from anywhere - keep a rule of your own if you switch it off",
+    "firewall_icmp": "the chain lets ping (ICMP) in",
+    "upgrade_url": "where new versions are looked for: a GitHub folder, a web page with links, or one package's address (https)",
+    "upgrade_check": "look at upgrade_url once a day (upnp upgrade check asks at any time)",
 }
 ALLOWED_VALUES = {"mode": ("active", "passive"), "mapping_response": ("accept", "reject"),
                   "log_level": ("DEBUG", "INFO", "WARNING", "ERROR")}
-NUMBER_RANGES = {"http_port": (1, 65535), "ntfy_priority": (1, 5), "interface_rescan_seconds": (10, 3600),
+NUMBER_RANGES = {"api_port": (1024, 65535), "session_idle_minutes": (5, 1440), "http_port": (1, 65535), "ntfy_priority": (1, 5), "interface_rescan_seconds": (10, 3600),
                  "notify_interval_seconds": (30, 86400)}
 SECRET_KEYS = ("ntfy_token", "ntfy_password")
 SETTING_GROUPS = [
@@ -83,7 +101,18 @@ SETTING_GROUPS = [
     ("Notifications (ntfy)", ["ntfy_url", "ntfy_token", "ntfy_user", "ntfy_password", "ntfy_priority",
                               "ntfy_tags", "ntfy_ca_file", "notify_on_renew", "notify_other_router"]),
     ("Logs and state", ["log_level", "log_file", "request_log", "state_dir"]),
+    ("Web pages and firewall", ["site_name", "web_allow", "session_idle_minutes", "api_port",
+                                "firewall", "firewall_ssh", "firewall_icmp"]),
+    ("Upgrades", ["upgrade_url", "upgrade_check"]),
 ]
+# What the fake-igd service itself uses: a change of anything else does not restart it (1.4.0).
+SERVICE_KEYS = ("mode", "mapping_response", "http_port", "external_ip", "interfaces", "exclude_interfaces",
+                "allowed_clients", "ntfy_url", "ntfy_token", "ntfy_user", "ntfy_password", "ntfy_priority",
+                "ntfy_tags", "ntfy_ca_file", "notify_on_renew", "notify_other_router", "log_level", "log_file",
+                "request_log", "state_dir", "interface_rescan_seconds", "notify_interval_seconds")
+# What root has to put in place again when it changes: nginx's allow list, the firewall's chain.
+ROOT_KEYS = ("web_allow", "firewall", "firewall_ssh", "firewall_icmp", "http_port", "interfaces",
+             "exclude_interfaces", "api_port")
 
 
 def shown_value(key, v):
@@ -126,7 +155,7 @@ def check_value(key, raw):
                 pass
             return None, "%s: invalid JSON list" % key
         v = [x.strip() for x in raw.split(",") if x.strip()]
-        if key == "allowed_clients":
+        if key in ("allowed_clients", "web_allow"):
             import ipaddress
             for x in v:
                 try:
@@ -144,6 +173,10 @@ def check_value(key, raw):
         return None, "ntfy_url must be http(s)://server/topic, e.g. https://ntfy.example.com/ps5"
     if key == "ntfy_ca_file" and v and not os.path.isfile(v):
         return None, "ntfy_ca_file: %s is not a file" % v
+    if key == "upgrade_url" and v and not v.startswith("https://"):
+        return None, "upgrade_url: an address starting https://"
+    if key == "site_name" and len(v) > 60:
+        return None, "site_name: 60 characters at most"
     if key == "external_ip" and v and v != "auto":
         import ipaddress
         try:
@@ -1304,6 +1337,9 @@ def cmd_test(args, cfg):
 
 
 def cmd_firewall(args, cfg):
+    if getattr(args, "apply", False) or getattr(args, "off", False) or getattr(args, "status", False):
+        import upnp_admin
+        sys.exit(upnp_admin.firewall_do(sys.modules[__name__], args, cfg))
     port = cfg["http_port"]
     ifaces = local_interfaces()
     excl = set(cfg.get("exclude_interfaces") or [])
@@ -1566,6 +1602,8 @@ commands by purpose:
   notifications   notify-test
   mDNS reflector  mdns (status, services, browse, reflector, interfaces, filters, log)
   maintenance     clear, version
+  upgrades        upgrade (check, online, file, status, follow, log)
+  web pages       web, user (list, add, passwd, role, del, sessions)
   console         --console (menus, live log), --console-at-login on|off|status
 
 typical workflow:
@@ -1584,6 +1622,8 @@ files:
   /var/log/fake-igd/fake-igd.log       main log
   /var/log/fake-igd/requests.jsonl     requests (JSON lines)
   /var/lib/fake-igd/mappings.json      current "mappings"
+  /var/lib/fake-igd/fake-igd.db        the web pages' accounts, sign-ins and events (SQLite)
+  https://SERVER/admin/                the web pages (nginx, php-fpm, fake-igd-api)
 
 colours: colorama (or raw ANSI); disable with --no-color or the NO_COLOR variable.
 read logs without sudo: sudo usermod -aG fake-igd $USER  (then log in again)
@@ -1741,7 +1781,14 @@ def build_parser():
             "  upnp firewall --interface ens161 --interface ens224\n"
             "  upnp firewall --source 172.16.16.0/24\n"
             "  upnp firewall --format firewalld --zone internal\n"
-            "  upnp firewall -q | grep -v '^#' | sudo sh      # apply (iptables)", aliases=("fw",))
+            "  upnp firewall -q | grep -v '^#' | sudo sh      # apply (iptables) by hand\n"
+            "\n"
+            "fake-igd's own chain, as otp's OTP-IN (1.4.0) - FAKE-IGD-IN, jumped to first from INPUT,\n"
+            "ACCEPT rules only (loopback, answers, SSH, ping, 1900/udp, http_port/tcp, 80/443 from web_allow),\n"
+            "put in at once and kept in /etc/sysconfig/iptables between '# fake-igd:' lines:\n"
+            "  sudo upnp firewall --apply          # switch it on (firewall=on) and put it in place\n"
+            "  sudo upnp firewall --status         # what is in place\n"
+            "  sudo upnp firewall --off            # the chain and its jump taken away", aliases=("fw",))
     s.add_argument("--format", "-F", choices=("auto", "iptables", "nft", "firewalld"), default="auto",
                    help="rule format (default auto = by the active firewall service)")
     s.add_argument("--interface", "-i", action="append", metavar="IFACE",
@@ -1749,6 +1796,10 @@ def build_parser():
     s.add_argument("--source", "-s", action="append", metavar="CIDR", help="limit to a source subnet (repeatable)")
     s.add_argument("--zone", action="append", metavar="ZONE", help="firewalld zone (repeatable)")
     s.add_argument("--quiet", "-q", action="store_true", help=argparse.SUPPRESS)
+    fx = s.add_mutually_exclusive_group()
+    fx.add_argument("--apply", action="store_true", help="put fake-igd's chain FAKE-IGD-IN in place (iptables, root)")
+    fx.add_argument("--off", action="store_true", help="take FAKE-IGD-IN and its jump away (root)")
+    fx.add_argument("--status", action="store_true", help="what of FAKE-IGD-IN is in place (root)")
     s.set_defaults(func=cmd_firewall)
 
     s = add("config", "show and change the configuration",
@@ -1911,6 +1962,79 @@ def build_parser():
 
     s = add("version", "versions of the CLI, Python and colorama", "Prints versions.")
     s.set_defaults(func=cmd_version)
+
+    def admin(fn_name):
+        def go(a, c):
+            import upnp_admin
+            sys.exit(getattr(upnp_admin, fn_name)(sys.modules[__name__], a, c) or 0)
+        return go
+
+    s = add("upgrade", "a new version from the web (or a package file), checked and put in by root",
+            "New versions of fake-igd, as otp's --upgrade-check / --upgrade-online:\n"
+            "  check              look at upgrade_url now: which versions are there, is one newer\n"
+            "  online [VERSION]   fetch the newest (or VERSION), check its signature and every file,\n"
+            "                     and have root put it in (fake-igd-upgrade.path) - followed here\n"
+            "  file PATH          the same with a fake-igd-X.Y.Z.tar.gz you have\n"
+            "  status             how the last upgrade went\n"
+            "  follow             follow one going on, with its progress bar\n"
+            "  log                what install.sh said the last time\n"
+            "A package must be signed by a release key this machine trusts (/opt/fake-igd/release-keys),\n"
+            "every file must be the one signed, and it must not be older than what is installed -\n"
+            "going back is only by hand: sudo upnp upgrade file OLDER.tar.gz --downgrade.\n"
+            "Nothing is ever put in by itself; upgrade_check only looks once a day (for the pages).",
+            "examples:\n"
+            "  upnp upgrade check\n"
+            "  sudo upnp upgrade online\n"
+            "  sudo upnp upgrade online 1.4.2 --yes\n"
+            "  sudo upnp upgrade file /root/fake-igd-1.4.2.tar.gz\n"
+            "  upnp upgrade follow\n"
+            "the web: https://SERVER/admin/ → Settings → Upgrades", aliases=("up",))
+    s.add_argument("what", nargs="?", choices=("check", "online", "file", "status", "follow", "log"),
+                   metavar="check|online|file|status|follow|log")
+    s.add_argument("version", nargs="?", metavar="VERSION|PATH", help="the version (online) or the package (file)")
+    s.add_argument("--yes", "-y", action="store_true", help="do not ask")
+    s.add_argument("--no-follow", action="store_true", help="ask root and leave - upnp upgrade follow later")
+    s.add_argument("--downgrade", action="store_true", help="file: put an older version in (root, by hand)")
+    s.add_argument("--quiet", "-q", action="store_true", help="do not print what is new")
+    s.add_argument("--json", action="store_true", help="JSON output (check, status)")
+    s.add_argument("-n", "--lines", type=int, default=400, help="log: how many lines (default 400)")
+    s.set_defaults(func=admin("cmd_upgrade"))
+
+    s = add("user", "the local accounts of the web pages (SQLite)",
+            "Who may sign in to the web pages (https://SERVER/admin/):\n"
+            "  list                      every account, its role, when it last signed in\n"
+            "  add NAME [--role R]       a new account (full admin unless --role readonly)\n"
+            "  passwd NAME               a new password (its sign-ins end)\n"
+            "  role NAME --role R        fulladmin (may change everything) or readonly (may look)\n"
+            "  note NAME --note TEXT     a note\n"
+            "  del NAME                  take an account away (never the last full admin)\n"
+            "  sessions                  who is signed in now\n"
+            "  end ID                    end one sign-in\n"
+            "The password: --password - asks for it twice, --password @env takes UPNP_PASSWORD;\n"
+            "without it one is made and printed once.",
+            "examples:\n"
+            "  sudo upnp user add alice\n"
+            "  sudo upnp user add bob --role readonly --password -\n"
+            "  sudo upnp user passwd admin\n"
+            "  sudo upnp user list", aliases=("users",))
+    s.add_argument("what", nargs="?", choices=("list", "add", "passwd", "role", "note", "del", "sessions", "end"),
+                   metavar="list|add|passwd|role|note|del|sessions|end")
+    s.add_argument("name", nargs="?", metavar="NAME|ID")
+    s.add_argument("--role", choices=("fulladmin", "readonly"))
+    s.add_argument("--password", metavar="-|@env", help="'-' asks for it, '@env' reads UPNP_PASSWORD")
+    s.add_argument("--note", default=None)
+    s.add_argument("--yes", "-y", action="store_true", help="do not ask")
+    s.add_argument("--json", action="store_true", help="JSON output (list, sessions)")
+    s.set_defaults(func=admin("cmd_user"))
+
+    s = add("web", "the web pages: their address, nginx, php-fpm, the API",
+            "  status            the address of the pages and whether what serves them runs\n"
+            "  apply             root puts nginx's allow list (web_allow) and the firewall in place\n"
+            "  apply --restart   ... and restarts fake-igd.service",
+            "examples:\n  upnp web\n  sudo upnp web apply")
+    s.add_argument("what", nargs="?", choices=("status", "apply"), metavar="status|apply")
+    s.add_argument("--restart", action="store_true", help="apply: restart fake-igd.service too")
+    s.set_defaults(func=admin("cmd_web"))
 
     s = add("help", "help for a command", "upnp help <command> = upnp <command> --help")
     s.add_argument("topic", nargs="?", metavar="COMMAND")

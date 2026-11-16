@@ -1,36 +1,41 @@
 #!/usr/bin/env bash
-# fake-igd 1.3 - complete installer for AlmaLinux 9 (and compatible EL9)
 #
-# Installs all dependencies including Python 3.14, a virtualenv with colorama,
-# the fake-igd service (systemd, start on boot), the `upnp` CLI and its console
-# (`upnp --console`), bash completion, log rotation, and opens the ports in firewalld.
-# When avahi-daemon is installed, avahi-tools too (for `upnp mdns services`).
+# install.sh — set up fake-igd on AlmaLinux 9 (and Rocky / RHEL 9).
 #
-# Usage:  sudo ./install.sh [options]
-#   --upgrade              upgrade an existing installation (keeps config, logs, state
-#                          and firewall; adds new config keys; restarts the service)
-#   --no-firewall          do not open ports in firewalld
-#   --no-start             install but do not start the service
-#   --python-from-source   always build Python 3.14 from source (python.org)
-#   --no-python-build      never build from source (dnf only)
-#   --force                continue on an OS other than EL9
-#   -h, --help             this help
+# The same shape as otp's installer: packages, Python 3.14 with colorama, the
+# service account, the configuration, the systemd units, log rotation, the
+# `upnp` command and its console, nginx with TLS and a php-fpm pool of
+# fake-igd's own for the web pages, SELinux, the firewall (iptables: a chain of
+# fake-igd's own, as otp's OTP-IN), the first account of the pages, and a
+# check that it all works. Run it from inside the unpacked folder, as root:
 #
-# Environment variables:
-#   PY_SRC_VER / PY_SRC_SHA256  another 3.14.x version from source (with its SHA-256 from python.org)
-#   PY_OPTIMIZE=1          build from source with --enable-optimizations (PGO, much slower)
-set -euo pipefail
+#     sudo ./install.sh
+#
+# Everything it asks can be given on the command line; --help lists it.
+# --upgrade replaces the program and the pages and restarts, keeping the
+# configuration, the logs, the state and the accounts. --uninstall removes
+# the services and the pages and keeps everything recorded.
+#
+set -Eeuo pipefail
 
+SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERSION="$(sed -n "s/^__version__ = '\(.*\)'.*/\1/p" "$SOURCE_DIR/src/fake-igd.py" 2>/dev/null | head -n1)"
+VERSION="${VERSION:-unknown}"
 APP=fake-igd
-APP_VERSION=1.3
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVICE_USER="fake-igd"
+WEB_GROUP="fake-igd-web"
+POOL_USER="fake-igd-www"
 OPT_DIR=/opt/$APP
 VENV=$OPT_DIR/venv
 ETC_DIR=/etc/$APP
+CONFIG_FILE=$ETC_DIR/config.json
 LOG_DIR=/var/log/$APP
 STATE_DIR=/var/lib/$APP
-UNIT=/etc/systemd/system/$APP.service
-BIN_DIR=/usr/bin            # /usr/bin because sudo's secure_path on EL9 does not include /usr/local/bin
+WEB_DIR=/var/www/$APP
+CERT_DIR=/etc/nginx/certs
+NGINX_CONF=/etc/nginx/conf.d/$APP.conf
+UNIT_DIR=/etc/systemd/system
+BIN_DIR=/usr/bin            # /usr/bin: sudo's secure_path on EL9 does not include /usr/local/bin
 
 PY_MINOR=3.14
 PY_SRC_VER=${PY_SRC_VER:-3.14.9}
@@ -38,221 +43,341 @@ PY_SRC_SHA256=${PY_SRC_SHA256:-e02d9ac21cebda6e46435369744a92c65cc7cd86696976941
 PY_SRC_URL=https://www.python.org/ftp/python/$PY_SRC_VER/Python-$PY_SRC_VER.tar.xz
 PY_BUILD_LOG=/var/log/$APP-python-build.log
 
-DO_FIREWALL=1; DO_START=1; FORCE=0; PY_SOURCE=auto; UPGRADE=0
-for arg in "$@"; do
-  case "$arg" in
-    --upgrade)            UPGRADE=1 ;;
-    --no-firewall)        DO_FIREWALL=0 ;;
-    --no-start)           DO_START=0 ;;
-    --python-from-source) PY_SOURCE=always ;;
-    --no-python-build)    PY_SOURCE=never ;;
-    --force)              FORCE=1 ;;
-    -h|--help)            n=$(grep -n '^set -euo' "$0" | cut -d: -f1); sed -n "2,$((n-1))p" "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "Unknown option: $arg (see --help)" >&2; exit 1 ;;
-  esac
-done
+ASSUME_YES=""
+WITH_WEB="yes"
+DO_UPGRADE=""
+DO_UNINSTALL=""
+PURGE=""
+REWRITE_NGINX=""
+FIREWALL="auto"            # auto: iptables when it is in use here; on / off
+DO_START="yes"
+FORCE=""
+PY_SOURCE=auto
+PHP_STREAM="8.3"
 
-if [[ -t 1 ]]; then c_ok=$'\e[32m'; c_warn=$'\e[33m'; c_err=$'\e[31m'; c_b=$'\e[1m'; c_off=$'\e[0m'
-else c_ok=; c_warn=; c_err=; c_b=; c_off=; fi
-STEP=0
-step() { STEP=$((STEP + 1)); echo; echo "${c_ok}${c_b}[$STEP]${c_off}${c_b} $*${c_off}"; }
-note() { echo "    $*"; }
-warn() { echo "${c_warn}WARNING:${c_off} $*" >&2; }
-die()  { echo "${c_err}${c_b}ERROR:${c_off} $*" >&2; exit 1; }
-trap 'echo "${c_err}Installation failed at line $LINENO (command: $BASH_COMMAND).${c_off}" >&2' ERR
+SERVER_NAME="$(hostname -f 2>/dev/null || hostname)"
+ADMIN_ALLOW=""
+ADMIN_USER="admin"
+ADMIN_PASSWORD=""
+CERT_FILE=""
+KEY_FILE=""
+SITE_NAME=""
 
-# ================================================================ checks
-[[ $EUID -eq 0 ]] || die "Run as root:  sudo ./install.sh"
-for f in src/$APP.py src/upnp.py src/upnp_console.py src/upnp_mdns.py console/zz-upnp-console.sh config/config.json systemd/$APP.service logrotate/$APP completion/upnp uninstall.sh; do
-  [[ -f "$SRC_DIR/$f" ]] || die "The package is missing $f - are you running install.sh from the extracted directory?"
-done
-
-OLD_VERSION=""
-if [[ -f "$OPT_DIR/VERSION" ]]; then OLD_VERSION=$(cat "$OPT_DIR/VERSION"); fi
-if [[ $UPGRADE -eq 1 ]]; then
-  [[ -n "$OLD_VERSION" || -f "$OPT_DIR/$APP.py" ]] || die "No existing installation found in $OPT_DIR - run without --upgrade."
-  echo "${c_b}fake-igd - upgrade ${OLD_VERSION:-unknown} → $APP_VERSION${c_off}"
-  DO_FIREWALL=0
+# ---------------------------------------------------------------------------
+# Saying things (otp's words and colours)
+# ---------------------------------------------------------------------------
+if [[ -t 1 ]]; then
+    C_HEAD=$'\033[1;36m'; C_OK=$'\033[32m'; C_WARN=$'\033[33m'
+    C_BAD=$'\033[1;31m'; C_DIM=$'\033[2m'; C_OFF=$'\033[0m'
 else
-  echo "${c_b}fake-igd $APP_VERSION - installation${c_off}"
-  if [[ -n "$OLD_VERSION" ]]; then note "existing installation $OLD_VERSION found (tip: ./install.sh --upgrade)"; fi
+    C_HEAD=""; C_OK=""; C_WARN=""; C_BAD=""; C_DIM=""; C_OFF=""
 fi
+step()  { printf '\n%s==> %s%s\n' "$C_HEAD" "$1" "$C_OFF"; }
+say()   { printf '    %s\n' "$1"; }
+note()  { printf '    %s%s%s\n' "$C_DIM" "$1" "$C_OFF"; }
+good()  { printf '    %s%s%s\n' "$C_OK" "$1" "$C_OFF"; }
+warn()  { printf '    %s%s%s\n' "$C_WARN" "$1" "$C_OFF"; }
+fail()  { printf '\n%sERROR: %s%s\n' "$C_BAD" "$1" "$C_OFF" >&2; exit 1; }
+# Whatever stops this script says what and where - never a silent end.
+trap 'rc=$?; printf "\n%sERROR: line %s: \"%s\" ended with %s; nothing after it was done.%s\n" "${C_BAD:-}" "$LINENO" "$BASH_COMMAND" "$rc" "${C_OFF:-}" >&2; exit "$rc"' ERR
 
-step "System check"
-# read os-release in a subshell so it cannot overwrite our variables (e.g. VERSION)
-OS_RELEASE=${OS_RELEASE:-/etc/os-release}
-os_field() { ( . "$OS_RELEASE" 2>/dev/null; eval "echo \"\${$1:-}\"" ); }
-OS_ID=$(os_field ID)
-OS_LIKE=$(os_field ID_LIKE)
-OS_VER=$(os_field VERSION_ID)
-OS_PRETTY=$(os_field PRETTY_NAME)
-note "OS: ${OS_PRETTY:-unknown}  ($(uname -m))"
-EL9=0
-if [[ "${OS_VER%%.*}" == "9" && " $OS_ID $OS_LIKE " =~ (rhel|almalinux|centos|rocky) ]]; then EL9=1; fi
-if [[ $EL9 -ne 1 ]]; then
-  [[ $FORCE -eq 1 ]] || die "This installer is for AlmaLinux 9 / EL9. Use --force to continue anyway."
-  warn "Unsupported system, continuing because of --force."
-fi
-command -v dnf >/dev/null || die "dnf is missing."
-command -v systemctl >/dev/null || die "systemd is missing."
-
-# ================================================================ base packages
-step "System dependencies"
-BASE_PKGS=(logrotate tar xz curl ca-certificates shadow-utils iproute bash-completion policycoreutils)
-missing=()
-for p in "${BASE_PKGS[@]}"; do rpm -q "$p" &>/dev/null || missing+=("$p"); done
-if (( ${#missing[@]} )); then
-  note "installing: ${missing[*]}"
-  dnf -y -q install "${missing[@]}"
-else
-  note "everything is already installed"
-fi
-if rpm -q avahi &>/dev/null && ! rpm -q avahi-tools &>/dev/null; then
-  note "avahi is installed - adding avahi-tools (avahi-browse for 'upnp mdns services')"
-  dnf -y -q install avahi-tools || warn "avahi-tools could not be installed - 'upnp mdns services' will not work"
-fi
-
-# ================================================================ Python 3.14
-find_python() {
-  local c
-  for c in /usr/bin/python$PY_MINOR /usr/local/bin/python$PY_MINOR; do
-    if [[ -x "$c" ]] && "$c" -c "import sys; assert sys.version_info[:2] == (${PY_MINOR/./, })" 2>/dev/null; then
-      echo "$c"; return 0
+ask() {          # ask VAR "prompt" "default"
+    local var="$1" prompt="$2" default="${3:-}" answer
+    if [[ -n "$ASSUME_YES" ]]; then
+        printf -v "$var" '%s' "${!var:-$default}"
+        return
     fi
-  done
-  return 1
+    if [[ -n "${!var:-}" ]]; then default="${!var}"; fi
+    if [[ -n "$default" ]]; then
+        read -r -p "    $prompt [$default]: " answer
+    else
+        read -r -p "    $prompt: " answer
+    fi
+    printf -v "$var" '%s' "${answer:-$default}"
 }
 
-python_ok() {   # check the modules the application needs
-  "$1" -c 'import ssl, json, venv, ensurepip, http.server, xml.etree.ElementTree, ipaddress, fcntl, urllib.request' 2>/dev/null
+ask_secret() {
+    local var="$1" prompt="$2" answer again
+    [[ -n "$ASSUME_YES" ]] && return
+    while true; do
+        read -r -s -p "    $prompt: " answer; echo
+        [[ -z "$answer" ]] && { printf -v "$var" '%s' ''; return; }
+        if (( ${#answer} < 8 )); then
+            warn "that is shorter than eight characters"
+            continue
+        fi
+        read -r -s -p "    and again: " again; echo
+        [[ "$answer" == "$again" ]] && { printf -v "$var" '%s' "$answer"; return; }
+        warn "those two are not the same"
+    done
+}
+
+confirm() {      # confirm "question" [default y|n]
+    local default="${2:-y}" answer
+    [[ -n "$ASSUME_YES" ]] && [[ "$default" == "y" ]] && return 0
+    [[ -n "$ASSUME_YES" ]] && return 1
+    read -r -p "    $1 [$( [[ $default == y ]] && echo Y/n || echo y/N )] " answer
+    answer="${answer:-$default}"
+    [[ "$answer" =~ ^[Yy] ]]
+}
+
+cidr_list_ok() {
+    python3 - "$1" <<'PY'
+import ipaddress, sys
+bad = []
+for one in sys.argv[1].split(','):
+    one = one.strip()
+    if not one:
+        continue
+    try:
+        ipaddress.ip_network(one, strict=False)
+    except ValueError:
+        bad.append(one)
+if bad:
+    sys.stderr.write('not an address or a network: %s\n' % ', '.join(bad))
+    sys.exit(1)
+PY
+}
+
+usage() {
+    cat <<EOF
+fake-igd installer $VERSION — a fake UPnP router (IGD) that logs which ports a PS5 asks for
+
+Usage: sudo ./install.sh [options]
+
+  --server-name HOST        the web pages' hostname (default: $SERVER_NAME)
+  --admin-allow CIDR[,..]   who may reach the web pages (nginx allow; default the RFC 1918 networks)
+  --admin-user NAME         the first account of the pages (admin)
+  --admin-password -        its password, read from the terminal or standard input
+                            (or FAKE_IGD_ADMIN_PASSWORD; otherwise one is made and printed)
+  --cert FILE --key FILE    the TLS certificate and key for nginx (else one is made, self-signed)
+  --site-name NAME          what to call this installation on the pages
+  --no-web                  the UPnP service and the command line only: no pages, no nginx, no PHP
+  --rewrite-nginx           write nginx's fake-igd.conf afresh even where one is there
+  --firewall                put fake-igd's iptables chain (FAKE-IGD-IN) in place even where
+                            iptables does not look in use; by default it is put in place when
+                            it is (iptables.service or rules in INPUT) and firewalld is not
+  --no-firewall             leave the firewall alone (upnp firewall prints the rules)
+  --no-start                install but do not start the services
+  --python-from-source      always build Python 3.14 from source (python.org)
+  --no-python-build         never build from source (dnf only)
+  --upgrade                 replace the program and the pages, restart; keep everything else
+  --uninstall [--purge]     remove the services and the pages; --purge also the configuration,
+                            the logs, the state, the database and the accounts
+  --force                   go on on another OS than EL9
+  --yes                     never ask; take the defaults
+  --help                    this
+
+  PY_SRC_VER / PY_SRC_SHA256   another 3.14.x from source (with its SHA-256 from python.org)
+  PY_OPTIMIZE=1                build from source with PGO/LTO (faster Python, much longer build)
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --server-name)        SERVER_NAME="$2"; shift 2;;
+        --admin-allow)        ADMIN_ALLOW="$2"; shift 2;;
+        --admin-user)         ADMIN_USER="$2"; shift 2;;
+        --admin-password)     ADMIN_PASSWORD="$2"; shift 2;;
+        --cert)               CERT_FILE="$2"; shift 2;;
+        --key)                KEY_FILE="$2"; shift 2;;
+        --site-name)          SITE_NAME="$2"; shift 2;;
+        --no-web)             WITH_WEB=""; shift;;
+        --rewrite-nginx)      REWRITE_NGINX="yes"; shift;;
+        --firewall)           FIREWALL="on"; shift;;
+        --no-firewall)        FIREWALL="off"; shift;;
+        --no-start)           DO_START=""; shift;;
+        --python-from-source) PY_SOURCE=always; shift;;
+        --no-python-build)    PY_SOURCE=never; shift;;
+        --upgrade)            DO_UPGRADE="yes"; shift;;
+        --uninstall)          DO_UNINSTALL="yes"; shift;;
+        --purge)              PURGE="yes"; shift;;
+        --force)              FORCE="yes"; shift;;
+        -y|--yes)             ASSUME_YES="yes"; shift;;
+        -h|--help)            usage; exit 0;;
+        *) fail "I do not know the option $1 — try --help";;
+    esac
+done
+# The first account's password not on the command line (otp 1.0.249): "-" reads it.
+if [[ "$ADMIN_PASSWORD" == "-" ]]; then
+    ADMIN_PASSWORD=""
+    if [[ -t 0 ]]; then
+        IFS= read -r -s -p "The password of the first account: " ADMIN_PASSWORD; echo
+        IFS= read -r -s -p "Again: " _again; echo
+        [[ "$_again" == "$ADMIN_PASSWORD" ]] || fail "--admin-password -: the two were not the same"
+        unset _again
+    else
+        IFS= read -r ADMIN_PASSWORD || true
+    fi
+    [[ -n "$ADMIN_PASSWORD" ]] || fail "--admin-password -: no password was read"
+elif [[ -n "$ADMIN_PASSWORD" ]]; then
+    warn "--admin-password: the password is on the command line (ps, the shell's history) -"
+    warn "  next time give --admin-password - (read from the terminal) or FAKE_IGD_ADMIN_PASSWORD"
+elif [[ -n "${FAKE_IGD_ADMIN_PASSWORD:-}" ]]; then
+    ADMIN_PASSWORD="$FAKE_IGD_ADMIN_PASSWORD"
+fi
+unset FAKE_IGD_ADMIN_PASSWORD
+[[ -n "$ADMIN_ALLOW" ]] && { cidr_list_ok "$ADMIN_ALLOW" || fail "--admin-allow takes addresses and networks, comma separated"; }
+# Asked from the pages or `upnp upgrade`: nobody is there to answer.
+[[ -n "${FAKE_IGD_UPGRADE_FROM_PAGES:-}" ]] && ASSUME_YES=yes
+
+[[ $EUID -eq 0 ]] || fail "run this as root: sudo ./install.sh"
+for f in src/$APP.py src/upnp.py src/upnp_console.py src/upnp_mdns.py src/upnp_admin.py src/igd_store.py \
+         src/igd_online.py src/fake_igd_api.py deploy/fake_igd_upgrade.py deploy/fake_igd_web.py \
+         config/config.json systemd/$APP.service logrotate/$APP completion/upnp console/zz-upnp-console.sh uninstall.sh; do
+    [[ -f "$SOURCE_DIR/$f" ]] || fail "the package is missing $f - run install.sh from inside the unpacked folder"
+done
+
+OS_PRETTY="$( . /etc/os-release 2>/dev/null; printf '%s' "${PRETTY_NAME:-}" )"
+OS_MAJOR="$( . /etc/os-release 2>/dev/null; v="${VERSION_ID:-}"; printf '%s' "${v%%.*}" )"
+OS_FAMILY="$( . /etc/os-release 2>/dev/null; printf '%s %s' "${ID:-}" "${ID_LIKE:-}" )"
+
+# ===========================================================================
+# Taking it away
+# ===========================================================================
+if [[ -n "$DO_UNINSTALL" ]]; then
+    step "Taking fake-igd away"
+    [[ -n "$PURGE" ]] && warn "--purge: the configuration, the logs, the state, the database and the accounts go too"
+    ASSUME_YES="" confirm "Go on?" n || { say "nothing done"; exit 0; }
+    exec bash "$SOURCE_DIR/uninstall.sh" ${PURGE:+--purge}
+fi
+
+# ===========================================================================
+# The parts
+# ===========================================================================
+ver_ge() { [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n 1)" == "$2" ]]; }
+
+find_python() {
+    local c
+    for c in /usr/bin/python$PY_MINOR /usr/local/bin/python$PY_MINOR; do
+        if [[ -x "$c" ]] && "$c" -c "import sys; assert sys.version_info[:2] == (${PY_MINOR/./, })" 2>/dev/null; then
+            echo "$c"; return 0
+        fi
+    done
+    return 1
+}
+
+python_ok() {   # the modules the application needs
+    "$1" -c 'import ssl, json, venv, ensurepip, sqlite3, hashlib, http.server, xml.etree.ElementTree, ipaddress, fcntl, urllib.request; hashlib.scrypt' 2>/dev/null
 }
 
 build_python() {
-  note "building Python $PY_SRC_VER from source (takes several minutes, log: $PY_BUILD_LOG)"
-  dnf -y -q install gcc make pkgconf-pkg-config openssl-devel bzip2-devel libffi-devel zlib-devel xz-devel \
-      sqlite-devel readline-devel ncurses-devel gdbm-devel libuuid-devel libzstd-devel expat-devel
-  local tmp; tmp=$(mktemp -d /tmp/fake-igd-python.XXXXXX)
-  note "downloading $PY_SRC_URL"
-  curl -fsSL --retry 3 -o "$tmp/py.tar.xz" "$PY_SRC_URL" || die "Downloading Python failed."
-  echo "$PY_SRC_SHA256  $tmp/py.tar.xz" | sha256sum -c --quiet - || die "SHA-256 checksum of the Python archive does not match!"
-  note "SHA-256 verified"
-  tar -xJf "$tmp/py.tar.xz" -C "$tmp"
-  local opts=(--prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions)
-  if [[ "${PY_OPTIMIZE:-0}" == "1" ]]; then opts+=(--enable-optimizations --with-lto); fi
-  ( cd "$tmp/Python-$PY_SRC_VER" && ./configure "${opts[@]}" && make -j"$(nproc)" && make altinstall ) \
-    >"$PY_BUILD_LOG" 2>&1 || { tail -n 30 "$PY_BUILD_LOG" >&2; die "Building Python failed, see $PY_BUILD_LOG"; }
-  rm -rf "$tmp"
-  note "Python installed to /usr/local/bin/python$PY_MINOR"
+    say "building Python $PY_SRC_VER from source (takes several minutes, log: $PY_BUILD_LOG)"
+    dnf -y -q install gcc make pkgconf-pkg-config openssl-devel bzip2-devel libffi-devel zlib-devel xz-devel \
+        sqlite-devel readline-devel ncurses-devel gdbm-devel libuuid-devel libzstd-devel expat-devel
+    local tmp; tmp=$(mktemp -d /tmp/fake-igd-python.XXXXXX)
+    say "downloading $PY_SRC_URL"
+    curl -fsSL --retry 3 -o "$tmp/py.tar.xz" "$PY_SRC_URL" || fail "downloading Python failed"
+    echo "$PY_SRC_SHA256  $tmp/py.tar.xz" | sha256sum -c --quiet - || fail "the SHA-256 of the Python archive does not match"
+    good "SHA-256 checked"
+    tar -xJf "$tmp/py.tar.xz" -C "$tmp"
+    local opts=(--prefix=/usr/local --with-ensurepip=install --enable-loadable-sqlite-extensions)
+    if [[ "${PY_OPTIMIZE:-0}" == "1" ]]; then opts+=(--enable-optimizations --with-lto); fi
+    ( cd "$tmp/Python-$PY_SRC_VER" && ./configure "${opts[@]}" && make -j"$(nproc)" && make altinstall ) \
+        >"$PY_BUILD_LOG" 2>&1 || { tail -n 30 "$PY_BUILD_LOG" >&2; fail "building Python failed, see $PY_BUILD_LOG"; }
+    rm -rf "$tmp"
+    good "Python installed to /usr/local/bin/python$PY_MINOR"
 }
 
-step "Python $PY_MINOR"
-PY=""
-if [[ $PY_SOURCE != always ]]; then
-  PY=$(find_python || true)
-  if [[ -z "$PY" ]]; then
-    note "trying the python$PY_MINOR package from the repositories (AlmaLinux 9.8+ AppStream)"
-    if dnf -y -q install "python$PY_MINOR" "python$PY_MINOR-pip" 2>/dev/null || dnf -y -q install "python$PY_MINOR" 2>/dev/null; then
-      PY=$(find_python || true)
-    else
-      note "python$PY_MINOR is not in the repositories (older minor release? try: dnf upgrade)"
+ensure_python() {
+    step "Python $PY_MINOR"
+    PY=""
+    if [[ $PY_SOURCE != always ]]; then
+        PY=$(find_python || true)
+        if [[ -z "$PY" ]]; then
+            say "trying the python$PY_MINOR package from the repositories (AlmaLinux 9.8+ AppStream)"
+            if dnf -y -q install "python$PY_MINOR" "python$PY_MINOR-pip" 2>/dev/null || dnf -y -q install "python$PY_MINOR" 2>/dev/null; then
+                PY=$(find_python || true)
+            else
+                note "python$PY_MINOR is not in the repositories (an older minor release? dnf upgrade)"
+            fi
+        fi
     fi
-  fi
-fi
-if [[ -z "$PY" ]]; then
-  [[ $PY_SOURCE == never ]] && die "Python $PY_MINOR is not available and building is disabled (--no-python-build). Update the system: dnf upgrade"
-  build_python
-  PY=$(find_python || true)
-  [[ -n "$PY" ]] || die "Could not install Python $PY_MINOR."
-fi
-python_ok "$PY" || die "$PY lacks required modules (ssl/venv/ensurepip...). Try --python-from-source."
-note "using $PY ($("$PY" --version 2>&1))"
+    if [[ -z "$PY" ]]; then
+        [[ $PY_SOURCE == never ]] && fail "Python $PY_MINOR is not there and building it is off (--no-python-build): dnf upgrade"
+        build_python
+        PY=$(find_python || true)
+        [[ -n "$PY" ]] || fail "Python $PY_MINOR could not be installed"
+    fi
+    python_ok "$PY" || fail "$PY lacks modules fake-igd needs (ssl, venv, sqlite3, scrypt…) - try --python-from-source"
+    good "$PY ($("$PY" --version 2>&1))"
+}
 
-# ================================================================ user
-step "System user and group $APP"
-if id "$APP" &>/dev/null; then
-  note "already exists"
-else
-  useradd --system --no-create-home --home-dir "$STATE_DIR" --shell /sbin/nologin --comment "fake-igd UPnP logger" "$APP"
-  note "created"
-fi
-ADDED_USER=""
-if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]] && ! id -nG "$SUDO_USER" | tr ' ' '\n' | grep -qx "$APP"; then
-  usermod -aG "$APP" "$SUDO_USER"
-  ADDED_USER=$SUDO_USER
-  note "user $SUDO_USER added to group $APP (read logs with 'upnp' without sudo after logging in again)"
-fi
+install_program() {
+    step "The program in $OPT_DIR"
+    install -d -m 0755 "$OPT_DIR"
+    install -m 0755 "$SOURCE_DIR/src/$APP.py" "$OPT_DIR/$APP.py"
+    install -m 0755 "$SOURCE_DIR/src/upnp.py" "$OPT_DIR/upnp.py"
+    install -m 0755 "$SOURCE_DIR/src/fake_igd_api.py" "$OPT_DIR/fake_igd_api.py"
+    local m
+    for m in upnp_console upnp_mdns upnp_admin igd_store igd_online; do
+        install -m 0644 "$SOURCE_DIR/src/$m.py" "$OPT_DIR/$m.py"
+    done
+    install -m 0755 "$SOURCE_DIR/uninstall.sh" "$OPT_DIR/uninstall.sh"
+    install -m 0755 "$SOURCE_DIR/install.sh" "$OPT_DIR/install.sh"
+    local doc
+    for doc in README.md CHANGELOG.md; do
+        [[ -f "$SOURCE_DIR/$doc" ]] && install -m 0644 "$SOURCE_DIR/$doc" "$OPT_DIR/$doc"
+    done
+    echo "$VERSION" > "$OPT_DIR/VERSION"
+    good "fake-igd $VERSION${OLD_VERSION:+ (it was $OLD_VERSION)}"
 
-# ================================================================ application + venv
-WAS_ACTIVE=0
-systemctl is-active --quiet $APP && WAS_ACTIVE=1
+    say "virtualenv $VENV (Python $PY_MINOR + colorama)"
+    if [[ -x "$VENV/bin/python" ]] && ! "$VENV/bin/python" -c "import sys; assert sys.version_info[:2] == (${PY_MINOR/./, })" 2>/dev/null; then
+        note "the virtualenv runs another Python - made again"
+        rm -rf "$VENV"
+    fi
+    if [[ -x "$VENV/bin/python" ]]; then
+        "$PY" -m venv --upgrade "$VENV" >/dev/null 2>&1 || true
+    else
+        "$PY" -m venv "$VENV"
+    fi
+    if ls "$SOURCE_DIR"/vendor/colorama-*.whl &>/dev/null; then
+        "$VENV/bin/python" -m pip install -q --disable-pip-version-check --no-index --find-links "$SOURCE_DIR/vendor" --upgrade colorama \
+            || warn "colorama from the package would not install"
+    fi
+    if ! "$VENV/bin/python" -c 'import colorama' 2>/dev/null; then
+        "$VENV/bin/python" -m pip install -q --disable-pip-version-check --upgrade colorama \
+            || warn "colorama could not be installed - the command line writes the same colours by hand"
+    fi
+    good "$("$VENV/bin/python" --version), colorama $("$VENV/bin/python" -c 'import colorama; print(colorama.__version__)' 2>/dev/null || echo 'missing')"
+    "$VENV/bin/python" -m py_compile "$OPT_DIR"/*.py || fail "the program does not compile"
+    rm -rf "$OPT_DIR/__pycache__"
 
-step "Application in $OPT_DIR"
-install -d -m 0755 "$OPT_DIR"
-install -m 0755 "$SRC_DIR/src/$APP.py" "$OPT_DIR/$APP.py"
-install -m 0755 "$SRC_DIR/src/upnp.py" "$OPT_DIR/upnp.py"
-install -m 0644 "$SRC_DIR/src/upnp_console.py" "$OPT_DIR/upnp_console.py"
-install -m 0644 "$SRC_DIR/src/upnp_mdns.py" "$OPT_DIR/upnp_mdns.py"
-install -m 0755 "$SRC_DIR/uninstall.sh" "$OPT_DIR/uninstall.sh"
-install -m 0755 "$SRC_DIR/install.sh" "$OPT_DIR/install.sh"
-if [[ -f "$SRC_DIR/README.md" ]]; then install -m 0644 "$SRC_DIR/README.md" "$OPT_DIR/README.md"; fi
-echo "$APP_VERSION" > "$OPT_DIR/VERSION"
-note "done${OLD_VERSION:+ (previous version: $OLD_VERSION)}"
-
-step "Virtualenv $VENV (Python $PY_MINOR + colorama)"
-if [[ -x "$VENV/bin/python" ]] && ! "$VENV/bin/python" -c "import sys; assert sys.version_info[:2] == (${PY_MINOR/./, })" 2>/dev/null; then
-  note "existing venv uses a different Python version, recreating"
-  rm -rf "$VENV"
-fi
-if [[ -x "$VENV/bin/python" ]]; then
-  "$PY" -m venv --upgrade "$VENV" >/dev/null 2>&1 || true     # follow Python patch updates
-else
-  "$PY" -m venv "$VENV"
-fi
-if ls "$SRC_DIR"/vendor/colorama-*.whl &>/dev/null; then
-  "$VENV/bin/python" -m pip install -q --disable-pip-version-check --no-index --find-links "$SRC_DIR/vendor" --upgrade colorama \
-    || warn "Installing colorama from the package failed."
-fi
-if ! "$VENV/bin/python" -c 'import colorama' 2>/dev/null; then
-  "$VENV/bin/python" -m pip install -q --disable-pip-version-check --upgrade colorama \
-    || warn "Could not install colorama - the CLI will use raw ANSI colours instead."
-fi
-note "$("$VENV/bin/python" --version), colorama $("$VENV/bin/python" -c 'import colorama; print(colorama.__version__)' 2>/dev/null || echo 'missing')"
-"$VENV/bin/python" -m py_compile "$OPT_DIR/$APP.py" "$OPT_DIR/upnp.py" "$OPT_DIR/upnp_console.py" "$OPT_DIR/upnp_mdns.py" \
-  || die "Syntax check failed."
-rm -rf "$OPT_DIR/__pycache__"
-
-step "upnp command, bash completion"
-for b in upnp $APP-ports; do
-  if [[ -e "$BIN_DIR/$b" ]] && rpm -qf "$BIN_DIR/$b" &>/dev/null; then
-    die "$BIN_DIR/$b belongs to RPM package $(rpm -qf "$BIN_DIR/$b") - not overwriting it."
-  fi
-done
-cat > "$BIN_DIR/upnp" <<EOF
+    say "the upnp command, bash completion, the console at login, log rotation"
+    for b in upnp $APP-ports; do
+        if [[ -e "$BIN_DIR/$b" ]] && rpm -qf "$BIN_DIR/$b" &>/dev/null; then
+            fail "$BIN_DIR/$b belongs to the RPM package $(rpm -qf "$BIN_DIR/$b") - not written over"
+        fi
+    done
+    cat > "$BIN_DIR/upnp" <<EOF
 #!/bin/sh
-# fake-igd CLI (installed by $APP $APP_VERSION)
+# fake-igd CLI (installed by $APP $VERSION)
 exec $VENV/bin/python -I $OPT_DIR/upnp.py "\$@"
 EOF
-cat > "$BIN_DIR/$APP-ports" <<EOF
+    cat > "$BIN_DIR/$APP-ports" <<EOF
 #!/bin/sh
 exec $BIN_DIR/upnp ports "\$@"
 EOF
-chmod 0755 "$BIN_DIR/upnp" "$BIN_DIR/$APP-ports"
-rm -f /usr/local/bin/$APP-ports      # leftover from 1.0
-install -D -m 0644 "$SRC_DIR/completion/upnp" /etc/bash_completion.d/upnp
-install -D -m 0644 "$SRC_DIR/console/zz-upnp-console.sh" /etc/profile.d/zz-upnp-console.sh
-note "upnp → $OPT_DIR/upnp.py   (help: upnp --help, the console: upnp --console)"
-if [[ -f /etc/upnp-console-login ]]; then
-  note "the console at login: $(head -n 1 /etc/upnp-console-login) (kept as it is)"
-else
-  note "the console at login: off - switch it on with: upnp --console-at-login on"
-fi
+    chmod 0755 "$BIN_DIR/upnp" "$BIN_DIR/$APP-ports"
+    rm -f /usr/local/bin/$APP-ports
+    install -D -m 0644 "$SOURCE_DIR/completion/upnp" /etc/bash_completion.d/upnp
+    install -D -m 0644 "$SOURCE_DIR/console/zz-upnp-console.sh" /etc/profile.d/zz-upnp-console.sh
+    install -m 0644 "$SOURCE_DIR/logrotate/$APP" /etc/logrotate.d/$APP
+    good "upnp → $OPT_DIR/upnp.py   (upnp --help, upnp --console)"
+    if [[ -f /etc/upnp-console-login ]]; then
+        note "the console at login: $(head -n 1 /etc/upnp-console-login) (kept as it is)"
+    fi
+}
 
-# ================================================================ config and directories
-step "Configuration $ETC_DIR/config.json"
-install -d -m 0750 -o root -g "$APP" "$ETC_DIR"
-if [[ -f "$ETC_DIR/config.json" ]]; then
-  install -m 0640 -o root -g "$APP" "$SRC_DIR/config/config.json" "$ETC_DIR/config.json.dist"
-  added=$("$VENV/bin/python" - "$ETC_DIR/config.json" "$ETC_DIR/config.json.dist" <<'PYEOF'
+install_config() {
+    step "Configuration $CONFIG_FILE"
+    install -d -m 0750 -o root -g "$SERVICE_USER" "$ETC_DIR"
+    if [[ -L "$CONFIG_FILE" ]]; then
+        fail "$CONFIG_FILE is a link - root does not write through one; put the file itself there"
+    elif [[ -f "$CONFIG_FILE" ]]; then
+        install -m 0640 -o root -g "$SERVICE_USER" "$SOURCE_DIR/config/config.json" "$ETC_DIR/config.json.dist"
+        ADDED_KEYS=$("$VENV/bin/python" - "$CONFIG_FILE" "$ETC_DIR/config.json.dist" <<'PY'
 import json, os, sys
 cur_p, dist_p = sys.argv[1], sys.argv[2]
 cur = json.load(open(cur_p, encoding="utf-8"))
@@ -270,121 +395,531 @@ if new:
     os.chown(tmp, st.st_uid, st.st_gid)
     os.replace(tmp, cur_p)
 print(" ".join(new))
-PYEOF
+PY
 )
-  note "existing configuration kept, new defaults saved as config.json.dist"
-  if [[ -n "$added" ]]; then note "new keys added with default values: $added"; fi
-else
-  install -m 0640 -o root -g "$APP" "$SRC_DIR/config/config.json" "$ETC_DIR/config.json"
-  note "default configuration created"
+        good "kept as it is; the new defaults are in config.json.dist"
+        [[ -n "$ADDED_KEYS" ]] && say "new keys, with their defaults: $ADDED_KEYS"
+    else
+        install -m 0660 -o root -g "$SERVICE_USER" "$SOURCE_DIR/config/config.json" "$CONFIG_FILE"
+        ADDED_KEYS="(all)"
+        good "the defaults written"
+    fi
+    # The pages save settings into it (fake-igd-api, as fake-igd): the group may write it.
+    chown root:"$SERVICE_USER" "$CONFIG_FILE"
+    chmod 0660 "$CONFIG_FILE"
+    cfg_set() {     # cfg_set KEY JSON-VALUE
+        "$VENV/bin/python" - "$CONFIG_FILE" "$1" "$2" <<'PY'
+import json, sys
+p, k, v = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+with open(p, "r+", encoding="utf-8") as f:
+    d = json.load(f)
+    d[k] = v
+    f.seek(0)
+    json.dump(d, f, ensure_ascii=False, indent=2)
+    f.write("\n")
+    f.truncate()
+PY
+    }
+    if [[ -n "$ADMIN_ALLOW" ]]; then
+        cfg_set web_allow "$(python3 -c 'import json,sys; print(json.dumps([x.strip() for x in sys.argv[1].split(",") if x.strip()]))' "$ADMIN_ALLOW")"
+    fi
+    [[ -n "$SITE_NAME" ]] && cfg_set site_name "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$SITE_NAME")"
+    "$VENV/bin/python" -m json.tool "$CONFIG_FILE" >/dev/null || fail "$CONFIG_FILE is not valid JSON"
+    HTTP_PORT=$("$VENV/bin/python" -c "import json;print(int(json.load(open('$CONFIG_FILE')).get('http_port',5000)))")
+    install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$LOG_DIR" "$STATE_DIR"
+    for d in "$STATE_DIR/upgrade" "$STATE_DIR/web"; do
+        [[ -L "$d" ]] && fail "$d is a symbolic link, which it never should be; look at it before running this again"
+        install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$d"
+    done
+    good "$LOG_DIR  $STATE_DIR"
+}
+
+install_upgrader() {
+    step "Upgrades from the pages and upnp upgrade"
+    install -m 0755 -o root -g root "$SOURCE_DIR/deploy/fake_igd_upgrade.py" "$OPT_DIR/fake_igd_upgrade.py"
+    install -m 0755 -o root -g root "$SOURCE_DIR/deploy/fake_igd_web.py" "$OPT_DIR/fake_igd_web.py"
+    install -d -m 0755 -o root -g root "$OPT_DIR/release-keys"
+    local k
+    for k in "$SOURCE_DIR"/deploy/release-keys/*.pub; do
+        [[ -f "$k" ]] && install -m 0644 -o root -g root "$k" "$OPT_DIR/release-keys/"
+    done
+    # Exactly the package's keys (otp 1.0.44): one a release no longer ships is trusted no longer.
+    for k in "$OPT_DIR"/release-keys/*.pub; do
+        [[ -f "$k" ]] || continue
+        [[ -f "$SOURCE_DIR/deploy/release-keys/$(basename "$k")" ]] || rm -f "$k"
+    done
+    for u in fake-igd-upgrade.path fake-igd-upgrade.service fake-igd-web.path fake-igd-web.service; do
+        install -m 0644 "$SOURCE_DIR/deploy/$u" "$UNIT_DIR/$u"
+    done
+    systemctl daemon-reload
+    systemctl enable --now fake-igd-upgrade.path fake-igd-web.path >/dev/null 2>&1 \
+        || warn "the path units would not start - systemctl status fake-igd-upgrade.path"
+    good "packages signed by $(ls "$OPT_DIR/release-keys" 2>/dev/null | sed 's/\.pub$//' | paste -sd, - || true) are taken"
+    command -v openssl >/dev/null || warn "openssl is missing - a package's signature cannot be checked"
+}
+
+install_units() {
+    step "The services"
+    local u
+    for u in "$APP.service:systemd/$APP.service" "fake-igd-api.service:deploy/fake-igd-api.service"; do
+        sed "s|@VENV@|$VENV|g; s|@OPT@|$OPT_DIR|g; s|@ETC@|$ETC_DIR|g" "$SOURCE_DIR/${u#*:}" > "$UNIT_DIR/${u%%:*}"
+        chmod 0644 "$UNIT_DIR/${u%%:*}"
+    done
+    systemctl daemon-reload
+    if command -v restorecon >/dev/null; then
+        restorecon -RF "$OPT_DIR" "$ETC_DIR" "$LOG_DIR" "$STATE_DIR" "$UNIT_DIR"/fake-igd* /etc/logrotate.d/$APP \
+                       "$BIN_DIR/upnp" "$BIN_DIR/$APP-ports" /etc/bash_completion.d/upnp /etc/profile.d/zz-upnp-console.sh \
+                       2>/dev/null || true
+        [[ -x /usr/local/bin/python$PY_MINOR ]] && restorecon -RF /usr/local/bin "/usr/local/lib/python$PY_MINOR" 2>/dev/null || true
+    fi
+    systemctl enable --quiet $APP fake-igd-api
+    if [[ -n "$DO_START" ]]; then
+        systemctl restart fake-igd-api
+        systemctl restart $APP
+        sleep 3
+        local bad=""
+        for u in $APP fake-igd-api; do
+            if systemctl is-active --quiet "$u"; then good "$u.service is running"
+            else bad="$bad $u"; warn "$u.service did not start - the last of its log:"; journalctl -u "$u" -n 15 --no-pager || true
+            fi
+        done
+        [[ -z "$bad" ]] || return 1
+    else
+        note "enabled at boot, not started (--no-start): upnp start; systemctl start fake-igd-api"
+    fi
+    return 0
+}
+
+# ---- PHP (otp's ensure_php, for the RHEL family) -------------------------------------
+php_fpm_version() {
+    local b v
+    b="$(command -v php-fpm 2>/dev/null || true)"; [[ -z "$b" && -x /usr/sbin/php-fpm ]] && b=/usr/sbin/php-fpm
+    [[ -n "$b" ]] || { echo ""; return; }
+    v="$("$b" -v 2>/dev/null | head -n 1 | awk '{print $2}')"
+    echo "${v%%[-+~]*}"
+}
+php_guard() {           # the second layer, for every PHP on the machine (otp's)
+    local dir
+    for dir in /etc/php.d; do
+        [[ -d "$dir" ]] || continue
+        if [[ -f "$dir/99-php2shell.ini" ]] && grep -q 'upload_progress.enabled *= *0' "$dir/99-php2shell.ini"; then
+            continue
+        fi
+        install -m 0644 "$SOURCE_DIR/deploy/99-php2shell.ini" "$dir/99-php2shell.ini"
+        good "$dir/99-php2shell.ini - session upload progress off, sessions strict"
+    done
+}
+ensure_php() {
+    step "PHP"
+    if ! command -v php-fpm >/dev/null 2>&1 && [[ ! -x /usr/sbin/php-fpm ]]; then
+        local streams now
+        streams="$(dnf -q module list php 2>/dev/null || true)"
+        now="$(dnf -q module list --enabled php 2>/dev/null || true)"
+        now="$(awk '/^php /{print $2; exit}' <<< "$now")"
+        if [[ -z "$now" ]] && grep -qE "^php +${PHP_STREAM//./\\.}( |$)" <<< "$streams"; then
+            say "PHP comes from the stream php:$PHP_STREAM"
+            dnf module enable -y "php:$PHP_STREAM" >/dev/null
+        elif [[ -n "$now" ]]; then
+            note "the PHP stream php:$now is enabled already: it is kept"
+        fi
+        dnf install -y -q php-fpm php-cli php-common
+    else
+        note "php-fpm is installed: left as it is (updates come with dnf upgrade)"
+    fi
+    local pv
+    pv="$(php_fpm_version)"
+    [[ -n "$pv" ]] || fail "php-fpm is not there after installing it"
+    ver_ge "$pv" 8.0 || fail "php-fpm here is $pv: the pages need PHP 8.0 or newer (or install with --no-web)"
+    good "php-fpm $pv"
+    php_guard
+}
+
+allow_lines() {         # allow_lines "a,b" -> nginx allow lines, or the defaults
+    local list="$1" out="" one
+    if [[ -z "$list" ]]; then
+        printf '        allow 192.168.0.0/16;\n        allow 172.16.0.0/12;\n        allow 10.0.0.0/8;'
+        return
+    fi
+    IFS=',' read -r -a cidrs <<< "$list"
+    for one in "${cidrs[@]}"; do
+        one="$(echo "$one" | xargs)"
+        [[ -n "$one" ]] && out+="        allow $one;"$'\n'
+    done
+    printf '%s' "${out%$'\n'}"
+}
+
+install_pages() {
+    step "The web pages (nginx, php-fpm)"
+    install -d -m 0755 "$WEB_DIR" "$WEB_DIR/admin" "$WEB_DIR/assets"
+    install -m 0644 "$SOURCE_DIR/web/igd-page.php" "$SOURCE_DIR/web/igd-api.php" "$SOURCE_DIR/web/healthz.php" \
+        "$SOURCE_DIR/web/.user.ini" "$WEB_DIR/"
+    install -m 0644 "$SOURCE_DIR/web/admin/index.php" "$WEB_DIR/admin/"
+    # Only the files of this version (an old one's left behind would be served).
+    find "$WEB_DIR/assets" -maxdepth 1 -type f -delete 2>/dev/null || true
+    install -m 0644 "$SOURCE_DIR"/web/assets/* "$WEB_DIR/assets/"
+    chown -R root:root "$WEB_DIR"
+    good "$WEB_DIR"
+
+    # ---- the pool ------------------------------------------------------------
+    local pool_dir=/etc/php-fpm.d sock=/run/php-fpm/fake-igd.sock owner=nginx
+    install -d -m 0755 "$pool_dir"
+    local pool_new pool_changed=yes
+    pool_new="$(sed -e "s|^listen = .*|listen = $sock|" -e "s|^listen.owner = .*|listen.owner = $owner|" \
+                    -e "s|^listen.group = .*|listen.group = $owner|" "$SOURCE_DIR/deploy/php-fpm-fake-igd.conf")"
+    if [[ -f "$pool_dir/fake-igd.conf" ]] && [[ "$(cat "$pool_dir/fake-igd.conf")" == "$pool_new" ]]; then
+        pool_changed=""
+    elif [[ -f "$pool_dir/fake-igd.conf" ]]; then
+        cp -p "$pool_dir/fake-igd.conf" "$pool_dir/fake-igd.conf.before-$VERSION"
+        note "the pool as it was is in $pool_dir/fake-igd.conf.before-$VERSION"
+    fi
+    [[ -n "$pool_changed" ]] && { printf '%s\n' "$pool_new" > "$pool_dir/fake-igd.conf"; chmod 0644 "$pool_dir/fake-igd.conf"; }
+    good "$pool_dir/fake-igd.conf - a pool of fake-igd's own, as $POOL_USER, on $sock"
+    systemctl enable php-fpm >/dev/null 2>&1 || true
+    if [[ -n "$pool_changed" || ! -S "$sock" ]] || ! systemctl is-active --quiet php-fpm; then
+        systemctl restart php-fpm || warn "php-fpm would not start - php-fpm -t says why"
+    fi
+
+    # ---- the certificate -------------------------------------------------------
+    install -d -m 0755 "$CERT_DIR"
+    if [[ -n "$CERT_FILE" && -n "$KEY_FILE" ]]; then
+        install -m 0644 "$CERT_FILE" "$CERT_DIR/fake-igd.pem"
+        install -m 0600 "$KEY_FILE" "$CERT_DIR/fake-igd.key"
+        good "your certificate is in $CERT_DIR"
+    elif [[ -f "$CERT_DIR/fake-igd.pem" && -f "$CERT_DIR/fake-igd.key" ]]; then
+        good "$CERT_DIR/fake-igd.pem is already there"
+    else
+        warn "no certificate given - making one this machine signs itself"
+        note "Browsers will complain about it. Replace $CERT_DIR/fake-igd.pem and fake-igd.key with a"
+        note "real pair and reload nginx (or ./install.sh --upgrade --cert FILE --key FILE)."
+        openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
+            -keyout "$CERT_DIR/fake-igd.key" -out "$CERT_DIR/fake-igd.pem" \
+            -subj "/CN=$SERVER_NAME" -addext "subjectAltName=DNS:$SERVER_NAME" 2>/dev/null
+        chmod 0600 "$CERT_DIR/fake-igd.key"
+    fi
+
+    # ---- nginx ---------------------------------------------------------------------
+    # A file that is there is kept (otp 1.0.36): its server name and its allow list stay.
+    install -D -m 0644 "$SOURCE_DIR/deploy/nginx-fake-igd.conf" "$OPT_DIR/nginx-fake-igd.conf"
+    if [[ -f "$NGINX_CONF" && -z "$REWRITE_NGINX" ]]; then
+        good "$NGINX_CONF is already there and kept (--rewrite-nginx writes it afresh)"
+        note "the one this version ships is $OPT_DIR/nginx-fake-igd.conf, for comparing"
+    else
+        [[ -f "$NGINX_CONF" ]] && cp -a "$NGINX_CONF" "$NGINX_CONF.before-$VERSION"
+        local allow="$ADMIN_ALLOW"
+        if [[ -z "$allow" ]]; then
+            allow="$("$VENV/bin/python" -c "import json; print(','.join(json.load(open('$CONFIG_FILE')).get('web_allow') or []))" 2>/dev/null || true)"
+        fi
+        "$VENV/bin/python" - "$SOURCE_DIR/deploy/nginx-fake-igd.conf" "$NGINX_CONF" "$SERVER_NAME" "$(allow_lines "$allow")" "$sock" <<'PY'
+import re, sys
+src, dst, host, admin, sock = sys.argv[1:6]
+text = open(src).read().replace('fake-igd.example.local', host)
+text = text.replace('unix:/run/php-fpm/fake-igd.sock;', 'unix:%s;' % sock)
+text, n = re.subn(r'(# ADMIN-ALLOW-BEGIN\n).*?(\n\s*# ADMIN-ALLOW-END)', lambda m: m.group(1) + admin + m.group(2),
+                  text, flags=re.S)
+if n != 1:
+    sys.exit('the allow lines were not where they were expected')
+open(dst, 'w').write(text)
+PY
+        chmod 0644 "$NGINX_CONF"
+        good "$NGINX_CONF for $SERVER_NAME"
+    fi
+    if ! nginx -t >/dev/null 2>&1; then
+        nginx -t || true
+        fail "nginx does not read its configuration; sort that out and run this again"
+    fi
+    systemctl enable nginx >/dev/null 2>&1 || true
+    systemctl restart nginx || warn "nginx could not be started again - systemctl status nginx; journalctl -u nginx -n 30"
+
+    # ---- SELinux ---------------------------------------------------------------
+    if command -v getenforce >/dev/null && [[ "$(getenforce)" != "Disabled" ]]; then
+        say "SELinux is $(getenforce)"
+        setsebool -P httpd_can_network_connect 1 2>/dev/null || warn "could not set httpd_can_network_connect"
+        if command -v semanage >/dev/null; then
+            # The API's token is read by the pages (httpd_t): the folder systemd makes is labelled for them.
+            semanage fcontext -a -t httpd_var_run_t '/run/fake-igd-api(/.*)?' 2>/dev/null \
+                || semanage fcontext -m -t httpd_var_run_t '/run/fake-igd-api(/.*)?' 2>/dev/null || true
+            [[ -d /run/fake-igd-api ]] && restorecon -R /run/fake-igd-api 2>/dev/null || true
+        else
+            warn "semanage is missing (policycoreutils-python-utils) - the pages may not read the API's token"
+        fi
+        restorecon -R "$WEB_DIR" "$CERT_DIR" "$NGINX_CONF" /etc/php-fpm.d 2>/dev/null || true
+        good "the pages may talk to the API on 127.0.0.1"
+        note "If the pages say the token is unreadable: ausearch -m avc -ts recent | audit2allow -M fake-igd-local"
+    fi
+}
+
+# ---- the firewall: iptables as otp's OTP-IN (or firewalld, where that is what runs) ------
+iptables_in_use() {
+    systemctl is-active --quiet iptables && return 0
+    command -v iptables >/dev/null && iptables -S INPUT 2>/dev/null | grep -qvE '^-P INPUT ACCEPT$'
+}
+open_firewall() {
+    step "The firewall"
+    if systemctl is-active --quiet firewalld; then
+        if [[ "$FIREWALL" == "off" ]]; then note "--no-firewall: firewalld left as it is"; return 0; fi
+        local zones z
+        zones=$(firewall-cmd --get-active-zones | grep -v '^[[:space:]]' || true)
+        [[ -n "$zones" ]] || zones=$(firewall-cmd --get-default-zone)
+        for z in $zones; do
+            firewall-cmd --quiet --permanent --zone="$z" --add-port=1900/udp
+            firewall-cmd --quiet --permanent --zone="$z" --add-port="$HTTP_PORT/tcp"
+            [[ -n "$WITH_WEB" ]] && firewall-cmd --quiet --permanent --zone="$z" --add-service=https --add-service=http
+        done
+        firewall-cmd --quiet --reload
+        good "firewalld: 1900/udp, $HTTP_PORT/tcp${WITH_WEB:+, http and https} open in: $zones"
+        return 0
+    fi
+    if ! command -v iptables >/dev/null; then
+        note "no firewall here (no firewalld, no iptables): nothing to open"
+        return 0
+    fi
+    local on
+    on="$("$VENV/bin/python" -c "import json; print('1' if json.load(open('$CONFIG_FILE')).get('firewall') else '')")"
+    if [[ "$FIREWALL" == "off" ]]; then
+        note "--no-firewall: iptables left as it is - upnp firewall prints the rules"
+        return 0
+    fi
+    if [[ -z "$on" ]]; then
+        if [[ "$FIREWALL" == "on" ]] || { iptables_in_use && { [[ -z "$DO_UPGRADE" ]] || [[ " $ADDED_KEYS " == *" firewall "* ]]; }; }; then
+            cfg_set firewall true
+            on=1
+            say "iptables is in use here: fake-igd's own chain FAKE-IGD-IN is put in place (as otp's OTP-IN)"
+        else
+            note "fake-igd's chain is off (firewall=off) - switch it on with: sudo upnp firewall --apply"
+            return 0
+        fi
+    fi
+    /usr/bin/python3 -I "$OPT_DIR/fake_igd_web.py" --apply | sed 's/^/    /' || warn "the chain could not be put in place - sudo upnp firewall --status"
+    note "INPUT → FAKE-IGD-IN (ACCEPT only: loopback, answers, SSH, ping, 1900/udp, $HTTP_PORT/tcp${WITH_WEB:+, 80/443 from web_allow})"
+    note "→ the rest of INPUT as it was. sudo upnp firewall --status · --off takes it away"
+    if ! systemctl is-active --quiet iptables; then
+        warn "iptables.service is not running: the chain is live now; it is kept over a reboot only"
+        warn "where /etc/sysconfig/iptables is loaded at boot (dnf install iptables-services)"
+    fi
+}
+
+first_account() {
+    step "The first account of the pages"
+    local have
+    have="$("$BIN_DIR/upnp" user list --json --no-color 2>/dev/null | "$VENV/bin/python" -c 'import json,sys
+want = sys.argv[1].strip().lower()
+try:
+    rows = json.load(sys.stdin)
+except ValueError:
+    rows = []
+print("all" if rows else "", "yes" if any(str(r.get("name","")).lower() == want for r in rows) else "")' "$ADMIN_USER" 2>/dev/null || true)"
+    if [[ "$have" == *yes* ]]; then
+        if [[ -n "$ADMIN_PASSWORD" ]]; then
+            UPNP_PASSWORD="$ADMIN_PASSWORD" "$BIN_DIR/upnp" user passwd "$ADMIN_USER" --password @env >/dev/null \
+                && good "$ADMIN_USER was there; its password is now the one given here"
+        else
+            good "$ADMIN_USER is there already and was left alone"
+        fi
+        return 0
+    fi
+    if [[ "$have" == all* && -z "$ADMIN_PASSWORD" ]]; then
+        good "there are accounts already: $("$BIN_DIR/upnp" user list --json --no-color 2>/dev/null | "$VENV/bin/python" -c 'import json,sys; print(", ".join(r["name"] for r in json.load(sys.stdin)))' 2>/dev/null || true)"
+        return 0
+    fi
+    local made=""
+    if [[ -z "$ADMIN_PASSWORD" ]]; then
+        ADMIN_PASSWORD="$("$VENV/bin/python" -c 'import secrets; print(secrets.token_urlsafe(12))')"
+        made=yes
+    fi
+    [[ ${#ADMIN_PASSWORD} -ge 8 ]] || fail "--admin-password needs at least eight characters"
+    UPNP_PASSWORD="$ADMIN_PASSWORD" "$BIN_DIR/upnp" user add "$ADMIN_USER" --role fulladmin --password @env \
+        --note "made by the installer" >/dev/null || fail "the first account could not be made"
+    good "$ADMIN_USER may sign in, as a full admin"
+    if [[ -n "$made" ]]; then
+        printf '\n    %sname:     %s%s\n' "$C_OK" "$ADMIN_USER" "$C_OFF"
+        printf '    %spassword: %s%s\n\n' "$C_OK" "$ADMIN_PASSWORD" "$C_OFF"
+        warn "Write that down now — it is not shown again."
+    fi
+}
+
+does_it_work() {
+    step "Does it work"
+    "$BIN_DIR/upnp" status || true
+    if [[ -n "$WITH_WEB" ]]; then
+        local code
+        code="$(curl --noproxy '*' -k -s -o /dev/null -w '%{http_code}' --resolve "$SERVER_NAME:443:127.0.0.1" "https://$SERVER_NAME/healthz" || true)"
+        [[ "$code" == "200" ]] && good "https://$SERVER_NAME/healthz answers" || warn "https://$SERVER_NAME/healthz answered $code"
+        code="$(curl --noproxy '*' -k -s -o /dev/null -w '%{http_code}' --resolve "$SERVER_NAME:443:127.0.0.1" -F a=b "https://$SERVER_NAME/admin/" || true)"
+        [[ "$code" == "403" ]] && good "a multipart body is refused (php2shell)" || warn "a multipart body was answered $code, not 403"
+    fi
+}
+
+pages_there() { [[ -f "$NGINX_CONF" || -d "$WEB_DIR" ]]; }
+
+base_packages() {
+    step "Packages"
+    local need=(logrotate tar xz curl ca-certificates shadow-utils iproute bash-completion policycoreutils
+                openssl util-linux python3)
+    command -v semanage >/dev/null || need+=(policycoreutils-python-utils)
+    command -v iptables >/dev/null || systemctl is-active --quiet firewalld || need+=(iptables-nft)
+    [[ -n "$WITH_WEB" ]] && need+=(nginx)
+    local missing=() p
+    for p in "${need[@]}"; do rpm -q "$p" &>/dev/null || missing+=("$p"); done
+    if (( ${#missing[@]} )); then
+        say "installing: ${missing[*]}"
+        dnf -y -q install "${missing[@]}" || fail "the packages could not be installed: ${missing[*]}"
+    else
+        good "everything needed is already here"
+    fi
+    if rpm -q avahi &>/dev/null && ! rpm -q avahi-tools &>/dev/null; then
+        say "avahi is installed - adding avahi-tools (avahi-browse for 'upnp mdns services')"
+        dnf -y -q install avahi-tools || warn "avahi-tools could not be installed - 'upnp mdns services' will not work"
+    fi
+}
+
+accounts() {
+    step "The accounts it runs as"
+    getent group "$WEB_GROUP" >/dev/null || groupadd --system "$WEB_GROUP"
+    if id "$SERVICE_USER" &>/dev/null; then
+        good "$SERVICE_USER already exists"
+    else
+        useradd --system --no-create-home --home-dir "$STATE_DIR" --shell /sbin/nologin --comment "fake-igd UPnP logger" "$SERVICE_USER"
+        good "made $SERVICE_USER (the UPnP service and the pages' API)"
+    fi
+    usermod -a -G "$WEB_GROUP" "$SERVICE_USER"
+    if [[ -n "$WITH_WEB" ]]; then
+        if ! id "$POOL_USER" &>/dev/null; then
+            useradd --system --no-create-home --home-dir "$WEB_DIR" --shell /sbin/nologin --comment "fake-igd web pages" "$POOL_USER"
+            good "made $POOL_USER (the pages' php-fpm pool)"
+        fi
+        usermod -a -G "$WEB_GROUP" "$POOL_USER"
+        good "$POOL_USER may read the API token, through $WEB_GROUP - and nothing else of fake-igd's"
+    fi
+    if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]] && ! id -nG "$SUDO_USER" | tr ' ' '\n' | grep -qx "$SERVICE_USER"; then
+        usermod -aG "$SERVICE_USER" "$SUDO_USER"
+        ADDED_USER=$SUDO_USER
+        good "$SUDO_USER may read the logs with upnp without sudo (after signing in again)"
+    fi
+}
+
+# ===========================================================================
+OLD_VERSION=""
+[[ -f "$OPT_DIR/VERSION" ]] && OLD_VERSION=$(cat "$OPT_DIR/VERSION")
+ADDED_KEYS=""
+ADDED_USER=""
+
+if [[ -z "$FORCE" ]]; then
+    [[ "$OS_MAJOR" == "9" && " $OS_FAMILY " =~ (rhel|almalinux|centos|rocky) ]] \
+        || fail "this installer is for AlmaLinux 9 / EL9 ($OS_PRETTY here) - --force goes on anyway"
 fi
-"$VENV/bin/python" -m json.tool "$ETC_DIR/config.json" >/dev/null || die "$ETC_DIR/config.json is not valid JSON."
-HTTP_PORT=$("$VENV/bin/python" -c "import json;print(int(json.load(open('$ETC_DIR/config.json')).get('http_port',5000)))")
+command -v dnf >/dev/null || fail "dnf is missing"
+command -v systemctl >/dev/null || fail "systemd is missing"
 
-step "Log and state directories"
-install -d -m 0750 -o "$APP" -g "$APP" "$LOG_DIR" "$STATE_DIR"
-note "$LOG_DIR  $STATE_DIR"
-
-step "systemd service and logrotate"
-sed "s|@VENV@|$VENV|g; s|@OPT@|$OPT_DIR|g; s|@ETC@|$ETC_DIR|g" "$SRC_DIR/systemd/$APP.service" > "$UNIT"
-chmod 0644 "$UNIT"
-install -m 0644 "$SRC_DIR/logrotate/$APP" /etc/logrotate.d/$APP
-systemctl daemon-reload
-if command -v systemd-analyze >/dev/null; then
-  systemd-analyze verify "$UNIT" 2>&1 | grep -v -e '^$' | sed 's/^/    /' || true
+# ===========================================================================
+# An upgrade: the program, the pages - and nothing else
+# ===========================================================================
+if [[ -n "$DO_UPGRADE" ]]; then
+    [[ -n "$OLD_VERSION" || -f "$OPT_DIR/$APP.py" ]] || fail "fake-igd is not installed here; run this without --upgrade"
+    # A machine that has the pages is upgraded with them; one from before them (1.3) gets them now,
+    # unless --no-web was given.
+    steps=8
+    [[ -n "$WITH_WEB" ]] && steps=$((steps + 3))
+    step "Upgrading fake-igd to $VERSION ($steps steps)"
+    say "${OLD_VERSION:-an unknown version} → $VERSION, on ${OS_PRETTY:-?}"
+    [[ -n "${FAKE_IGD_UPGRADE_BY:-}" ]] && say "asked by ${FAKE_IGD_UPGRADE_BY}"
+    # The version before kept until the new one runs (otp 1.0.287): put back when it does not stay up.
+    UPGRADE_OLD="$OPT_DIR/.before-upgrade"
+    rm -rf "$UPGRADE_OLD"
+    if mkdir -p -m 0700 "$UPGRADE_OLD" && (cd "$OPT_DIR" && cp -p ./*.py VERSION "$UPGRADE_OLD/" 2>/dev/null); then
+        [[ -d "$WEB_DIR" ]] && cp -rp "$WEB_DIR" "$UPGRADE_OLD/web"
+        touch "$UPGRADE_OLD/complete"
+    fi
+    upgrade_put_old_back() {
+        [[ -f "$UPGRADE_OLD/complete" ]] || return 1
+        warn "the version before is put back"
+        cp -p "$UPGRADE_OLD"/*.py "$UPGRADE_OLD/VERSION" "$OPT_DIR/" || return 1
+        if [[ -d "$UPGRADE_OLD/web" ]]; then rm -rf "$WEB_DIR"; cp -rp "$UPGRADE_OLD/web" "$WEB_DIR"; fi
+        systemctl restart $APP fake-igd-api 2>/dev/null || true
+        return 0
+    }
+    base_packages
+    ensure_python
+    accounts
+    install_program
+    install_config
+    install_upgrader
+    if [[ -n "$WITH_WEB" ]]; then
+        ensure_php
+    fi
+    if ! install_units; then
+        upgrade_put_old_back && warn "the version before runs again - look at what stopped the new one (journalctl -u fake-igd -u fake-igd-api)"
+        fail "the new version did not start"
+    fi
+    if [[ -n "$WITH_WEB" ]]; then
+        install_pages
+        first_account
+    fi
+    open_firewall
+    rm -rf "$UPGRADE_OLD"
+    does_it_work
+    step "Done"
+    good "fake-igd ${OLD_VERSION:-?} → $VERSION"
+    [[ -n "$WITH_WEB" ]] && say "The pages: https://$SERVER_NAME/admin/"
+    exit 0
 fi
-note "$UNIT"
 
-if command -v restorecon >/dev/null; then
-  restorecon -RF "$OPT_DIR" "$ETC_DIR" "$LOG_DIR" "$STATE_DIR" "$UNIT" /etc/logrotate.d/$APP \
-                 "$BIN_DIR/upnp" "$BIN_DIR/$APP-ports" /etc/bash_completion.d/upnp /etc/profile.d/zz-upnp-console.sh \
-                 2>/dev/null || true
-  if [[ -x /usr/local/bin/python$PY_MINOR ]]; then
-    restorecon -RF /usr/local/bin "/usr/local/lib/python$PY_MINOR" 2>/dev/null || true
-  fi
+# ===========================================================================
+# A fresh install
+# ===========================================================================
+step "Looking at this machine"
+say "${OS_PRETTY:-unknown} ($(uname -m))"
+[[ -n "$OLD_VERSION" ]] && note "fake-igd $OLD_VERSION is installed here already (an upgrade: ./install.sh --upgrade)"
+
+base_packages
+ensure_python
+[[ -n "$WITH_WEB" ]] && ensure_php
+accounts
+
+if [[ -z "$ASSUME_YES" ]]; then
+    step "A few questions"
+    note "Enter to keep what is in brackets."
+    if [[ -n "$WITH_WEB" ]]; then
+        ask SERVER_NAME "The pages' hostname"
+        ask ADMIN_ALLOW "Who may reach the pages (CIDRs, empty = RFC 1918)"
+        [[ -n "$ADMIN_ALLOW" ]] && { cidr_list_ok "$ADMIN_ALLOW" || fail "addresses and networks, comma separated"; }
+        ask ADMIN_USER "The first account of the pages"
+        [[ -n "$ADMIN_PASSWORD" ]] || ask_secret ADMIN_PASSWORD "Its password (empty = make one and print it)"
+    fi
 fi
 
-# ================================================================ port collisions
+install_program
+install_config
+
 step "Port check"
 if ss -Hltn "sport = :$HTTP_PORT" | grep -q . && ! ss -Hltnp "sport = :$HTTP_PORT" | grep -q "$APP\|python"; then
-  ss -Hltnp "sport = :$HTTP_PORT" | sed 's/^/    /'
-  die "TCP port $HTTP_PORT is already used by another program. Change http_port in $ETC_DIR/config.json and run the installer again."
+    ss -Hltnp "sport = :$HTTP_PORT" | sed 's/^/    /'
+    fail "TCP port $HTTP_PORT is used by another program. Change http_port in $CONFIG_FILE and run this again."
 fi
 if ss -Hlunp "sport = :1900" | grep -v -e "$APP" -e python | grep -q .; then
-  warn "Another program already listens on UDP 1900 (another UPnP/DLNA server?):"
-  ss -Hlunp "sport = :1900" | sed 's/^/    /' >&2
-  warn "fake-igd will run alongside it, but that program may answer the PS5 too."
+    warn "Another program listens on UDP 1900 already (another UPnP/DLNA server?):"
+    ss -Hlunp "sport = :1900" | sed 's/^/    /' >&2
+    warn "fake-igd runs beside it, but that program may answer the PS5 too."
 else
-  note "1900/udp and $HTTP_PORT/tcp are free"
+    good "1900/udp and $HTTP_PORT/tcp are free"
 fi
 
-# ================================================================ firewall
-FW_HINT=""
-if systemctl is-active --quiet firewalld; then
-  if [[ $DO_FIREWALL -eq 1 ]]; then
-    step "firewalld (1900/udp, $HTTP_PORT/tcp)"
-    zones=$(firewall-cmd --get-active-zones | grep -v '^[[:space:]]' || true)
-    [[ -n "$zones" ]] || zones=$(firewall-cmd --get-default-zone)
-    for z in $zones; do
-      firewall-cmd --quiet --permanent --zone="$z" --add-port=1900/udp
-      firewall-cmd --quiet --permanent --zone="$z" --add-port="$HTTP_PORT/tcp"
-      note "zone $z: opened"
-    done
-    firewall-cmd --quiet --reload
-    echo "$HTTP_PORT" > "$STATE_DIR/.firewall-port"
-    chown "$APP:$APP" "$STATE_DIR/.firewall-port"
-    warn "Ports are open in ALL active zones. If the server has an internet-facing interface, remove them from its zone:"
-    warn "  firewall-cmd --permanent --zone=<zone> --remove-port=$HTTP_PORT/tcp --remove-port=1900/udp && firewall-cmd --reload"
-  fi
-else
-  step "Host firewall"
-  if systemctl is-active --quiet nftables; then FW_HINT="nftables"
-  elif systemctl is-active --quiet iptables || { command -v iptables >/dev/null && iptables -S INPUT 2>/dev/null | grep -qvE '^-P INPUT ACCEPT$'; }; then FW_HINT="iptables"
-  fi
-  if [[ -n "$FW_HINT" ]]; then
-    warn "firewalld is not running, but $FW_HINT rules are active. The installer does NOT change them."
-    warn "Allow 1900/udp and $HTTP_PORT/tcp on the LAN interfaces - print the exact rules with:  upnp firewall"
-  else
-    note "no active host firewall detected"
-  fi
+install_upgrader
+install_units || fail "sort that out and run this again (journalctl -u fake-igd -u fake-igd-api)"
+if [[ -n "$WITH_WEB" ]]; then
+    install_pages
+    first_account
 fi
+open_firewall
+does_it_work
 
-# ================================================================ start
-trap - ERR
-step "Service $APP"
-systemctl enable --quiet $APP
-if [[ $DO_START -eq 1 ]]; then
-  if [[ $WAS_ACTIVE -eq 1 || $UPGRADE -eq 1 ]]; then systemctl restart $APP; else systemctl start $APP; fi
-  sleep 3
-  if systemctl is-active --quiet $APP; then
-    note "${c_ok}running${c_off} and starts automatically on boot"
-  else
-    systemctl status $APP --no-pager -l || true
-    die "The service did not start - see: journalctl -u $APP -e  and  $LOG_DIR/$APP.log"
-  fi
-  echo
-  "$BIN_DIR/upnp" status || true
-else
-  note "enabled on boot, not started (--no-start). Start it with: upnp start"
-fi
-
+step "Done"
+[[ -n "$WITH_WEB" ]] && say "The pages:      https://$SERVER_NAME/admin/"
+say "The console:    upnp --console         (menus, opens on the live log; q leaves it)"
+say "The command:    upnp --help            (status | test | ports | log -f | dnat | upgrade | user ...)"
+say "Configuration:  $CONFIG_FILE  (the pages, or sudo upnp config set ...)"
+say "Upgrades:       sudo upnp upgrade online   (or the pages: Settings → Upgrades)"
+say "Taking it away: sudo $OPT_DIR/uninstall.sh [--purge]"
+[[ -n "$ADDED_USER" ]] && warn "$ADDED_USER was added to the group $SERVICE_USER - sign out and in again."
 echo
-if [[ $UPGRADE -eq 1 ]]; then
-  echo "${c_ok}${c_b}Done - fake-igd upgraded ${OLD_VERSION:-?} → $APP_VERSION.${c_off}"
-else
-  echo "${c_ok}${c_b}Done - fake-igd $APP_VERSION installed.${c_off}"
-fi
-cat <<EOF
-  Console:       upnp --console         (menus, opens on the live log; q leaves it)
-  CLI:           upnp --help            (upnp status | test | firewall | ports | log -f | dnat | mdns ...)
-  Config:        $ETC_DIR/config.json  (upnp config / sudo upnp config set ...)
-  Logs:          $LOG_DIR/
-  Python:        $PY  →  venv $VENV
-  Upgrade:       sudo ./install.sh --upgrade   (from a newer extracted package)
-  Uninstall:     sudo $OPT_DIR/uninstall.sh [--purge]
-EOF
-if [[ -n "$ADDED_USER" ]]; then echo "  ${c_warn}User $ADDED_USER was added to group $APP - log out and back in.${c_off}"; fi
-if [[ -n "$FW_HINT" ]]; then echo "  ${c_warn}Host firewall ($FW_HINT): run 'upnp firewall' and apply the rules, then 'upnp test'.${c_off}"; fi
-echo "  Tab completion works in new shells."
-echo
-echo "Remember: UPnP on the router must be DISABLED and the server must be in the same VLAN as the PS5."
+say "Remember: UPnP on the router must be OFF, and this server in the same VLAN as the PS5."
+exit 0

@@ -5,8 +5,8 @@ _upnp() {
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local cmds="status ports requests mappings clients log dnat firewall mdns notify-test config mode response test start stop restart enable disable clear version help"
-  local keys="mode mapping_response http_port external_ip interfaces exclude_interfaces allowed_clients ntfy_url notify_on_renew log_level log_file request_log state_dir interface_rescan_seconds notify_interval_seconds"
+  local cmds="status ports requests mappings clients log dnat firewall mdns notify-test config mode response test start stop restart enable disable clear upgrade user web version help"
+  local keys="mode mapping_response http_port external_ip interfaces exclude_interfaces allowed_clients ntfy_url notify_on_renew log_level log_file request_log state_dir interface_rescan_seconds notify_interval_seconds site_name api_port session_idle_minutes web_allow firewall firewall_ssh firewall_icmp upgrade_url upgrade_check ntfy_token ntfy_user ntfy_password ntfy_priority ntfy_tags ntfy_ca_file notify_other_router"
   local glob="--config --color --no-color --no-dns -h --help"
 
   cmd=""
@@ -51,6 +51,13 @@ _upnp() {
     ports|p)        COMPREPLY=($(compgen -W "--client --proto --since --min-count --port --json $glob" -- "$cur")) ;;
     requests|req|r) COMPREPLY=($(compgen -W "-n --client --action --since --json $glob" -- "$cur")) ;;
     mappings|m)     COMPREPLY=($(compgen -W "--json $glob" -- "$cur")) ;;
+    upgrade|up)
+      if [[ "$prev" == file ]]; then COMPREPLY=($(compgen -f -X '!*.tar.gz' -- "$cur")); compopt -o plusdirs 2>/dev/null; return; fi
+      COMPREPLY=($(compgen -W "check online file status follow log --yes --no-follow --downgrade --json -n $glob" -- "$cur")) ;;
+    user|users)
+      if [[ "$prev" == --role ]]; then COMPREPLY=($(compgen -W "fulladmin readonly" -- "$cur")); return; fi
+      COMPREPLY=($(compgen -W "list add passwd role note del sessions end --role --password --note --yes --json $glob" -- "$cur")) ;;
+    web)            COMPREPLY=($(compgen -W "status apply --restart $glob" -- "$cur")) ;;
     clients|c)      COMPREPLY=($(compgen -W "--since --json $glob" -- "$cur")) ;;
     log|l)          COMPREPLY=($(compgen -W "-n -f --follow -e --events --level --grep --since --raw $glob" -- "$cur")) ;;
     dnat|d)         COMPREPLY=($(compgen -W "--format --wan --client --proto --since --min-count --port --no-forward --quiet $glob" -- "$cur")) ;;
@@ -71,7 +78,7 @@ _upnp() {
         esac
       fi ;;
     notify-test|nt) COMPREPLY=($(compgen -W "$glob" -- "$cur")) ;;
-    firewall|fw)    COMPREPLY=($(compgen -W "--format --interface --source --zone $glob" -- "$cur")) ;;
+    firewall|fw)    COMPREPLY=($(compgen -W "--format --interface --source --zone --apply --off --status $glob" -- "$cur")) ;;
     test|t)         COMPREPLY=($(compgen -W "--st --timeout --target --add $glob" -- "$cur")) ;;
     clear)          COMPREPLY=($(compgen -W "--requests --log --all -y --yes" -- "$cur")) ;;
     mode)           COMPREPLY=($(compgen -W "active passive --no-restart" -- "$cur")) ;;

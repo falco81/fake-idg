@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fake-igd 1.2 - fake UPnP Internet Gateway Device (IGD v1).
+fake-igd - fake UPnP Internet Gateway Device (IGD v1).
 
 Pretends to be a router with UPnP enabled on the LAN, but opens NOTHING. It only logs
 which ports devices (e.g. a PS5) ask for, and can optionally send notifications.
@@ -37,7 +37,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
-VERSION = "1.3"
+__version__ = '1.4.0'
+VERSION = __version__
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
 DEFAULTS = {
     "mode": "active",              # active = answer like a UPnP router; passive = only log SSDP, never answer
@@ -62,6 +63,16 @@ DEFAULTS = {
     "state_dir": "/var/lib/fake-igd",
     "interface_rescan_seconds": 60,
     "notify_interval_seconds": 300,
+    # Not this daemon's - the web pages', the firewall's and the upgrades' (1.4.0):
+    "site_name": "",               # what the pages call this installation (empty = the host name)
+    "api_port": 9862,              # the API the pages ask, on 127.0.0.1 (fake-igd-api.service)
+    "session_idle_minutes": 120,   # a sign-in to the pages ends after this long without a request
+    "web_allow": ["192.168.0.0/16", "172.16.0.0/12", "10.0.0.0/8"],   # who may reach the pages (nginx allow)
+    "firewall": False,             # iptables: fake-igd's own chain FAKE-IGD-IN, jumped to first from INPUT
+    "firewall_ssh": True,          # ... with SSH (tcp 22) let in
+    "firewall_icmp": True,         # ... and ping
+    "upgrade_url": "https://github.com/falco81/fake-idg/tree/main/release",
+    "upgrade_check": True,         # look at upgrade_url once a day
 }
 
 SSDP_GROUP = "239.255.255.250"

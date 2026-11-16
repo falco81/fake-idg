@@ -1,0 +1,16 @@
+# /etc/systemd/system/fake-igd-upgrade.path (1.4.0, otp's otp-upgrade.path)
+#
+# Watches for a new version asked for on the pages or with `upnp upgrade`: a
+# signed package and request.json laid down in /var/lib/fake-igd/upgrade/ start
+# fake-igd-upgrade.service, which checks the package as root and runs its
+# install.sh --upgrade. Nothing else can be asked for this way.
+[Unit]
+Description=fake-igd - a new version asked for on the pages or with upnp upgrade
+
+[Path]
+PathExists=/var/lib/fake-igd/upgrade/request.json
+Unit=fake-igd-upgrade.service
+TriggerLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target

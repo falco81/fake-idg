@@ -1,0 +1,15 @@
+# /etc/systemd/system/fake-igd-upgrade.service (1.4.0, otp's otp-upgrade.service)
+#
+# Started by fake-igd-upgrade.path, never by hand: it puts in the package that
+# was asked for - only one signed by a release key in /opt/fake-igd/release-keys/,
+# and only after checking every file in it. It runs apart from fake-igd.service
+# and fake-igd-api.service, which the upgrade restarts.
+[Unit]
+Description=fake-igd - putting in a new version
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /opt/fake-igd/fake_igd_upgrade.py
+TimeoutStartSec=25min
+PrivateTmp=no

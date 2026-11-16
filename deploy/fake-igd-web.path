@@ -1,0 +1,14 @@
+# /etc/systemd/system/fake-igd-web.path (1.4.0, otp's otp-web.path)
+#
+# What the pages ask of root: fake-igd.service restarted after a change of a
+# setting it uses, nginx's allow list and the firewall (FAKE-IGD-IN) put in place.
+[Unit]
+Description=fake-igd - a restart, nginx's allow list or the firewall, asked for on the pages
+
+[Path]
+PathExists=/var/lib/fake-igd/web/apply.ask
+Unit=fake-igd-web.service
+TriggerLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target

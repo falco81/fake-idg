@@ -433,6 +433,8 @@ class Console(object):
             ("11", "The service", self.m_service),
             ("12", "Logs and maintenance", self.m_maint),
             ("13", "mDNS reflector (avahi)", self.m_mdns),
+            ("14", "Upgrades", self.m_upgrade),
+            ("15", "Web pages and accounts", self.m_web),
         ]
         os.environ.setdefault("ESCDELAY", "25")
         os.environ.setdefault("NCURSES_NO_UTF8_ACS", "1")
@@ -2404,6 +2406,111 @@ class Console(object):
             ("4", "Clear the request log", clear_requests),
             ("5", "Clear every log", clear_all),
             ("6", "Versions", lambda: self.act("version")),
+        ])
+
+
+    # ---- 1.4.0: upgrades, the web pages and their accounts (otp's console: Upgrades, Accounts) ----
+    def run_here(self, *args):
+        """`upnp ARGS` on the ordinary terminal - its own colours and progress bar - then Enter."""
+        def go():
+            print(self.pal.head("$ upnp " + " ".join(self._quote(a) for a in args)))
+            try:
+                subprocess.run(self.argv(*args))
+            except KeyboardInterrupt:
+                pass
+            try:
+                input(self.pal.dim("\n  Enter goes back to the console "))
+            except (EOFError, KeyboardInterrupt):
+                pass
+        return self.go_plain(go)
+
+    def m_upgrade(self):
+        def online():
+            got = self.out("upgrade", "check") or {}
+            if got.get("error"):
+                self.note("Upgrades", "%s: %s" % (got.get("url"), got["error"]), "bad")
+                return
+            newer = got.get("newer_list") or []
+            if not newer:
+                self.note("Upgrades", "Nothing newer than %s at %s." % (got.get("here"), got.get("url")))
+                return
+            r = self.choose("Upgrade to", [(p["version"], "fake-igd %s" % p["version"]) for p in newer],
+                            "This server runs %s. The package is fetched, its signature and every file checked, "
+                            "and root runs its install.sh --upgrade - followed here." % got.get("here"))
+            if r and self.confirm("Upgrade to %s" % r, "fake-igd.service and the pages restart once; the PS5 "
+                                  "notices nothing.", "Upgrade"):
+                self.run_here("upgrade", "online", r, "--yes")
+
+        def from_file():
+            got = self.form("Upgrade from a package file", [
+                {"key": "path", "label": "The package", "value": "/root/", "need": True,
+                 "help": "a fake-igd-X.Y.Z.tar.gz as released - signed by a release key this server trusts",
+                 "check": lambda v, _a: None if os.path.isfile(v) else "%s is not a file" % v}])
+            if got:
+                self.run_here("upgrade", "file", got["path"], "--yes")
+        return self.sub("Upgrades", [
+            ("1", "What is there (upnp upgrade check)", lambda: self.act("upgrade", "check")),
+            ("2", "Upgrade from the web", online),
+            ("3", "Upgrade from a package file", from_file),
+            ("4", "Follow one going on", lambda: self.run_here("upgrade", "follow")),
+            ("5", "How the last one went", lambda: self.act("upgrade", "status")),
+            ("6", "What install.sh said last", lambda: self.act("upgrade", "log")),
+        ])
+
+    def m_web(self):
+        def add():
+            got = self.form("Make an account of the pages", [
+                {"key": "name", "label": "Name", "need": True, "help": "letters, digits and . _ @ -"},
+                {"key": "role", "label": "Role", "kind": "choice",
+                 "options": [("fulladmin", "full admin - may change everything"), ("readonly", "read only - may look")]},
+                {"key": "pw", "label": "Password", "kind": "secret",
+                 "help": "at least 8 characters; empty = one is made and shown once"}])
+            if got:
+                env = dict(os.environ, UPNP_PASSWORD=got["pw"])
+                args = ["user", "add", got["name"], "--role", got["role"]] + (["--password", "@env"] if got["pw"] else [])
+                self.act(*args, env=env)
+
+        def passwd():
+            users = self.out("user", "list") or []
+            if not users:
+                self.note("Accounts", "There is no account yet.")
+                return
+            name = self.choose("A new password for", [(u["name"], "%s (%s)" % (u["name"], u["role_words"])) for u in users])
+            if not name:
+                return
+            got = self.form("A new password for %s" % name, [
+                {"key": "pw", "label": "Password", "kind": "secret",
+                 "help": "at least 8 characters; empty = one is made and shown once"}])
+            if got is not None:
+                env = dict(os.environ, UPNP_PASSWORD=got["pw"])
+                self.act("user", "passwd", name, *(["--password", "@env"] if got["pw"] else []), env=env)
+
+        def delete():
+            users = self.out("user", "list") or []
+            name = self.choose("Take away the account", [(u["name"], "%s (%s)" % (u["name"], u["role_words"])) for u in users])
+            if name and self.confirm("Take %s away" % name, "Its sign-ins end and it cannot sign in again.",
+                                     "Take it away", danger=True):
+                self.act("user", "del", name, "--yes")
+
+        def role():
+            users = self.out("user", "list") or []
+            name = self.choose("The role of", [(u["name"], "%s (%s)" % (u["name"], u["role_words"])) for u in users])
+            if not name:
+                return
+            r = self.choose("%s is to be" % name, [("fulladmin", "full admin - may change everything"),
+                                                    ("readonly", "read only - may look")])
+            if r:
+                self.act("user", "role", name, "--role", r)
+        return self.sub("Web pages and accounts", [
+            ("1", "The pages: address, nginx, php-fpm, the API", lambda: self.act("web")),
+            ("2", "Accounts", lambda: self.act("user", "list")),
+            ("3", "Make an account", add),
+            ("4", "A new password", passwd),
+            ("5", "Change a role", role),
+            ("6", "Take an account away", delete),
+            ("7", "Who is signed in now", lambda: self.act("user", "sessions")),
+            ("8", "Firewall (FAKE-IGD-IN): what is in place", lambda: self.act("firewall", "--status")),
+            ("9", "Put the allow list and the firewall in place again", lambda: self.act("web", "apply")),
         ])
 
 

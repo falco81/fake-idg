@@ -1,0 +1,9 @@
+# /etc/systemd/system/fake-igd-web.service (1.4.0, otp's otp-web.service)
+[Unit]
+Description=fake-igd - what the pages asked of root
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /opt/fake-igd/fake_igd_web.py
+TimeoutStartSec=5min

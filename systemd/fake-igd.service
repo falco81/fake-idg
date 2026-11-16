@@ -1,5 +1,5 @@
 [Unit]
-Description=fake-igd - falesny UPnP IGD (logovani pozadavku na porty)
+Description=fake-igd - a fake UPnP IGD that logs which ports devices ask for
 Documentation=file:@OPT@/README.md
 After=network-online.target
 Wants=network-online.target
