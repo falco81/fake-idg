@@ -156,6 +156,10 @@ def export(ctx, with_secrets):
     saved = pn.values(ctx.store)
     settings = {k: v for k, v in saved.items() if k in pn.SETTINGS
                 and (with_secrets or pn.SETTINGS[k].get("kind") != "secret")}
+    import igd_seal as SEAL
+    for k, v in list(settings.items()):                      # opened: another machine has another key
+        if pn.SETTINGS[k].get("kind") == "secret" or SEAL.is_sealed(v):
+            settings[k] = SEAL.unseal_or(ctx.store, v)
     users = []
     for r in ctx.store.rows("SELECT name, role, note, must_change, hash FROM users ORDER BY name"):
         one = {"name": r["name"], "role": r["role"], "note": r["note"]}

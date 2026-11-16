@@ -18,8 +18,10 @@ it was handed:
   * every file in it is listed in MANIFEST with the right hash, nothing more,
     no links, no device, no path outside its one folder;
   * it is not older than the version installed (the same one again is a
-    retry and is allowed) - unless going back is asked for, on the command
-    line, as root (--run FILE --downgrade).
+    retry and is allowed) - unless going back is asked for as such: on the
+    command line, as root (--run FILE --downgrade), or from the pages (1.6.1,
+    otp 1.0.143: request.json says "downgrade") - then never below the floor
+    root keeps (downgrade-floor), and from the pages never below PAGES_FLOOR.
 
 Then its own install.sh --upgrade --yes is run, exactly as somebody would
 on the command line, and what it said is written back for the pages.
@@ -55,6 +57,9 @@ MOST_FILES = 5000
 INSTALL_LIMIT_S = 20 * 60      # under TimeoutStartSec=25min and the daemon's 30 (otp 1.0.59)
 TOP = re.compile(r'^fake-igd-([0-9]+(?:\.[0-9]+){2,3})\Z')
 FLOOR_FILE = os.path.join(LIB_DIR, 'downgrade-floor')
+# The oldest version the pages may ask to go back to (1.6.1): the first with this helper, the
+# release keys and the path unit - one older could not be brought up again from the pages.
+PAGES_FLOOR = '1.4.0'
 
 
 class Refused(Exception):
@@ -364,7 +369,7 @@ def root_floor():
 
 
 def put_in(package, ident='', want_sha='', by='the command line', log_to=None,
-           downgrade=False):
+           downgrade=False, least=None):
     """Check the package and run its install.sh --upgrade. Returns (rc, log).
     `downgrade`: an older version is asked for on purpose."""
     if os.geteuid() != 0:
@@ -411,6 +416,10 @@ def put_in(package, ident='', want_sha='', by='the command line', log_to=None,
             if floor is not None and version_tuple(info['version']) < version_tuple(floor):
                 raise Refused('%s is older than %s, the oldest the versions installed here '
                               'allow' % (info['version'], floor))
+            if least and version_tuple(info['version']) < version_tuple(least):
+                raise Refused('%s is older than %s: going back that far is done as root on the '
+                              'command line (upnp upgrade file FILE --downgrade)'
+                              % (info['version'], least))
             say('going back from %s to %s' % (info['installed'], info['version']))
         say('fake-igd %s, signed by %s, %d files - checked' % (info['version'], info['signed_by'],
                                                          info['files']))
@@ -545,12 +554,14 @@ def serve_request():
         name = os.path.basename(str(r.get('file') or ''))
         if not re.match(r'^fake-igd-[0-9.]+\.tar\.gz\Z', name):
             raise Refused('the request names no package')
-        status(id=ident, state='running', version=r.get('version'), pid=os.getpid())
+        down = r.get('downgrade') is True
+        status(id=ident, state='running', version=r.get('version'), pid=os.getpid(),
+               downgrade=down)
         rc, info, _ = put_in(os.path.join(UPGRADE_DIR, name), ident,
                              str(r.get('sha') or ''), r.get('by') or 'the pages', log_to,
-                             downgrade=False)
+                             downgrade=down, least=PAGES_FLOOR if down else None)
         status(id=ident, state='done' if rc == 0 else 'failed', rc=rc,
-               version=info['version'], tail=log_lines[-40:])
+               version=info['version'], tail=log_lines[-40:], downgrade=down)
     except Refused as e:
         log_to('refused: %s' % e)
         status(id=ident, state='failed', rc=-1, said=str(e), tail=log_lines[-40:])

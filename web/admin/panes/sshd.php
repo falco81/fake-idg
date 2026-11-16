@@ -6,7 +6,7 @@
         Put in by root as a file of fake-igd's own beside the system's, checked by sshd before it is used, and on
         trial: unless it is kept in time, root puts back what it had by itself.</p></div>
     <div id="sd-host"></div>
-    <div class="card full"><h2>The SSH server</h2><div id="sect-sshd"></div></div>
+    <div class="card full"><h2>The SSH server</h2><div id="sect-sshd"></div><div id="sd-form-notes"></div></div>
     <div class="card full"><h2>The notice</h2><div id="sd-notice"></div>
-      <p class="muted small">Saved with the bar at the bottom; root then puts it in within seconds.</p></div>
+      <p class="muted small">Saved with the bar at the bottom; root then puts it in by itself within seconds.</p></div>
   </div>

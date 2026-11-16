@@ -15,6 +15,14 @@ import time
 
 CONF = os.environ.get("UPNP_AVAHI_CONF", "/etc/avahi/avahi-daemon.conf")
 SERVICE = "avahi-daemon"
+# For tests on a machine without avahi (1.6.1): systemctl and journalctl as given.
+SYSTEMCTL = os.environ.get("FAKE_IGD_SYSTEMCTL", "systemctl")
+JOURNALCTL = os.environ.get("FAKE_IGD_JOURNALCTL", "journalctl")
+COPIES_KEPT = 10
+
+
+def _copy_re(path):
+    return re.compile(r"^%s\.bak-(\d{8}-\d{6})\Z" % re.escape(os.path.basename(path)))
 KNOWN = {
     # key: (section, kind, words)
     "use-ipv4": ("server", "bool", "mDNS over IPv4"),
@@ -75,7 +83,7 @@ def effective(vals):
 
 def systemd_state(unit=SERVICE):
     try:
-        r = subprocess.run(["systemctl", "show", unit, "-p", "ActiveState,SubState,MainPID,ActiveEnterTimestamp,UnitFileState"],
+        r = subprocess.run([SYSTEMCTL, "show", unit, "-p", "ActiveState,SubState,MainPID,ActiveEnterTimestamp,UnitFileState"],
                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return {}
@@ -292,6 +300,7 @@ def apply(changes, restart=True, path=CONF, log=print):
     st = os.stat(path)
     backup = "%s.bak-%s" % (path, time.strftime("%Y%m%d-%H%M%S"))
     shutil.copy2(path, backup)
+    prune_copies(path)
     tmp = "%s.upnp-%d.tmp" % (path, os.getpid())
     with open(tmp, "w", encoding="utf-8") as f:
         f.write("\n".join(new_lines))
@@ -305,16 +314,119 @@ def apply(changes, restart=True, path=CONF, log=print):
     if not restart:
         return said + "; avahi-daemon not restarted"
     was_active = systemd_state().get("ActiveState") == "active"
-    rc = subprocess.call(["systemctl", "restart", SERVICE], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    rc = subprocess.call([SYSTEMCTL, "restart", SERVICE], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     time.sleep(1.5)
     if rc == 0 and systemd_state().get("ActiveState") == "active":
         return said + "; avahi-daemon restarted"
     # It did not come up with it: the copy put back, the daemon started again with it.
     shutil.copy2(backup, path)
     if was_active:
-        subprocess.call(["systemctl", "restart", SERVICE], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.call([SYSTEMCTL, "restart", SERVICE], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     raise MdnsError("avahi-daemon did not start with the change - the previous file was put back%s. "
                     "See: journalctl -u avahi-daemon -n 30" % (" and the daemon started again" if was_active else ""))
+
+
+# ---- what it runs with now, and the copies kept (1.6.1) --------------------------------
+def journal(lines=300, since=None):
+    """The last lines of avahi-daemon's journal (short-iso), or [] when it cannot be read."""
+    argv = [JOURNALCTL, "-u", SERVICE, "-n", str(int(lines)), "--no-pager", "-o", "short-iso"]
+    if since:
+        argv += ["--since", since]
+    try:
+        r = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True,
+                           timeout=20)
+    except (OSError, subprocess.SubprocessError) as e:
+        return ["journalctl could not be asked: %s" % e]
+    return [ln for ln in r.stdout.splitlines() if not ln.startswith("-- ")]
+
+
+def running_with(lines):
+    """What the daemon said since it last started: the interfaces it joined, the reflector, its
+    host name - read from its journal (avahi has nothing like sshd -T)."""
+    start = 0
+    for i, ln in enumerate(lines):
+        if re.search(r"avahi-daemon .*starting up|Found user 'avahi'|Successfully called chroot|starting up\.", ln):
+            start = i
+    joined, host, problems = {}, "", []
+    for ln in lines[start:]:
+        m = re.search(r"Joining mDNS multicast group on interface (\S+?)\.(IPv4|IPv6) with address (\S+?)\.?$", ln)
+        if m:
+            joined.setdefault(m.group(1), {"name": m.group(1), "ipv4": [], "ipv6": []})[
+                "ipv4" if m.group(2) == "IPv4" else "ipv6"].append(m.group(3))
+            continue
+        m = re.search(r"Leaving mDNS multicast group on interface (\S+?)\.(IPv4|IPv6) with address (\S+?)\.?$", ln)
+        if m and m.group(1) in joined:
+            lst = joined[m.group(1)]["ipv4" if m.group(2) == "IPv4" else "ipv6"]
+            if m.group(3) in lst:
+                lst.remove(m.group(3))
+            if not joined[m.group(1)]["ipv4"] and not joined[m.group(1)]["ipv6"]:
+                joined.pop(m.group(1))
+            continue
+        m = re.search(r"Server startup complete\. Host name is (\S+?)\.?\s", ln + " ")
+        if m:
+            host = m.group(1)
+        if re.search(r"(?i)\b(error|failed|invalid|warning)\b", ln):
+            problems.append(ln)
+    return {"interfaces": sorted(joined.values(), key=lambda x: x["name"]), "host": host,
+            "problems": problems[-5:], "read": bool(lines)}
+
+
+def copies(path=CONF):
+    """The copies kept beside the file before each change, newest first."""
+    folder, out = os.path.dirname(path) or ".", []
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    for n in names:
+        m = _copy_re(path).match(n)
+        if not m:
+            continue
+        try:
+            st = os.stat(os.path.join(folder, n))
+        except OSError:
+            continue
+        out.append({"name": n, "at": st.st_mtime, "size": st.st_size, "stamp": m.group(1)})
+    return sorted(out, key=lambda c: c["stamp"], reverse=True)
+
+
+def prune_copies(path=CONF, keep=COPIES_KEPT):
+    for c in copies(path)[keep:]:
+        try:
+            os.unlink(os.path.join(os.path.dirname(path) or ".", c["name"]))
+        except OSError:
+            pass
+
+
+def restore(name, path=CONF, restart=True):
+    """A kept copy put back (the file as it is now kept as a copy first). Root only."""
+    if not _copy_re(path).match(str(name or "")):
+        raise MdnsError("not a copy of the file: %s" % str(name)[:80])
+    src = os.path.join(os.path.dirname(path) or ".", name)
+    if not os.path.isfile(src) or os.path.islink(src):
+        raise MdnsError("no such copy: %s" % name)
+    with open(src, encoding="utf-8") as f:
+        lines = f.read().split("\n")
+    _vals, now = read_conf(path)
+    if lines == now:
+        return "nothing changed - %s is the same as %s" % (path, name)
+    keys = {}
+    sect = ""
+    for ln in lines:                      # the copy written as the changes it makes: the same path as a change
+        st = ln.strip()
+        m = re.match(r"^\[([^\]]+)\]$", st)
+        if m:
+            sect = m.group(1).strip()
+            continue
+        if st and not st.startswith(("#", ";")) and "=" in st:
+            k = st.split("=", 1)[0].strip()
+            if k in KNOWN and KNOWN[k][0] == sect:
+                keys[k] = st.split("=", 1)[1].strip()
+    old_vals, _l = read_conf(path)
+    changes = {k: keys.get(k, "") for k in KNOWN if keys.get(k, "") != old_vals.get(k, "")}
+    if not changes:
+        return "nothing changed - what fake-igd sets is the same in %s" % name
+    return apply(changes, restart=restart, path=path)
 
 
 def to_json(x):

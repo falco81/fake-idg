@@ -14,19 +14,28 @@ asked of root.
 """
 import base64
 import gzip
+import hashlib
+import io
+import json
 import os
 import re
 import secrets
 import shutil
 import sqlite3
+import tarfile
 import tempfile
 import time
+
+import igd_seal as SEAL
 
 NAME = "db"
 
 HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d\Z")
 COPY_RE = re.compile(r"^fake-igd-(?:(before-restore|upload)-)?(\d{8}-\d{6})\.db\.gz\Z")
-UPLOAD_RE = re.compile(r"^upload-[0-9a-f]{16}\.db\Z")
+DUMP_RE = re.compile(r"^fake-igd-sqlite-(\d{8}-\d{6})-(daily|now|before-restore)\.db\Z")
+UPLOAD_RE = re.compile(r"^upload-[0-9a-f]{16}\.(db|tar)\Z")
+LOCKED_KIND = "fake-igd-key-locked"
+SIZES_KEEP = 30
 TIDY_EVERY_S = 3600
 UPLOAD_KEEP_S = 3600
 TABLE_SAID = {"users": "The accounts of the pages", "sessions": "Who is signed in",
@@ -40,16 +49,15 @@ def _hhmm(v):
 
 SETTINGS = [
     {"key": "db_copy_daily", "name": "A copy of the database every day", "kind": "bool", "default": True,
-     "says": "A copy of the database once a day, into <code>/var/lib/fake-igd/backups</code> - made by "
-             "SQLite's own backup, so it is whole even while the API writes to it."},
+     "says": "A copy of the database once a day, into <code>/var/lib/fake-igd/backups</code>, with the key "
+             "that opens its secrets beside it."},
     {"key": "db_copy_keep", "name": "Copies kept", "kind": "int", "default": 14, "min": 1, "max": 365,
-     "says": "How many of those copies are kept; the oldest goes first. A copy made by hand counts too."},
+     "says": "How many of those copies are kept; the oldest goes first."},
     {"key": "db_copy_at", "name": "At", "kind": "text", "default": "03:30", "check": _hhmm,
      "says": "When, as <code>HH:MM</code> on this machine's clock."},
     {"key": "events_keep_days", "name": "Keep the events (days)", "kind": "int", "default": 365,
      "min": 0, "max": 36500,
-     "says": "How long the events are kept. 0 keeps them for ever (fake-igd still keeps no more than the "
-             "newest 20 000). Trimmed once an hour; <b>Apply what is kept, now</b> does it at once."},
+     "says": "How long the events are kept. 0 keeps them for ever (the newest 20 000 at most)."},
 ]
 
 
@@ -60,6 +68,30 @@ def state_dir(ctx):
 
 def copies_dir(ctx):
     return os.path.join(state_dir(ctx), "backups")
+
+
+def dumps_dir(ctx):
+    return os.path.join(state_dir(ctx), "dumps")
+
+
+def key_beside(ctx, path):
+    """secrets.key beside a copy or a dump (NAME.key, 0600): without it the secrets in it open nowhere."""
+    src = SEAL.key_path(ctx.store)
+    if not os.path.isfile(src):
+        return False
+    tmp = path + ".key.part"
+    shutil.copyfile(src, tmp)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path + ".key")
+    return True
+
+
+def drop_with_key(path):
+    for p in (path, path + ".key"):
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
 
 
 def db_path(ctx):
@@ -135,9 +167,71 @@ def copies(ctx):
         except OSError:
             continue
         out.append({"name": n, "bytes": st.st_size, "at": st.st_mtime,
-                    "kind": m.group(1) or "copy"})
+                    "kind": m.group(1) or "copy", "key": os.path.isfile(p + ".key")})
     out.sort(key=lambda c: c["at"], reverse=True)
     return out
+
+
+def dumps(ctx):
+    folder = dumps_dir(ctx)
+    out = []
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return out
+    for n in names:
+        m = DUMP_RE.match(n)
+        if not m:
+            continue
+        p = os.path.join(folder, n)
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        out.append({"name": n, "bytes": st.st_size, "at": st.st_mtime, "kind": "sqlite", "made": m.group(2),
+                    "key": os.path.isfile(p + ".key"), "mine": True})
+    out.sort(key=lambda c: c["at"], reverse=True)
+    return out
+
+
+def make_dump(ctx, why="now"):
+    """A dump: on the file, SQLite's own backup, which is the file (otp's dump of SQLite) - kept in dumps/,
+    the key beside it."""
+    folder = dumps_dir(ctx)
+    os.makedirs(folder, mode=0o750, exist_ok=True)
+    name = "fake-igd-sqlite-%s-%s.db" % (time.strftime("%Y%m%d-%H%M%S"), why)
+    while os.path.exists(os.path.join(folder, name)):
+        time.sleep(1)
+        name = "fake-igd-sqlite-%s-%s.db" % (time.strftime("%Y%m%d-%H%M%S"), why)
+    tmp = os.path.join(folder, "." + name + ".part")
+    try:
+        snapshot(ctx.store, tmp)
+        os.chmod(tmp, 0o640)
+        os.replace(tmp, os.path.join(folder, name))
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    key_beside(ctx, os.path.join(folder, name))
+    keep = int(ctx.setting("db_copy_keep") or 14)
+    for d in dumps(ctx)[keep:]:
+        drop_with_key(os.path.join(folder, d["name"]))
+    return name
+
+
+def dump_path(ctx, name):
+    name = str(name or "")
+    if not DUMP_RE.match(name):
+        raise ValueError("no such dump")
+    p = os.path.join(dumps_dir(ctx), name)
+    if not os.path.isfile(p):
+        raise ValueError("no such dump: %s" % name)
+    return p
+
+
+def kept_path(ctx, name, kind):
+    return dump_path(ctx, name) if kind == "dump" else copy_path(ctx, name)
 
 
 def snapshot(store, dst):
@@ -174,6 +268,7 @@ def make_copy(ctx, kind=""):
                 os.unlink(p)
             except OSError:
                 pass
+    key_beside(ctx, os.path.join(folder, name))
     prune(ctx)
     return name
 
@@ -183,11 +278,8 @@ def prune(ctx):
     keep = int(ctx.setting("db_copy_keep") or 14)
     gone = []
     for c in copies(ctx)[keep:]:
-        try:
-            os.unlink(os.path.join(copies_dir(ctx), c["name"]))
-            gone.append(c["name"])
-        except OSError:
-            pass
+        drop_with_key(os.path.join(copies_dir(ctx), c["name"]))
+        gone.append(c["name"])
     return gone
 
 
@@ -237,8 +329,33 @@ def read_db(path):
     return {"bytes": file_size(path), "tables": len(t), "counts": counts, "admins": admins, "last_event": last}
 
 
-def restore_from(ctx, path, what):
-    """Everything in the live database replaced by the file at path (plain SQLite)."""
+def put_key(ctx, key_hex):
+    """The key that came with a database put in place of this one - the one there kept beside it
+    (secrets.key.before-restore-STAMP). Words saying what was done."""
+    try:
+        new = bytes.fromhex(str(key_hex or "").strip())
+    except ValueError:
+        new = b""
+    if len(new) != 32:
+        return "the key in use stays (none came with it)"
+    path = SEAL.key_path(ctx.store)
+    old = SEAL.key(ctx.store)
+    if old == new:
+        return "the key in use is the same"
+    if os.path.isfile(path):
+        shutil.copyfile(path, path + ".before-restore-" + time.strftime("%Y%m%d-%H%M%S"))
+    tmp = path + ".new"
+    with open(tmp, "w", encoding="ascii") as f:
+        f.write(new.hex() + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    SEAL.forget()
+    return "the key that came with it is in use; the one before is kept beside it"
+
+
+def restore_from(ctx, path, what, key_hex=None):
+    """Everything in the live database replaced by the file at path (plain SQLite); the key that seals
+    its secrets put in place too, where one came with it."""
     says = read_db(path)
     safety = make_copy(ctx, "before-restore")
     src = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
@@ -247,11 +364,81 @@ def restore_from(ctx, path, what):
             src.backup(ctx.store.db)
     finally:
         src.close()
+    key_said = put_key(ctx, key_hex) if key_hex else "the key in use stays (none came with it)"
     who = (ctx.me or {}).get("name", "")
-    ctx.event("%s put the database back from %s (%s account(s), %s event(s)); what it replaced is in %s"
-              % (who, what, says["counts"].get("users"), says["counts"].get("events"), safety), "warn")
-    return {"ok": True, "safety": safety, "says": says,
+    ctx.event("%s put the database back from %s (%s account(s), %s event(s)); what it replaced is in %s; %s"
+              % (who, what, says["counts"].get("users"), says["counts"].get("events"), safety, key_said), "warn")
+    return {"ok": True, "safety": safety, "says": says, "key": key_said,
             "message": "the database is back from %s - what it replaced is kept as %s" % (what, safety)}
+
+
+def key_of(path):
+    """The key beside a kept file (hex), or None."""
+    try:
+        with open(path + ".key", encoding="ascii") as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+# ---- a copy with its key, locked with a passphrase (otp 1.0.123) ---------------------------
+def _pkey(passphrase, salt):
+    return hashlib.scrypt(str(passphrase).encode("utf-8"), salt=salt, n=2 ** 15, r=8, p=1,
+                          maxmem=64 * 1024 * 1024, dklen=32)
+
+
+def lock_key(key_hex, passphrase):
+    salt = secrets.token_bytes(16)
+    k = _pkey(passphrase, salt)
+    sealed = SEAL.seal_with(k, key_hex, bind=LOCKED_KIND)
+    return {"kind": LOCKED_KIND, "salt": base64.b64encode(salt).decode("ascii"), "sealed": sealed}
+
+
+def open_key(locked, passphrase):
+    if not isinstance(locked, dict) or locked.get("kind") != LOCKED_KIND:
+        raise ValueError("the key in the file is not one of ours")
+    try:
+        salt = base64.b64decode(locked.get("salt") or "")
+    except (ValueError, TypeError):
+        raise ValueError("the key in the file is damaged")
+    got = SEAL.unseal_with(_pkey(passphrase, salt), locked.get("sealed"), bind=LOCKED_KIND)
+    if not got:
+        raise ValueError("the passphrase is not the one the file was locked with")
+    return got
+
+
+def bundle(name, data, key_hex, passphrase):
+    """One .tar: the copy (or the dump) and secrets.key.locked."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for n, raw in ((name, data), ("secrets.key.locked",
+                                      json.dumps(lock_key(key_hex, passphrase)).encode("utf-8"))):
+            ti = tarfile.TarInfo(n)
+            ti.size = len(raw)
+            ti.mtime = int(time.time())
+            ti.mode = 0o600
+            tf.addfile(ti, io.BytesIO(raw))
+    return buf.getvalue()
+
+
+def unbundle(path, work):
+    """(the database file, the locked key) out of a .tar made by bundle()."""
+    dbf, locked = None, None
+    with tarfile.open(path, "r:") as tf:
+        for m in tf.getmembers():
+            if not m.isreg() or "/" in m.name or m.size > 2 * 1024 ** 3:
+                continue
+            if m.name == "secrets.key.locked" and m.size < 65536:
+                locked = json.loads(tf.extractfile(m).read().decode("utf-8"))
+            elif COPY_RE.match(m.name) or DUMP_RE.match(m.name) or m.name.endswith((".db", ".db.gz")):
+                dbf = os.path.join(work, "packed")
+                with tf.extractfile(m) as a, open(dbf, "wb") as b:
+                    shutil.copyfileobj(a, b, 1 << 20)
+    if not dbf or not locked:
+        raise ValueError("that is not a copy with its key from these pages")
+    plain = os.path.join(work, "db")
+    unpack(dbf, plain)
+    return plain, locked
 
 
 def tidy_uploads(ctx):
@@ -275,6 +462,65 @@ def tidy(ctx):
     return n, f
 
 
+def dir_bytes(folder):
+    total = 0
+    try:
+        for n in os.listdir(folder):
+            total += file_size(os.path.join(folder, n))
+    except OSError:
+        pass
+    return total
+
+
+def note_size(ctx):
+    """The size of the database, noted once a day (the last SIZES_KEEP days): how fast it grows."""
+    try:
+        got = json.loads(ctx.store.get_meta("db:sizes") or "[]")
+    except ValueError:
+        got = []
+    today = time.strftime("%Y-%m-%d")
+    if got and got[-1][0] == today:
+        return got
+    got = (got + [[today, db_bytes(ctx), time.time()]])[-SIZES_KEEP:]
+    ctx.store.set_meta("db:sizes", json.dumps(got))
+    return got
+
+
+def growth(ctx):
+    """otp's: the slope of the last fortnight, a day."""
+    try:
+        got = json.loads(ctx.store.get_meta("db:sizes") or "[]")
+    except ValueError:
+        got = []
+    got = [g for g in got if len(g) == 3 and time.time() - g[2] <= 15 * 86400]
+    if len(got) < 2:
+        return {}
+    days = (got[-1][2] - got[0][2]) / 86400.0
+    if days < 0.5:
+        return {}
+    a_day = (got[-1][1] - got[0][1]) / days
+    return {"a_day": max(0, int(a_day)), "over_days": int(round(days))}
+
+
+ERASE = [("events", "the event log", "events",
+          "what fake-igd noted about itself and about what was done on these pages: sign-ins, changes, copies, "
+          "starts and stops."),
+         ("mailq", "the outgoing mail", "mailq",
+          "every mail sent and what became of it - the alerts, the reports, the tests. What still waits to be "
+          "sent goes with it.")]
+
+
+def erasable(ctx):
+    groups = []
+    for key, name, table, says in ERASE:
+        try:
+            n = ctx.store.rows('SELECT COUNT(*) AS n FROM "%s"' % table)[0]["n"]
+        except (sqlite3.Error, IndexError, KeyError):
+            continue
+        groups.append({"key": key, "name": name, "rows": n, "says": says})
+    return {"groups": groups, "bytes": db_bytes(ctx)}
+
+
 def view(ctx):
     conn = ctx.store.db
     with ctx.store.lock:
@@ -288,15 +534,28 @@ def view(ctx):
     tidied = ctx.store.get_meta("db:tidy:at")
     last_copy = ctx.store.get_meta("db:copy:at")
     p = db_path(ctx)
-    return {"where": p, "size": db_bytes(ctx), "version": version, "tables": t, "free": free,
-            "copies": copies(ctx), "keep": int(ctx.setting("db_copy_keep") or 14), "backup_dir": folder,
+    note_size(ctx)
+    disk = disk_of(os.path.dirname(p) or ".")
+    grew = growth(ctx)
+    if disk.get("free") and grew.get("a_day"):
+        disk["days_left"] = int(disk["free"] / grew["a_day"])
+    disk["holds"] = "the database itself, its copies and its dumps"
+    parts = [{"name": os.path.basename(p) + x, "what": w, "bytes": file_size(p + x)}
+             for x, w in (("", "the database"), ("-wal", "what is written, not yet folded in"),
+                          ("-shm", "the index of that")) if os.path.exists(p + x)]
+    parts += [{"name": d, "what": w, "bytes": dir_bytes(d)}
+              for d, w in ((folder, "the copies"), (dumps_dir(ctx), "the dumps")) if os.path.isdir(d)]
+    counts = {x["table"]: x["rows"] for x in t}
+    kp = SEAL.key_path(ctx.store)
+    return {"where": p, "size": db_bytes(ctx), "version": version, "tables": t, "free": free, "engine": "sqlite",
+            "counts": counts, "copies": copies(ctx), "dumps": dumps(ctx), "dump_dir": dumps_dir(ctx),
+            "dump": {"ready": True, "words": "a copy of the file", "suffix": ".db"},
+            "keep": int(ctx.setting("db_copy_keep") or 14), "backup_dir": folder,
             "daily": bool(ctx.setting("db_copy_daily")), "at": ctx.setting("db_copy_at"),
             "last_copy": float(last_copy) if last_copy else None,
             "events_keep_days": int(ctx.setting("events_keep_days") or 0),
-            "tidied": float(tidied) if tidied else None, "disk": disk_of(os.path.dirname(p) or "."),
-            "parts": [{"name": os.path.basename(p) + x, "what": w, "bytes": file_size(p + x)}
-                      for x, w in (("", "the database"), ("-wal", "what is written, not yet in the file (WAL)"),
-                                   ("-shm", "the WAL's index")) if os.path.exists(p + x)]}
+            "tidied": float(tidied) if tidied else None, "disk": disk, "growth": grew, "parts": parts,
+            "key": kp, "key_there": os.path.isfile(kp), "erasable": erasable(ctx)}
 
 
 # ---- the routes ------------------------------------------------------------------------
@@ -348,38 +607,59 @@ def post_db(ctx):
         after = db_bytes(ctx)
         ctx.event("%s gave the disk back: %d → %d bytes" % (who, before, after))
         return {"before": before, "after": after, "message": "the disk is given back"}
+    if act == "dump":
+        name = make_dump(ctx, "now")
+        ctx.event("%s made a dump of the database: %s" % (who, name))
+        return {"message": "a dump was made: %s" % name, "name": name}
     if act == "delete":
-        p = copy_path(ctx, b.get("name"))
-        os.unlink(p)
-        ctx.event("%s deleted the copy %s" % (who, os.path.basename(p)), "warn")
+        kind = "dump" if b.get("kind") == "dump" else "copy"
+        p = kept_path(ctx, b.get("name"), kind)
+        drop_with_key(p)
+        ctx.event("%s deleted the %s %s" % (who, kind, os.path.basename(p)), "warn")
         return {"message": "%s is deleted" % os.path.basename(p)}
     if act == "download":
         name = str(b.get("name") or "")
+        kind = "dump" if b.get("kind") == "dump" else "copy"
+        key_hex = None
         if name:
-            p = copy_path(ctx, name)
+            p = kept_path(ctx, name, kind)
             with open(p, "rb") as f:
                 data = f.read()
+            key_hex = key_of(p)
         else:
             fd, raw = tempfile.mkstemp(prefix=".dl-", dir=state_dir(ctx))
             os.close(fd)
             try:
                 snapshot(ctx.store, raw)
                 with open(raw, "rb") as f:
-                    data = gzip.compress(f.read(), 6)
+                    data = f.read() if kind == "dump" else gzip.compress(f.read(), 6)
             finally:
                 os.unlink(raw)
-            name = "fake-igd-%s.db.gz" % time.strftime("%Y%m%d-%H%M%S")
-        ctx.event("%s downloaded the database (%s)" % (who, name), "warn")
+            name = ("fake-igd-sqlite-%s-now.db" if kind == "dump" else "fake-igd-%s.db.gz") % time.strftime("%Y%m%d-%H%M%S")
+            k = SEAL.key(ctx.store)
+            key_hex = k.hex() if k else None
+        phrase = b.get("passphrase")
+        if phrase is not None:
+            phrase = str(phrase)
+            if len(phrase) < 10:
+                raise ValueError("a passphrase of 10 characters at least")
+            if not key_hex:
+                raise ValueError("there is no key beside it to put in")
+            data = bundle(name, data, key_hex, phrase)
+            name = name.replace(".db.gz", "").replace(".db", "") + "-with-key.tar"
+        ctx.event("%s downloaded the database (%s)%s" % (who, name, " with its key, locked with a passphrase"
+                                                          if phrase is not None else ""), "warn")
         return {"name": name, "bytes": len(data), "data": base64.b64encode(data).decode("ascii")}
     if act == "restore_kept":
-        p = copy_path(ctx, b.get("name"))
+        kind = "dump" if b.get("kind") == "dump" else "copy"
+        p = kept_path(ctx, b.get("name"), kind)
         work = tempfile.mkdtemp(prefix=".restore-", dir=state_dir(ctx))
         try:
             plain = os.path.join(work, "db")
             unpack(p, plain)
             if b.get("check"):
-                return {"says": read_db(plain)}
-            return restore_from(ctx, plain, os.path.basename(p))
+                return {"says": dict(read_db(plain), kind=kind)}
+            return restore_from(ctx, plain, os.path.basename(p), key_of(p))
         finally:
             shutil.rmtree(work, ignore_errors=True)
     if act == "restore_upload":
@@ -389,13 +669,50 @@ def post_db(ctx):
         p = os.path.join(copies_dir(ctx), up)
         if not os.path.isfile(p):
             raise ValueError("the file sent is gone (an hour passed?) - send it again")
+        key_hex = None
+        work = None
         try:
-            return restore_from(ctx, p, str(b.get("file") or "a file sent")[:120])
+            if up.endswith(".tar"):
+                work = tempfile.mkdtemp(prefix=".restore-", dir=state_dir(ctx))
+                plain, locked = unbundle(p, work)
+                key_hex = open_key(locked, str(b.get("passphrase") or ""))
+            else:
+                plain = p
+            if b.get("check"):
+                return {"says": read_db(plain)}
+            out = restore_from(ctx, plain, str(b.get("file") or "a file sent")[:120], key_hex)
         finally:
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+            if work:
+                shutil.rmtree(work, ignore_errors=True)
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+        return out
+    if act == "erase":
+        picked = [g for g in (b.get("groups") or []) if isinstance(g, str)]
+        known = {k: (n, t) for k, n, t, _s in ERASE}
+        if not picked or any(g not in known for g in picked):
+            raise ValueError("nothing known to erase")
+        safety = make_copy(ctx, "before-restore")
+        done = []
+        for g in picked:
+            n = ctx.store.run('DELETE FROM "%s"' % known[g][1]).rowcount
+            done.append("%s (%d)" % (known[g][0], n))
+        before = db_bytes(ctx)
+        after = before
+        if b.get("tidy"):
+            with ctx.store.lock:
+                ctx.store.db.execute("VACUUM")
+                try:
+                    ctx.store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except sqlite3.Error:
+                    pass
+            after = db_bytes(ctx)
+        ctx.event("%s erased the collected data: %s; a copy was made first: %s" % (who, ", ".join(done), safety),
+                  "warn")
+        return {"erased": done, "copy": safety, "before": before, "after": after,
+                "message": "erased; a copy was made first: %s" % safety}
     raise ValueError("no such action")
 
 
@@ -413,6 +730,11 @@ def post_upload(ctx):
     folder = copies_dir(ctx)
     os.makedirs(folder, mode=0o750, exist_ok=True)
     tidy_uploads(ctx)
+    if len(data) > 262 and data[257:262] == b"ustar":            # a copy with its key: the passphrase opens it
+        up = "upload-%s.tar" % secrets.token_hex(8)
+        with open(os.path.join(folder, up), "wb") as f:
+            f.write(data)
+        return {"upload": up, "locked": True}
     up = "upload-%s.db" % secrets.token_hex(8)
     raw = os.path.join(folder, "." + up + ".raw")
     with open(raw, "wb") as f:
@@ -451,9 +773,12 @@ def background(ctx):
                 name = make_copy(ctx)
                 ctx.store.set_meta("db:copy:at", str(now))
                 ctx.event("the nightly copy of the database was made: %s" % name)
+                name = make_dump(ctx, "daily")
+                ctx.event("the nightly dump of the database was made: %s" % name)
             except (OSError, sqlite3.Error) as e:
                 ctx.event("the nightly copy of the database could not be made: %s" % e, "warn")
     last = float(ctx.store.get_meta("db:tidy:at") or 0)
     if now - last >= TIDY_EVERY_S:
         tidy(ctx)
     tidy_uploads(ctx)
+    note_size(ctx)

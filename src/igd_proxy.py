@@ -65,6 +65,10 @@ def settings(store=None):
     out = dict(DEFAULTS)
     if isinstance(got, dict):
         out.update({k: got[k] for k in DEFAULTS if k in got})
+    if out.get("proxy_password"):                       # sealed in the database (igd_seal)
+        import igd_seal as SEAL
+        out["proxy_password"] = SEAL.unseal_or(store if store is not None else os.path.dirname(DB_FILE),
+                                               out["proxy_password"])
     return out
 
 

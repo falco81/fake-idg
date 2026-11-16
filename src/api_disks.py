@@ -5,20 +5,21 @@ fake-igd's own logs (/var/log/fake-igd) take, and the limits of both:
 
   logs_journal_mb, logs_journal_days   SystemMaxUse= and MaxRetentionSec= in
                                        /etc/systemd/journald.conf.d/00-fake-igd.conf
-  logs_keep, logs_every, logs_max_mb   rotate, daily/weekly/monthly and maxsize in
+  logs_keep, logs_max_mb               rotate, daily (as otp's) and maxsize in
                                        /etc/logrotate.d/fake-igd
 
 Root puts them in (deploy/root_disks.py) when they are saved, and every 6 hours it is
 asked again - which also reads how much the journal takes (journalctl --disk-usage is
 root's: the fake-igd account sees only its own journal). *Put in and look again*
-asks now; *Rotate the logs now* and *Shrink the journal now* clear what is over the
-limits at once.
+asks now.
 """
 import hashlib
 import json
 import os
 import re
 import time
+
+import igd_panes as PN
 
 NAME = "disks"
 EVERY_S = 6 * 3600
@@ -32,28 +33,25 @@ MOUNTS = os.environ.get("FAKE_IGD_MOUNTS", "/proc/self/mounts")
 SETTINGS = [
     {"key": "logs_journal_mb", "name": "The system journal at most (MB)", "kind": "int", "default": 0,
      "min": 0, "max": 100000, "root": True,
-     "says": "How much room systemd's journal may take; the oldest goes first. 0: as the system has it."},
+     "says": "How much room systemd’s journal may take; the oldest goes first. 0: as the system has it."},
     {"key": "logs_journal_days", "name": "The system journal kept for (days)", "kind": "int", "default": 0,
      "min": 0, "max": 3650, "root": True,
      "says": "Nothing older is kept. 0: as the system has it."},
-    {"key": "logs_keep", "name": "fake-igd's own logs kept (files)", "kind": "int", "default": 12,
+    {"key": "logs_keep", "name": "fake-igd’s own logs kept (files)", "kind": "int", "default": 30,
      "min": 1, "max": 3650, "root": True,
-     "says": "How many old files of /var/log/fake-igd logrotate keeps, one each time it turns them."},
-    {"key": "logs_every", "name": "Turned", "kind": "choice", "default": "weekly", "root": True,
-     "choices": [("daily", "daily"), ("weekly", "weekly"), ("monthly", "monthly")],
-     "says": "How often logrotate puts the logs aside and starts new ones."},
-    {"key": "logs_max_mb", "name": "A log file at most (MB)", "kind": "int", "default": 0,
-     "min": 0, "max": 100000, "root": True,
-     "says": "A file bigger than this is put aside sooner than its turn. 0: only when its turn comes."},
+     "says": "How many old files of /var/log/fake-igd are kept, one a day."},
+    {"key": "logs_max_mb", "name": "A log file at most (MB)", "kind": "int", "default": 200,
+     "min": 1, "max": 100000, "root": True,
+     "says": "A file bigger than this is put aside sooner than once a day."},
 ]
 
 
 def desired(ctx):
     return {"journal_mb": int(ctx.setting("logs_journal_mb") or 0),
             "journal_days": int(ctx.setting("logs_journal_days") or 0),
-            "keep": int(ctx.setting("logs_keep") or 12),
-            "every": str(ctx.setting("logs_every") or "weekly"),
-            "max_mb": int(ctx.setting("logs_max_mb") or 0)}
+            "keep": int(ctx.setting("logs_keep") or 30),
+            "every": "daily",                                   # otp's: one a day, sooner when too big
+            "max_mb": int(ctx.setting("logs_max_mb") or 200)}
 
 
 def want_hash(d):
@@ -148,7 +146,11 @@ def view(ctx):
     asked = ctx.store.meta_json("disks:asked") or {}
     folder = log_dir(ctx)
     state = ctx.cfg.get("state_dir") or "/var/lib/fake-igd"
-    return {"disks": filesystems(), "want": want, "hash": want_hash(want), "result": r,
+    try:
+        pct = int(PN.value(ctx.store, "alerts_disk_pct") or 85)
+    except (KeyError, ValueError, TypeError):
+        pct = 85
+    return {"disks": filesystems(), "disk_pct": pct, "want": want, "hash": want_hash(want), "result": r,
             "current": r.get("hash") == want_hash(want) and bool(r.get("ok")),
             "waiting": bool(asked.get("id")) and asked.get("id") != r.get("id"),
             "asked": asked, "logdir": folder, "logs": log_files(folder), "logdir_bytes": dir_size(folder),

@@ -73,73 +73,41 @@
       var state = !r.at ? (d.waiting ? ['warn', 'being put in', 'warn'] : ['dim', 'not asked yet', 'dim'])
         : (r.ok && d.current ? ['ok', 'as set', 'ok'] : (r.ok || d.waiting ? ['warn', 'being put in', 'warn'] : ['bad', 'failed', 'crit']));
       var c = nodeCard(n, state[0], state[1], state[2]);
-      var lim = 85;
+      var lim = d.disk_pct || 85;
       var worst = (d.disks || []).reduce(function (m, dk) { return Math.max(m, dk.pct || 0); }, 0);
       nodeBig(c, num(worst) + ' %', 'the fullest disk');
       (d.disks || []).forEach(function (dk) {
         var row = el('div', 'al-disk');
         var lab = el('div', 'al-disk-l');
         lab.appendChild(noI18n(el('span', 'mono', dk.path)));
-        lab.appendChild(el('span', 'muted small', bytes(dk.used) + ' used · ' + bytes(dk.free) + ' free of ' + bytes(dk.total)));
-        explain(lab, dk.device + ' (' + dk.kind + ')' + (dk.inodes !== null && dk.inodes !== undefined ? ' · ' + num(dk.inodes) + ' % of its inodes used' : ''));
+        lab.appendChild(el('span', 'muted small', bytes(dk.free) + ' free of ' + bytes(dk.total)));
         row.appendChild(lab);
         row.appendChild(upBar(dk.pct, dk.pct >= 95 ? 'bad' : (dk.pct >= lim ? 'warn' : 'good'), num(dk.pct) + ' %'));
         c.appendChild(row);
       });
       c.appendChild(netFacts([
         ['The system journal', r.journal_use === null || r.journal_use === undefined ? '' : bytes(r.journal_use)],
-        ['Its limit', r.journal_conf ? (r.journal_conf.match(/^(SystemMaxUse|MaxRetentionSec)=.*$/mg) || []).join(', ') : (r.at ? 'as the system has it' : '')],
-        ['fake-igd’s logs', bytes(d.logdir_bytes)],
-        ['logrotate', r.rotate_conf ? r.rotate_conf.split('\n').join(', ') : ''],
-        ['fake-igd’s data', bytes(d.state_bytes)],
+        ['fake-igd’s logs', d.logdir_bytes == null ? '' : bytes(d.logdir_bytes)],
+        ['fake-igd’s data', d.state_bytes == null ? '' : bytes(d.state_bytes)],
         ['Asked', r.at ? ago(r.at) : '']
       ]));
       var words = rootSays(r);
       if (words && r.at && !r.ok) c.appendChild(noI18n(el('div', 'si-said small', words)));
-      if (ADMIN) {
-        var row2 = el('div', 'btnrow');
-        var again = cmdButton('Put in and look again', 'refresh', 'small');
-        explain(again, 'Root puts the settings below in again and says how much the journal and the logs take.');
-        again.onclick = function () { act(again, 'refresh', 'Asked of root'); };
-        row2.appendChild(again);
-        var rot = cmdButton('Rotate the logs now', 'archive', 'small');
-        explain(rot, 'logrotate puts fake-igd’s logs aside now, rather than at their turn - the oldest past the number kept go.');
-        rot.onclick = function () {
-          confirmThen('Rotate fake-igd’s logs now?', 'The logs being written are put aside and new ones started; of the old ones only as many as the settings keep stay.', 'Rotate them', function () { act(rot, 'rotate', 'Asked of root'); }, false);
-        };
-        row2.appendChild(rot);
-        var vac = cmdButton('Shrink the journal now', 'broom', 'small');
-        explain(vac, 'The system journal brought down to the limits set below at once (journalctl --vacuum-size / --vacuum-time) - otherwise journald does it as it writes.');
-        vac.disabled = !(d.want.journal_mb || d.want.journal_days);
-        vac.onclick = function () {
-          confirmThen('Shrink the system journal now?', 'What is over the limits set below is deleted from the journal now - for every service of this machine, not only fake-igd.', 'Shrink it', function () { act(vac, 'vacuum', 'Asked of root'); });
-        };
-        row2.appendChild(vac);
-        c.appendChild(row2);
-      }
+      var row2 = el('div', 'btnrow');
+      var again = cmdButton('Put in and look again', 'refresh', 'small');
+      explain(again, 'Root puts the settings below in again and says how much the journal and the logs take.');
+      again.onclick = function () { act(again, 'refresh', 'Asked of root'); };
+      row2.appendChild(again);
+      c.appendChild(row2);
       grid.appendChild(c);
       host.appendChild(grid);
     }, false, function () { explainWhatWasDrawn(real); });
-    drawFiles();
   }
   function act(button, what, words) {
     busy(button, true);
     api('disks', {action: what}).then(function (x) {
       busy(button, false); LG.d = x; drawLogs(); follow(x); toast(words, 'good');
     }).catch(function (e) { busy(button, false); oops(e); });
-  }
-  function drawFiles() {
-    var host = $('lg-files'), d = LG.d;
-    if (!host) return;
-    clear(host);
-    $('lg-logdir').textContent = d.logdir + ' · ' + bytes(d.logdir_bytes);
-    host.appendChild(listTable(['File', {words: 'Size', cls: 'num'}, 'Written'], d.logs || [], function (f) {
-      var tr = el('tr');
-      tr.appendChild(noI18n(el('td', 'mono', f.name)));
-      tr.appendChild(el('td', 'num', bytes(f.bytes)));
-      tr.appendChild(stampCell(f.at));
-      return tr;
-    }, 'plain|Nothing in the folder', {own: true}));
   }
   PANE_TICK.disks = function () { /* the sizes move slowly - asked again when the pane is opened */ };
 }());

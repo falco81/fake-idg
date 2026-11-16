@@ -120,6 +120,9 @@ def settings(store):
     out = dict(DEFAULTS)
     if isinstance(got, dict):
         out.update({k: got[k] for k in DEFAULTS if k in got})
+    if out.get("smtp_password"):                        # sealed in the database (igd_seal)
+        import igd_seal as SEAL
+        out["smtp_password"] = SEAL.unseal_or(store, out["smtp_password"])
     return out
 
 

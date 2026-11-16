@@ -47,6 +47,8 @@ import tarfile
 import tempfile
 import threading
 import time
+
+import igd_seal as SEAL
 from datetime import datetime, timezone
 
 NAME = "backup"
@@ -146,7 +148,7 @@ def safe_name(name):
 
 
 def password(ctx):
-    return str(ctx.setting("rbackup_password") or "")
+    return str(SEAL.unseal_or(ctx.store, ctx.setting("rbackup_password") or ""))
 
 
 def tools():
@@ -206,12 +208,28 @@ def root_wait(ctx, payload, wait=ROOT_WAIT_S):
 
 # ---- destinations ----------------------------------------------------------------------------------
 def targets(ctx):
+    """The destinations, their secrets opened (they are kept sealed in the database - igd_seal)."""
     got = ctx.store.meta_json("backup:targets") or {}
-    return list(got.get("list") or [])
+    out = []
+    for t in list(got.get("list") or []):
+        t = dict(t)
+        for k in SECRET_FIELDS:
+            if t.get(k):
+                t[k] = SEAL.unseal_or(ctx.store, t[k])
+        out.append(t)
+    return out
 
 
 def put_targets(ctx, ts):
-    ctx.store.set_meta("backup:targets", json.dumps({"list": ts}))
+    """The destinations kept, each password and key sealed with the key beside the database."""
+    kept = []
+    for t in ts:
+        t = dict(t)
+        for k in SECRET_FIELDS:
+            if t.get(k):
+                t[k] = SEAL.seal(ctx.store, t[k])
+        kept.append(t)
+    ctx.store.set_meta("backup:targets", json.dumps({"list": kept}))
 
 
 def target(ctx, tid):
@@ -1761,8 +1779,21 @@ ROUTES = {("GET", "/api/backup"): get_backup, ("POST", "/api/backup"): post_back
           ("GET", "/api/backup/job"): get_job, ("POST", "/api/backup/restore"): post_restore}
 
 
+def on_saved(ctx, changed):
+    SEAL.seal_settings(ctx.store, ["rbackup_password"])     # kept sealed in the database (igd_seal)
+
+
+def seal_old(ctx):
+    """What 1.6.0 kept as it was typed, sealed now (once: then nothing is left to seal)."""
+    SEAL.seal_settings(ctx.store, ["rbackup_password"])
+    got = ctx.store.meta_json("backup:targets") or {}
+    if any(t.get(k) and not SEAL.is_sealed(t.get(k)) for t in got.get("list") or [] for k in SECRET_FIELDS):
+        put_targets(ctx, targets(ctx))
+
+
 def background(ctx):
     """The scheduled backup, and the weekly try."""
+    seal_old(ctx)
     if not ctx.setting("rbackup"):
         return
     at = str(ctx.setting("rbackup_at") or "04:15")

@@ -1,4 +1,5 @@
-"""igd_online.py - new versions of fake-igd from the web (1.4.0).
+"""igd_online.py - new versions of fake-igd from the web (1.4.0; the plan, going back and what is new
+per version as otp's, 1.6.1).
 
 The same road as otp's (Settings → Upgrades → From the web, otp --upgrade-online):
 
@@ -10,10 +11,13 @@ The same road as otp's (Settings → Upgrades → From the web, otp --upgrade-on
   3. Asked for, it is fetched into /var/lib/fake-igd/upgrade/ and checked by
      fake_igd_upgrade.py --inspect: signed by a release key this machine trusts,
      every file the one signed, not older than what is installed.
-  4. request.json is laid down beside it; systemd (fake-igd-upgrade.path) starts
+  4. request.json is laid down beside it (and plan.json, what the pages draw: who
+     asked, when, for which version); systemd (fake-igd-upgrade.path) starts
      fake-igd-upgrade.service, which checks it all again as root and runs the
      package's own install.sh --upgrade --yes. status.json and last.log say how
-     it went.
+     it went; plan() puts the three together as otp's plan of one node.
+  5. Going back to an older version (otp 1.0.143): only one asked for as such,
+     signed, not below DOWNGRADE_FLOOR nor the floor root keeps beside the program.
 
 Used by `upnp upgrade ...`, the console and the web pages (fake_igd_api.py).
 Only the standard library.
@@ -37,7 +41,16 @@ STATE_DIR = os.environ.get("FAKE_IGD_STATE", "/var/lib/fake-igd")
 UPGRADE_DIR = os.path.join(STATE_DIR, "upgrade")
 LIB_DIR = os.environ.get("FAKE_IGD_LIB", "/opt/fake-igd")
 HELPER = os.path.join(LIB_DIR, "fake_igd_upgrade.py")
-PATH_UNIT = "/etc/systemd/system/fake-igd-upgrade.path"
+UNIT_DIR = os.environ.get("FAKE_IGD_UNIT_DIR", "/etc/systemd/system")
+PATH_UNIT = os.path.join(UNIT_DIR, "fake-igd-upgrade.path")
+WEB_PATH_UNIT = os.path.join(UNIT_DIR, "fake-igd-web.path")
+# The oldest version the pages may go back to (otp's DOWNGRADE_FLOOR): 1.4.0 is the first with
+# root's upgrade helper, the release keys and the accounts of the pages in the database - an older
+# one could not come back up from the pages. Root's helper holds the same line, and the floor root
+# keeps beside the program (downgrade-floor), when there is one, as well.
+DOWNGRADE_FLOOR = "1.4.0"
+FLOOR_FILE = os.path.join(LIB_DIR, "downgrade-floor")
+UPGRADE_TIMEOUT_S = 30 * 60
 PKG_RE = re.compile(r"(?:^|/)(fake-igd-(\d+)\.(\d+)\.(\d+)\.tar\.gz)(?:\?|#|$)")
 MOST_PACKED = 64 * 1024 * 1024
 EVERY_S = 86400
@@ -154,9 +167,50 @@ def online_list(url, version=""):
     return out
 
 
+def changelog_sections(text):
+    """{version: its section of CHANGELOG.md, heading and all} (otp's changelog_sections)."""
+    out = {}
+    for m in re.finditer(r"^## (\d+\.\d+\.\d+)\b.*?(?=^## |\Z)", text or "", re.M | re.S):
+        out[m.group(1)] = m.group(0).strip()[:20000]
+    return out
+
+
+def changelog_urls(url, final=""):
+    """Where the CHANGELOG.md of the packages at `url` may be: the repository's own on GitHub,
+    else beside the packages or one folder up."""
+    gh = re.match(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)(?:/(?:tree|blob)/([^/]+))?", url or "")
+    if gh:
+        return ["https://raw.githubusercontent.com/%s/%s/%s/CHANGELOG.md" % (gh.group(1), gh.group(2),
+                                                                             gh.group(3) or "HEAD")]
+    raw = re.match(r"^https://raw\.githubusercontent\.com/([^/]+)/([^/]+)/([^/]+)/", url or "")
+    if raw:
+        return ["https://raw.githubusercontent.com/%s/%s/%s/CHANGELOG.md" % raw.groups()]
+    base = final or url or ""
+    if PKG_RE.search(urllib.parse.urlparse(base).path):
+        base = base.rsplit("/", 1)[0] + "/"
+    elif not base.endswith("/"):
+        base += "/"
+    return [urllib.parse.urljoin(base, "CHANGELOG.md"), urllib.parse.urljoin(base, "../CHANGELOG.md")]
+
+
+def online_changelog_sections(url, here, upto, version=""):
+    """What is new in each version newer than `here` up to `upto`, read from the CHANGELOG.md
+    published beside the packages: {version: text} - {} when there is none."""
+    for one in changelog_urls(url):
+        try:
+            data, _ct, _f = _get(one, limit=2 * 1024 * 1024, timeout=20, version=version or here)
+        except Exception:                               # noqa: BLE001 - nothing published: nothing said
+            continue
+        got = changelog_sections(data.decode("utf-8", "replace"))
+        keep = {v: t for v, t in got.items() if ver_tuple(here) < ver_tuple(v) <= ver_tuple(upto)}
+        if got:
+            return dict(sorted(keep.items(), key=lambda x: ver_tuple(x[0]), reverse=True)[:12])
+    return {}
+
+
 def look(url, here, store=None, by=""):
-    """Asks the address now: {'at', 'url', 'here', 'packages', 'newest', 'newer', 'error'}.
-    Kept in the store (meta 'upgrade:online') when one is given."""
+    """Asks the address now: {'at', 'url', 'here', 'packages', 'newest', 'newer', 'error',
+    'changelog'}. Kept in the store (meta 'upgrade:online') when one is given."""
     row = {"at": time.time(), "url": url, "by": by, "here": here}
     try:
         got = online_list(url, here)
@@ -164,10 +218,14 @@ def look(url, here, store=None, by=""):
         newest = got[0] if got else None
         row["newest"] = newest
         row["newer"] = bool(newest and ver_tuple(newest["version"]) > ver_tuple(here))
+        if row["newer"]:
+            # What is new in each newer version (1.6.1), when the address publishes a CHANGELOG.md.
+            row["changelog"] = online_changelog_sections(url, here, newest["version"])
         if row["newer"] and store is not None:
             was = store.meta_json("upgrade:online") or {}
             if (was.get("newest") or {}).get("version") != newest["version"]:
-                store.add_event("upgrade", "fake-igd %s is out (%s)" % (newest["version"], url), "info")
+                store.add_event("upgrade", "fake-igd %s is out (%s) - Settings → Upgrades" % (newest["version"], url),
+                                "info")
     except Exception as e:                              # noqa: BLE001
         row["error"] = str(getattr(e, "reason", None) or e).split("\n")[0][:300]
     if store is not None:
@@ -188,7 +246,114 @@ def view(row, here):
         row["newer_list"] = sorted((p for p in row.get("packages") or []
                                     if ver_tuple(p.get("version")) > ver_tuple(here)),
                                    key=lambda p: ver_tuple(p.get("version")), reverse=True)
+        notes = row.get("changelog") or {}
+        for p in row["newer_list"]:
+            if notes.get(p.get("version")):
+                p["changelog"] = notes[p["version"]]
     return row
+
+
+def installed_changelog():
+    """The CHANGELOG.md beside the program (installed), or the repository's own."""
+    for one in (os.path.join(LIB_DIR, "CHANGELOG.md"),
+                os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "CHANGELOG.md")):
+        try:
+            with open(one, encoding="utf-8", errors="replace") as f:
+                return f.read(4 * 1024 * 1024)
+        except OSError:
+            continue
+    return ""
+
+
+def package_changelog(url, version, here):
+    """CHANGELOG.md read out of the package of `version` at `url` - read, not checked (it is
+    checked when it is chosen)."""
+    import io
+    import tarfile
+    pk = next((p for p in online_list(url, here) if p["version"] == version), None)
+    if not pk:
+        raise ValueError("fake-igd %s is not at %s" % (version, url))
+    data, _ct, _f = _get(pk["url"], limit=MOST_PACKED, timeout=120, version=here)
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+            m = next((x for x in tf.getmembers() if x.isfile() and
+                      x.name == "fake-igd-%s/CHANGELOG.md" % version), None)
+            return tf.extractfile(m).read(4 << 20).decode("utf-8", "replace") if m else ""
+    except (tarfile.TarError, OSError, EOFError) as e:
+        raise ValueError("the package of %s does not read: %s" % (version, e))
+
+
+def changelog_of(url, version, here, store=None):
+    """What came in `version` - and, for an older one, what going back to it from here gives up:
+    the sections of the versions after it up to this one (otp's downgrade_changelog). From the
+    CHANGELOG.md here, from the one published beside the packages, else from the package."""
+    version = str(version or "")
+    if not re.match(r"^\d+\.\d+\.\d+\Z", version):
+        raise ValueError("which version?")
+    mine = changelog_sections(installed_changelog())
+    lost = [{"version": v, "text": mine[v]} for v in sorted(mine, key=ver_tuple, reverse=True)
+            if ver_tuple(version) < ver_tuple(v) <= ver_tuple(here)]
+    entry, src = mine.get(version), "here"
+    if entry is None and store is not None:
+        entry = ((store.meta_json("upgrade:online") or {}).get("changelog") or {}).get(version)
+        src = "address"
+    if entry is None:
+        entry = changelog_sections(package_changelog(url, version, here)).get(version) or ""
+        src = "package"
+    return {"version": version, "here": here, "entry": entry, "from": src, "lost": lost}
+
+
+# ---- going back (otp 1.0.143) ---------------------------------------------------------
+def root_floor():
+    """The oldest version the versions installed here allow, as root keeps it, or None."""
+    try:
+        with open(FLOOR_FILE, encoding="utf-8") as f:
+            text = f.read(64).strip()
+    except OSError:
+        return None
+    return text if re.match(r"^\d+\.\d+\.\d+\Z", text) else None
+
+
+def downgrade_why_not(version, here):
+    """What stands in the way of going back to `version`: [] when nothing does."""
+    v = ver_tuple(version)
+    if v >= ver_tuple(here):
+        return ["%s is not older than %s, which runs here - that is an upgrade" % (version, here)]
+    why = []
+    if v < ver_tuple(DOWNGRADE_FLOOR):
+        why.append("older than %s, the first that is put in from these pages and comes back from them "
+                   "(root's upgrade helper, the release keys, the accounts in the database): going back "
+                   "further is done as root on the command line - upnp upgrade file "
+                   "fake-igd-%s.tar.gz --downgrade" % (DOWNGRADE_FLOOR, version))
+    root = root_floor()
+    if root and v < ver_tuple(root):
+        why.append("older than %s, the oldest the versions installed on this machine allow (%s)"
+                   % (root, FLOOR_FILE))
+    return why
+
+
+def downgrade_list(url, here):
+    """The older versions at `url`, each with what stands in its way (otp's downgrade_list)."""
+    url = str(url or "").strip()
+    if not url:
+        raise ValueError("no upgrade_url is set (Settings → Upgrades)")
+    out = []
+    for p in online_list(url, here):
+        if ver_tuple(p["version"]) >= ver_tuple(here):
+            continue
+        out.append(dict(p, why=downgrade_why_not(p["version"], here)))
+    out.sort(key=lambda p: ver_tuple(p["version"]), reverse=True)
+    root = root_floor()
+    lowest = max([DOWNGRADE_FLOOR] + ([root] if root else []), key=ver_tuple)
+    for p in out:
+        if not p["why"]:
+            p["short"] = ""
+        elif ver_tuple(p["version"]) < ver_tuple(lowest):
+            p["short"] = "below %s" % lowest
+        else:
+            p["short"] = p["why"][0][:80]
+    return {"url": url, "here": here, "versions": out, "floor": DOWNGRADE_FLOOR, "root_floor": root,
+            "lowest": lowest}
 
 
 # ---- the package --------------------------------------------------------------------
@@ -253,22 +418,32 @@ def _into_upgrade_dir(data_or_path, name):
                 pass
 
 
-def fetch(url, version, here):
-    """The package of `version` fetched from where it is published and checked: its info."""
+def fetch(url, version, here, older=False):
+    """The package of `version` fetched from where it is published and checked: its info.
+    `older`: one to go back to (otp 1.0.143), refused when anything stands in its way."""
+    if older:
+        why = downgrade_why_not(version, here)
+        if why:
+            raise ValueError("fake-igd %s cannot be gone back to: %s" % (version, "; ".join(why)))
     pk = [p for p in online_list(url, here) if p["version"] == str(version)]
     if not pk:
         raise ValueError("fake-igd %s is not at %s any more" % (version, url))
     pk = pk[0]
-    if ver_tuple(pk["version"]) <= ver_tuple(here):
+    if older and ver_tuple(pk["version"]) >= ver_tuple(here):
+        raise ValueError("fake-igd %s is not older than %s, which runs here" % (pk["version"], here))
+    if not older and ver_tuple(pk["version"]) <= ver_tuple(here):
         raise ValueError("fake-igd %s is not newer than %s, which runs here" % (pk["version"], here))
     data, _ct, final = _get(pk["url"], limit=MOST_PACKED, timeout=300, version=here)
     try:
         info = _into_upgrade_dir(data, pk["name"])
     except ValueError as e:
         raise ValueError("the package from %s was refused: %s" % (final, e))
-    if info.get("older"):
+    if info.get("older") and not older:
         raise ValueError("%s is older than %s, which runs here" % (info["version"], info.get("installed")))
+    if older and not info.get("older"):
+        raise ValueError("%s is not older than %s, which is installed" % (info["version"], info.get("installed")))
     info["from"] = final
+    info["downgrade"] = bool(older)
     return info
 
 
@@ -291,11 +466,21 @@ def take_bytes(data):
     return info
 
 
-def ask_root(info, by):
-    """request.json beside the package: systemd's fake-igd-upgrade.path starts root's part."""
-    if info.get("older"):
-        raise ValueError("%s is older than %s, which runs here - going back is done on the command line"
-                         % (info["version"], info.get("installed")))
+def ask_root(info, by, downgrade=False):
+    """request.json beside the package: systemd's fake-igd-upgrade.path starts root's part.
+    plan.json beside it is what the pages and `upnp upgrade follow` draw. `downgrade`: an older
+    version asked for as such (root's helper takes it only so, and never below its floor)."""
+    if info.get("older") and not downgrade:
+        raise ValueError("%s is older than %s, which runs here - going back is asked for as such "
+                         "(Settings → Upgrades → Going back, or upnp upgrade online %s --downgrade)"
+                         % (info["version"], info.get("installed"), info["version"]))
+    if downgrade:
+        if not info.get("older"):
+            raise ValueError("%s is not older than %s - that is an upgrade" % (info["version"],
+                                                                               info.get("installed")))
+        why = downgrade_why_not(info["version"], info.get("installed") or "")
+        if why:
+            raise ValueError("; ".join(why))
     if not os.path.exists(PATH_UNIT):
         raise ValueError("fake-igd-upgrade.path is not installed - upgrade once on the command line "
                          "(install.sh --upgrade)")
@@ -303,14 +488,42 @@ def ask_root(info, by):
     if now.get("busy"):
         raise ValueError("an upgrade is going on already")
     ident = "%d-%s" % (int(time.time()), secrets.token_hex(4))
+    at = time.time()
     req = {"id": ident, "file": os.path.basename(info["file"]), "version": info["version"],
-           "sha": info["sha"], "by": str(by or "")[:100], "at": time.time()}
-    fd, tmp = tempfile.mkstemp(prefix=".req-", suffix=".json", dir=UPGRADE_DIR)
-    with os.fdopen(fd, "w") as f:
-        json.dump(req, f)
-    os.chmod(tmp, 0o640)
-    os.replace(tmp, os.path.join(UPGRADE_DIR, "request.json"))
+           "sha": info["sha"], "by": str(by or "")[:100], "at": at, "downgrade": bool(downgrade)}
+    plan_row = {"id": ident, "version": info["version"], "sha": info["sha"], "by": str(by or "")[:100],
+                "at": at, "downgrade": bool(downgrade), "from_version": info.get("installed") or "",
+                "signed_by": info.get("signed_by") or ""}
+    _write_json("plan.json", plan_row)
+    _write_json("request.json", req)
     return ident
+
+
+def _write_json(name, data):
+    os.makedirs(UPGRADE_DIR, mode=0o750, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".w-", suffix=".json", dir=UPGRADE_DIR)
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f)
+    os.chmod(tmp, 0o640)
+    os.replace(tmp, os.path.join(UPGRADE_DIR, name))
+
+
+def cancel(by=""):
+    """Stop it (otp's upgrade_cancel), for the one node there is: only while root has not taken
+    it yet - once install.sh runs, it is finished."""
+    p = _read_json("plan.json")
+    req = os.path.join(UPGRADE_DIR, "request.json")
+    if not p or not os.path.exists(req):
+        if os.path.exists(os.path.join(UPGRADE_DIR, "request.taken")) or status().get("state") == "running":
+            raise ValueError("root is putting it in right now - that is finished, not stopped")
+        raise ValueError("no upgrade is waiting to be stopped")
+    try:
+        os.unlink(req)
+    except FileNotFoundError:
+        raise ValueError("root took it a moment ago - it is finished, not stopped")
+    p["cancelled"] = {"by": str(by or "")[:100], "at": time.time()}
+    _write_json("plan.json", p)
+    return p
 
 
 def _read_json(name):
@@ -352,6 +565,17 @@ def status():
 
 def progress(lines):
     """(percent, words) of install.sh --upgrade from its output."""
+    part, parts, words = parts_of(lines)
+    if not lines:
+        return 0, "waiting for root to take it"
+    if not parts:
+        return (5 if lines else 0), words or "starting"
+    return min(97, int(5 + 92 * part / float(parts + 1))), words
+
+
+def parts_of(lines):
+    """(sections begun, sections in all, the last one's words) of install.sh's output - its
+    "==> ..." lines (otp 1.0.67)."""
     total = 0
     done = 0
     words = ""
@@ -364,8 +588,65 @@ def progress(lines):
             words = ln[4:].strip()
         if "checked" in ln and "signed by" in ln and not done:
             words = "the package checked"
-    if not lines:
-        return 0, "waiting for root to take it"
-    if not total:
-        return (5 if lines else 0), words or "starting"
-    return min(97, int(5 + 92 * done / float(total + 1))), words
+    return done, total, words
+
+
+def plan(here, node=""):
+    """The upgrade asked for last, as otp's plan of one node: {id, version, by, at, downgrade,
+    state: running | done | failed | cancelled, steps: [{name, state, said, at, asked, part,
+    parts, part_words, tail}]} - or None. state of the step: waiting (handed to root),
+    installing (install.sh runs), checking (install.sh ended well, the new version not yet
+    answering), done, failed, cancelled."""
+    import socket
+    p = _read_json("plan.json")
+    st = status()
+    if not p:
+        # Asked by a version before plan.json (1.6.0 and older): what status.json says.
+        if not st.get("id"):
+            return None
+        p = {"id": st.get("id"), "version": st.get("version"), "at": st.get("asked_at") or st.get("at"),
+             "by": "", "downgrade": False}
+    now = time.time()
+    at = float(p.get("at") or 0)
+    step = {"name": node or socket.gethostname().split(".")[0], "asked": at, "at": at}
+    mine = st.get("id") == p.get("id")
+    taken = os.path.exists(os.path.join(UPGRADE_DIR, "request.taken"))
+    lines = log_lines(400)
+    if p.get("cancelled"):
+        c = p["cancelled"]
+        step.update(state="cancelled", at=c.get("at") or at,
+                    said="stopped%s before root took it; nothing was changed" % (
+                        (" by %s" % c["by"]) if c.get("by") else ""))
+    elif mine and st.get("asked"):
+        late = now - at
+        step.update(state="waiting", said="handed to root (fake-igd-upgrade.service)" if late < 60 else
+                    "root has not taken it for %d min - is fake-igd-upgrade.path running? "
+                    "(systemctl enable --now fake-igd-upgrade.path)" % max(1, int(late // 60)))
+    elif (mine and st.get("state") == "running") or (taken and mine):
+        part, parts, words = parts_of(lines)
+        step.update(state="installing", at=float(st.get("at") or at), part=part, parts=parts,
+                    part_words=words[:120], said="install.sh --upgrade runs (root)")
+    elif mine and st.get("state") == "done":
+        if ver_tuple(here) == ver_tuple(p.get("version")):
+            step.update(state="done", at=float(st.get("at") or at), tail=(st.get("tail") or [])[-12:],
+                        said="%s, checked, running" % here)
+        elif now - float(st.get("at") or at) < 600:
+            step.update(state="checking", at=float(st.get("at") or at),
+                        said="install.sh ended well - waiting for the pages' API to come back as %s" % p.get("version"))
+        else:
+            step.update(state="failed", at=float(st.get("at") or at), tail=(st.get("tail") or [])[-40:],
+                        said="install.sh said it ended well, but %s still runs here" % here)
+    elif mine and st.get("state") == "failed":
+        step.update(state="failed", at=float(st.get("at") or at), tail=(st.get("tail") or [])[-40:],
+                    said=st.get("said") or "install.sh ended with %s" % st.get("rc"))
+    elif now - at > 120:
+        step.update(state="failed", said="fake-igd-upgrade.service never took the request - is "
+                    "fake-igd-upgrade.path installed and running? (install.sh --upgrade once on the "
+                    "command line puts it in)")
+    else:
+        step.update(state="waiting", said="handed to root (fake-igd-upgrade.service)")
+    p["steps"] = [step]
+    p["state"] = {"waiting": "running", "installing": "running", "checking": "running"}.get(
+        step["state"], step["state"])
+    p["here"] = here
+    return p

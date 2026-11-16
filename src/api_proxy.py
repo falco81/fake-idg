@@ -3,6 +3,7 @@ The proxy itself is igd_proxy.py, which the others ask (url_for, open_url, env).
 import re
 
 import igd_proxy as P
+import igd_seal as SEAL
 
 NAME = "proxy"
 
@@ -73,3 +74,11 @@ ROUTES = {
     ("GET", "/api/proxy"): proxy_get,
     ("POST", "/api/proxy"): proxy_post,
 }
+
+
+def on_saved(ctx, changed):
+    SEAL.seal_settings(ctx.store, ["proxy_password"])       # kept sealed in the database (igd_seal)
+
+
+def background(ctx):
+    SEAL.seal_settings(ctx.store, ["proxy_password"])

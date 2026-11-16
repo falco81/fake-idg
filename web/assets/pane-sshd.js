@@ -41,22 +41,253 @@
     if (!on && SD.poll) { clearInterval(SD.poll); SD.poll = null; }
   }
   function load() {
-    noticeCard();
+    layout();
     api('sshd').then(function (d) { SD.d = d; draw(); poll(busyNow(d)); }).catch(oops);
   }
-  /* The notice's settings in a card of their own, as otp has them: drawn by the settings code
-     into the pane's grid, moved here (drawn again there after every save). */
-  function noticeCard() {
-    var host = $('sd-notice');
+  /* otp draws this pane's wish as a form of its own (drawSshd: formField, a grid "formgrid sd-grid",
+     Root signs in as three buttons, Who may sign in picked from the accounts, the notice's places as
+     ticks). Here the settings code draws the boxes - so the save bar, its count and Put them back
+     work as everywhere - and they are laid out as otp's form, each box still the setting's own. */
+  var FORM_KEYS = ['sshd_permit_root', 'sshd_password', 'sshd_port', 'sshd_tries', 'sshd_allow_users', 'sshd_trial_min'];
+  var WHERE = [['sshd_notice_ssh', 'Before signing in over SSH', 'sshd\'s Banner - needs fake-igd to set the SSH server'],
+               ['sshd_notice_console', 'At the console', '/etc/issue'],
+               ['sshd_notice_motd', 'After signing in', 'the message of the day']];
+  function plain(item) {
+    if (!item) return null;
+    var i = item.querySelector('.iinfo');
+    if (i) i.remove();
+    var says = item.querySelector('.says.clamp');
+    if (says) { says.classList.remove('clamp', 'cut'); says.onclick = null; }
+    item.classList.remove('wide', 'tall', 'asleep');
+    var why = item.querySelector('.asleep-why');
+    if (why) why.remove();
+    var k = item.dataset.key;
+    if (k in SAYS) {
+      var tail = item.querySelector('.set-tail');
+      if (tail) { clear(tail); if (SAYS[k]) tail.appendChild(el('div', 'says', SAYS[k])); }
+    }
+    return item;
+  }
+  var SAYS = {sshd_manage: 'Off: this server keeps sshd as the system has it, and fake-igd\'s file is taken away.',
+              sshd_permit_root: '', sshd_password: 'Off: only keys sign in, for everybody.',
+              sshd_port: 'Another than 22: the firewall lets it in by itself, the old one too while it is on trial.',
+              sshd_tries: 'Wrong passwords or keys before sshd closes it (MaxAuthTries).',
+              sshd_allow_users: 'The accounts that may sign in over SSH (AllowUsers) - or everybody. Root left out of the list signs in only at the console.',
+              sshd_trial_min: 'Unless kept within this, root puts back what it had. 0: no trial - not advised.'};
+  function boxOf(k) { return $('set-' + k); }
+  function changed(box, ev) { box.dispatchEvent(new Event(ev || 'change', {bubbles: true})); }
+  function manageOn() { var m = boxOf('sshd_manage'); return !!(m && m._get && m._get()); }
+  function layout() {
+    var sect = $('sect-sshd'), nh = $('sd-notice');
+    if (!sect || !nh) return;
+    var item = function (k) { return document.querySelector('#pane-sshd .set-item[data-key="' + k + '"]'); };
+    if (!item('sshd_manage')) return;
+    var keep = {};
+    ['sshd_notice'].concat(WHERE.map(function (o) { return o[0]; })).forEach(function (k) { keep[k] = item(k); });
+    clear(nh);
+    item = function (k) { return keep[k] || document.querySelector('#pane-sshd .set-item[data-key="' + k + '"]'); };
+    var g0 = el('div', 'formgrid');
+    g0.appendChild(plain(item('sshd_manage')));
+    var g = el('div', 'formgrid sd-grid');
+    FORM_KEYS.forEach(function (k) { var it = plain(item(k)); if (it) g.appendChild(it); });
+    clear(sect);
+    sect.appendChild(g0);
+    sect.appendChild(g);
+    /* Root signs in: three buttons, as otp's - the select kept, hidden, as the setting's box. */
+    var sel = boxOf('sshd_permit_root');
+    if (sel && !sel._seg) {
+      var seg = el('div', 'seg');
+      [['prohibit-password', 'With a key only'], ['yes', 'With a key or a password'], ['no', 'Not at all']].forEach(function (o) {
+        var b = el('button', '', o[1]);
+        b.type = 'button';
+        b.dataset.v = o[0];
+        b.onclick = function () { sel.value = o[0]; changed(sel); paint(); };
+        seg.appendChild(b);
+      });
+      sel.hidden = true;
+      sel.parentNode.insertBefore(seg, sel);
+      sel._seg = seg;
+    }
+    /* Who may sign in: the accounts of this machine, picked - or everybody. */
+    var au = boxOf('sshd_allow_users');
+    if (au && !au._pick) {
+      au.hidden = true;
+      var pick = accountPicker(au);
+      au.parentNode.insertBefore(pick, au);
+      au._pick = pick;
+    }
+    /* The notice: its words, and where it is shown as three ticks. */
+    var words = plain(item('sshd_notice'));
+    if (words) {
+      var ta = boxOf('sshd_notice');
+      ta.rows = 6;
+      ta.classList.add('mono', 'sd-notice');
+      ta.placeholder = 'Authorised use only. Every connection is logged.';
+      var says = words.querySelector('.says');
+      if (says) says.textContent = 'Plain text, as many lines as needed - often what the security policy wants said.';
+      nh.appendChild(words);
+    }
+    var wh = el('div', 'sd-where');
+    WHERE.forEach(function (o) {
+      var it = item(o[0]);
+      var sw = boxOf(o[0]);
+      if (!it || !sw) return;
+      it.hidden = true;
+      nh.appendChild(it);
+      var lab = el('label', 'chk');
+      var cb = el('input');
+      cb.type = 'checkbox';
+      cb.checked = !!sw._get();
+      cb.dataset.key = o[0];
+      cb.onchange = function () { sw._input.checked = cb.checked; changed(sw._input); };
+      lab.appendChild(cb);
+      lab.appendChild(el('span', '', o[1]));
+      lab.appendChild(el('span', 'muted small', o[2]));
+      wh.appendChild(lab);
+    });
+    nh.appendChild(wh);
+    var man = boxOf('sshd_manage');
+    if (man && man._input && !man._paints) { man._paints = true; man._input.addEventListener('change', paint); }
+    paint();
+  }
+  /* What the wish leaves on or off, as otp's form: the grid greyed and its boxes shut while
+     fake-igd does not set the SSH server; Before signing in over SSH with it. */
+  function paint() {
+    var on = manageOn(), g = document.querySelector('#sect-sshd .sd-grid');
+    if (!g) return;
+    g.classList.toggle('off', !on);
+    g.querySelectorAll('input, select, textarea, button').forEach(function (x) { x.disabled = !on || !ADMIN; });
+    var pk = g.querySelector('.acct-pick');
+    if (pk) pk.classList.toggle('off', !on || !ADMIN);
+    var sel = boxOf('sshd_permit_root');
+    if (sel && sel._seg) Array.prototype.forEach.call(sel._seg.children, function (b) { b.classList.toggle('on', b.dataset.v === sel.value); });
+    document.querySelectorAll('#sd-notice .sd-where input').forEach(function (cb) {
+      var sw = boxOf(cb.dataset.key);
+      if (sw) cb.checked = !!sw._get();
+      cb.disabled = !ADMIN || (cb.dataset.key === 'sshd_notice_ssh' && !on);
+    });
+    notes();
+  }
+  /* otp's notes under the form: said from the wish as it is in the boxes, before it is saved. */
+  function notes() {
+    var host = $('sd-form-notes');
     if (!host) return;
     clear(host);
-    var grid = el('div', 'set-grid');
-    NOTICE_KEYS.forEach(function (k) {
-      var item = document.querySelector('#sect-sshd .set-item[data-key="' + k + '"]');
-      if (item) grid.appendChild(item);
-    });
-    host.appendChild(grid);
+    var on = manageOn(), now = (SD.d && SD.d.now) || {};
+    var sel = boxOf('sshd_permit_root'), pw = boxOf('sshd_password');
+    var permit = sel ? sel.value : 'prohibit-password', pass = pw ? !!pw._get() : true;
+    if (on && !now.keys && (permit === 'prohibit-password' || !pass) && permit !== 'no')
+      host.appendChild(el('p', 'note bad', 'Root has no key on this server - add one to /root/.ssh/authorized_keys first (SSH keys shows them), or this is refused.'));
+    if (on && !pass && permit === 'yes')
+      host.appendChild(el('p', 'note', 'Passwords off: root signs in with a key either way.'));
   }
+  /* otp's accountPicker (1.0.242): root and the users who may sign in here, several, or everybody -
+     written into the setting's own box as a list. */
+  var ACCTS = {names: null, at: 0, waiting: []};
+  function accounts(cb) {
+    if (ACCTS.names && Date.now() - ACCTS.at < 60000) { cb(ACCTS.names); return; }
+    ACCTS.waiting.push(cb);
+    if (ACCTS.waiting.length > 1) return;
+    var done = function (names) {
+      ACCTS.names = names; ACCTS.at = Date.now();
+      var w = ACCTS.waiting; ACCTS.waiting = [];
+      w.forEach(function (f) { try { f(names); } catch (e) { /* gone */ } });
+    };
+    api('sshkeys').then(function (d) {
+      var seen = {}, names = [];
+      ((d && d.users) || []).forEach(function (u) { if (u && u.name && !seen[u.name]) { seen[u.name] = 1; names.push(u.name); } });
+      done(names.sort());
+    }).catch(function () { done([]); });
+  }
+  function accountPicker(box) {
+    var cur = String(box.value || '').split(/[\s,;]+/).filter(Boolean);
+    var write = function () { box.value = cur.join(', '); changed(box, 'input'); };
+    var pick = el('details', 'acct-pick');
+    var sum = el('summary', '');
+    pick.appendChild(sum);
+    var panel = el('div', 'acct-panel');
+    pick.appendChild(panel);
+    var said = function () {
+      clear(sum);
+      if (!cur.length) {
+        var ev0 = el('span', 'acct-every');
+        ev0.innerHTML = iconMarkup('people', 14);
+        ev0.appendChild(el('span', '', 'Everybody'));
+        sum.appendChild(ev0);
+        return;
+      }
+      cur.forEach(function (n) {
+        var chip = el('span', 'acct-chip');
+        chip.appendChild(noI18n(el('span', 'mono', n)));
+        var x = el('button', 'acct-x', '×');
+        x.type = 'button';
+        x.title = 'Take it away';
+        x.onclick = function (e) {
+          e.preventDefault(); e.stopPropagation();
+          if (pick.classList.contains('off')) return;
+          cur = cur.filter(function (m) { return m !== n; });
+          said(); draw(ACCTS.names || []); write();
+        };
+        chip.appendChild(x);
+        sum.appendChild(chip);
+      });
+    };
+    var draw = function (names) {
+      clear(panel);
+      var all = ['root'].concat(names.filter(function (n) { return n !== 'root'; }));
+      cur.forEach(function (n) { if (all.indexOf(n) < 0) all.push(n); });
+      var ev = el('label', 'acct-row acct-row-every');
+      var evc = el('input'); evc.type = 'checkbox'; evc.checked = !cur.length;
+      var evi = el('span', 'acct-ava every'); evi.innerHTML = iconMarkup('people', 14);
+      ev.appendChild(evc); ev.appendChild(evi); ev.appendChild(el('span', 'acct-name', 'Everybody'));
+      panel.appendChild(ev);
+      var boxes = [];
+      all.forEach(function (n) {
+        var r = el('label', 'acct-row');
+        var c = el('input'); c.type = 'checkbox'; c.value = n; c.checked = cur.indexOf(n) >= 0;
+        r.appendChild(c);
+        r.appendChild(noI18n(el('span', 'acct-ava' + (n === 'root' ? ' root' : ''), n.slice(0, 2).toUpperCase())));
+        r.appendChild(noI18n(el('span', 'acct-name mono', n)));
+        if (n !== 'root' && names.indexOf(n) < 0) r.appendChild(el('span', 'tag dim', 'not listed by this machine'));
+        panel.appendChild(r);
+        boxes.push(c);
+      });
+      evc.onchange = function () {
+        if (evc.checked) { cur = []; boxes.forEach(function (c) { c.checked = false; }); }
+        else if (!cur.length) { evc.checked = true; return; }
+        said(); write();
+      };
+      boxes.forEach(function (c) {
+        c.onchange = function () {
+          cur = boxes.filter(function (x) { return x.checked; }).map(function (x) { return x.value; });
+          evc.checked = !cur.length;
+          said(); write();
+        };
+      });
+    };
+    said();
+    panel.appendChild(el('p', 'muted small', 'reading the users of this machine…'));
+    accounts(draw);
+    var shut = function (e) {
+      if (!pick.isConnected) { document.removeEventListener('click', shut); return; }
+      if (pick.open && !pick.contains(e.target)) pick.open = false;
+    };
+    document.addEventListener('click', shut);
+    sum.addEventListener('click', function (e) { if (pick.classList.contains('off')) e.preventDefault(); });
+    return pick;
+  }
+  /* Laid out again whenever the settings are drawn again (after a save, after Put them back);
+     the sleeping-while-off of these keys is the form's own (greyed, not said under each box). */
+  (function () {
+    var theirs = drawSettings;
+    drawSettings = function () {
+      var ow = SETTINGS && SETTINGS.only_when;
+      if (ow) FORM_KEYS.concat(['sshd_notice_ssh']).forEach(function (k) { delete ow[k]; });
+      var r = theirs.apply(this, arguments);
+      try { layout(); } catch (e) { /* drawn as the settings code drew it */ }
+      return r;
+    };
+  }());
   function act(action, b) {
     if (b) busy(b, true);
     api('sshd', {action: action}).then(function (r) { toast(r.message, 'good'); SD.d = r; draw(); poll(true); })
@@ -109,45 +340,22 @@
       hd.appendChild(el('span', 'tag info', 'this page'));
       var w = SD_STATE[d.state] || SD_STATE.done;
       if ((d.wish || {}).hash) hd.appendChild(el('span', 'tag ' + w[1], w[0]));
-      if (d.pending) hd.appendChild(el('span', 'tag info', 'asked of root'));
-      var tools = el('span', 'right');
-      var again = iconButton('refresh', 'Read again what sshd has');
-      again.onclick = function () { act('refresh'); };
-      tools.appendChild(again);
-      hd.appendChild(tools);
       cd.appendChild(hd);
       cd.appendChild(netFacts([
         ['Port', v.port || '', true],
         ['Root may sign in', v.permitrootlogin ? permitWords(v.permitrootlogin) : (now.there === false ? 'sshd is not here' : '')],
         ['Passwords', v.passwordauthentication || ''],
-        ['Keys', v.pubkeyauthentication || ''],
         ['Tries a connection', v.maxauthtries || '', true],
         ['Who may sign in', v.allowusers || 'everybody'],
-        ['Keys of root', now.keys === undefined ? '' : String(now.keys)],
-        ['Banner', v.banner && v.banner !== 'none' ? v.banner : 'none', true],
+        ['Keys of root', now.keys === undefined ? '0' : String(now.keys)],
         ['SELinux', now.selinux || '–', true],
-        ['fake-igd\'s file', now.dropin ? 'sshd_config.d/00-fake-igd.conf' : 'none', true],
         ['Read', now.read_at ? ago(now.read_at) : 'not yet']
       ]));
       if (now.there === false) cd.appendChild(el('p', 'note bad', 'sshd is not on this server (dnf install openssh-server).'));
       if (now.dropins === false && now.there !== false) cd.appendChild(el('p', 'note warn', 'This sshd does not read sshd_config.d - fake-igd cannot set it here.'));
-      if (now.dropin) {
-        var det = el('details', '');
-        det.appendChild(el('summary', 'small', 'What fake-igd\'s file says'));
-        var pre = noI18n(el('pre', 'lines', now.dropin));
-        pre.style.maxHeight = 'none'; pre.style.overflow = 'visible';
-        det.appendChild(pre);
-        cd.appendChild(det);
-      }
       grid.appendChild(cd);
       host.appendChild(grid);
-      /* What the wish would do, said before it is saved (otp's notes under the form). */
-      if (c.manage && !now.keys && (c.permit_root === 'prohibit-password' || !c.password) && c.permit_root !== 'no')
-        host.appendChild(el('p', 'note bad', 'Root has no key here - add one to /root/.ssh/authorized_keys on the machine first (SSH keys shows them), or this is refused.'));
-      if (c.manage && !c.password && c.permit_root === 'yes')
-        host.appendChild(el('p', 'note', 'Passwords off: root signs in with a key either way.'));
-      if (c.manage && Number(c.port) !== 22)
-        host.appendChild(el('p', 'muted small', 'Port ' + c.port + ': SELinux and firewalld let it in by themselves; fake-igd\'s own firewall (FAKE-IGD-IN) lets in ' + ((now.ports || [22]).join(', ')) + '.'));
+      setTimeout(notes, 0);
     }, live);
   }
   PANE_LOAD.sshd = load;

@@ -57,7 +57,14 @@ SETTINGS = [
 
 def _setting(store, key):
     import igd_panes as PN
-    return PN.value(store, key)
+    import igd_seal as SEAL
+    v = PN.value(store, key)
+    return SEAL.unseal_or(store, v) if key == "metrics_token" else v
+
+
+def on_saved(ctx, changed):
+    import igd_seal as SEAL
+    SEAL.seal_settings(ctx.store, ["metrics_token"])        # kept sealed in the database (igd_seal)
 
 
 # ---- this machine ----------------------------------------------------------------------------
@@ -302,6 +309,7 @@ def monitor_post(ctx):
         import igd_panes as PN
         tok = secrets.token_urlsafe(32)
         PN.save(ctx.store, {"metrics_token": tok})
+        on_saved(ctx, {"metrics_token": tok})
         ctx.event("%s made a new token for Prometheus (the one before no longer opens /metrics)" % me["name"], "warn")
         return {"token": tok, "message": "a new token - the one before no longer opens /metrics"}
     if act == "preview":
@@ -318,6 +326,8 @@ ROUTES = {
 
 def background(ctx):
     """Every 5 minutes, while metrics are on: how many services avahi-browse sees (it takes seconds)."""
+    import igd_seal as SEAL
+    SEAL.seal_settings(ctx.store, ["metrics_token"])
     if not _setting(ctx.store, "metrics"):
         return
     _n, at = mdns_count(ctx.store)

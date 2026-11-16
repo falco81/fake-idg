@@ -11,6 +11,7 @@ import threading
 import time
 
 import igd_mail as M
+import igd_seal as SEAL
 
 NAME = "mail"
 
@@ -226,10 +227,12 @@ ROUTES = {
 
 
 def on_saved(ctx, changed):
+    SEAL.seal_settings(ctx.store, ["smtp_password"])        # kept sealed in the database (igd_seal)
     if changed.get("mail_mode") not in (None, "off"):
         # What waited while mail was off goes now - in a thread: the save does not wait for it.
         threading.Thread(target=M.tick, args=(ctx.store,), name="mail-on", daemon=True).start()
 
 
 def background(ctx):
+    SEAL.seal_settings(ctx.store, ["smtp_password"])        # one saved before 1.6.1 sealed now
     M.tick(ctx.store)
