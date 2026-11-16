@@ -114,7 +114,7 @@ function msTxt(t) {
 function msPeek(s) {
   peek(s.name, function () { return Promise.resolve(s); }, function (body) {
     body.appendChild(peekFacts([['Type', s.type], ['Interface', s.iface + ' · ' + s.proto],
-                                ['Address', s.address ? s.address + (s.port ? ' port ' + s.port : '') : 'not resolved'],
+                                ['Address', s.address ? (s.address.indexOf(':') >= 0 ? '[' + s.address + ']' : s.address) + (s.port ? ':' + s.port : '') : 'not resolved'],
                                 ['Host', s.host || '–'], ['Seen first', s.first ? stamp(s.first) + (s.before ? ' (there before)' : '') : '–'],
                                 ['Domain', s.domain || 'local']]));
     var txt = msTxt(s.txt);
@@ -257,16 +257,6 @@ function drawAvahi(live) {
       ['Version', d.version ? 'avahi ' + d.version : '', true],
       ['Read', ago(d.at)]
     ]));
-    /* Each interface it joined on a line of its own, its addresses in columns (1.7.2) - not one long run. */
-    if (on && joined.length) {
-      c.appendChild(listTable(['Interface', 'IPv4', 'IPv6'], joined, function (i) {
-        var tr = el('tr');
-        tr.appendChild(noI18n(el('td', 'mono', i.name)));
-        tr.appendChild(noI18n(el('td', 'mono', (i.ipv4 || []).join(', ') || '–')));
-        tr.appendChild(noI18n(el('td', 'mono', (i.ipv6 || []).join(', ') || '–')));
-        return tr;
-      }, 'plain if-list'));
-    }
     (now.problems || []).slice(-3).forEach(function (w) { c.appendChild(noI18n(el('div', 'si-said small', w.replace(/^\S+\s+\S+\s+/, '')))); });
     var r = d.root || {};
     if (r.at) {
@@ -310,9 +300,63 @@ function drawAvahi(live) {
     if (on && d.file_newer) host.appendChild(el('p', 'note warn', 'avahi-daemon.conf was changed (' + ago(d.changed_at) + ') after avahi-daemon started (' + ago(d.since_at) + '): it still runs with what the file said before - Restart it.'));
     if ((d.missing_interfaces || []).length) host.appendChild(el('p', 'note bad', 'Set to use, but not on this server: ' + d.missing_interfaces.join(', ') + ' - avahi leaves them out. Choose the interfaces this server has below.'));
     if (d.reflector && on && joined.length < 2) host.appendChild(el('p', 'note warn', 'The reflector is on, but avahi is on ' + (joined.length ? 'one interface only' : 'no interface') + ': there is nothing to reflect between.'));
+    host.appendChild(avahiIfaces(d, on, joined));
   }, live, function () { explainWhatWasDrawn(real); });
   drawAvahiSettings();
   drawAvahiCopies();
+}
+/* Every interface of this server and what avahi does on it (1.7.2) - as the pane UPnP network and
+   otp's Time: the facts in the card above, the list in a card of its own below, one line an interface,
+   each address on a line of its own - never one long run of addresses in a fact. */
+function avahiIfaces(d, on, joined) {
+  var allow = d.allow_interfaces || [], deny = d.deny_interfaces || [];
+  var j = {}, k = {}, names = [];
+  joined.forEach(function (i) { j[i.name] = i; });
+  (d.kernel || []).forEach(function (i) { k[i.name] = i; });
+  (d.kernel || []).map(function (i) { return i.name; }).concat(joined.map(function (i) { return i.name; })).forEach(function (n) {
+    if (names.indexOf(n) < 0) names.push(n);
+  });
+  var card = el('div', 'card full');
+  var h = el('h2', '', 'The interfaces of this server');
+  h.appendChild(el('span', 'right muted small', num(names.length) + ' interface(s), ' + num(joined.length) + ' used'));
+  card.appendChild(h);
+  card.appendChild(el('p', 'note', 'Every interface the kernel has, and whether avahi is on it now - with the addresses it joined the mDNS group with - and why not. What it may use is set below.'));
+  var why = function (n) {
+    var ki = k[n] || {};
+    if (deny.indexOf(n) >= 0) return ['dim', 'not used: never used'];
+    if (allow.length && allow.indexOf(n) < 0) return ['dim', 'not used: not chosen'];
+    if (ki.up === false) return ['dim', 'not used: down'];
+    if (ki.loopback) return ['dim', 'not used: loopback'];
+    if (ki.multicast === false) return ['dim', 'not used: no multicast'];
+    if (!on) return ['dim', 'not used: avahi is not running'];
+    return ['warn', 'not joined'];
+  };
+  var lines = function (list) {
+    var td = noI18n(el('td', 'mono'));
+    if (!list.length) { td.appendChild(el('span', 'muted', '–')); return td; }
+    list.forEach(function (a) { td.appendChild(el('div', '', a)); });
+    return td;
+  };
+  card.appendChild(listTable(['Interface', 'IPv4', 'IPv6', 'avahi'], names, function (n) {
+    var tr = el('tr');
+    var ji = j[n], ki = k[n];
+    tr.appendChild(noI18n(el('td', 'mono', n)));
+    if (ji) {
+      tr.appendChild(lines(ji.ipv4 || []));
+      tr.appendChild(lines(ji.ipv6 || []));
+    } else {
+      var v4 = lines((ki && ki.ipv4) || []);
+      v4.classList.add('muted');
+      tr.appendChild(v4);
+      tr.appendChild(lines([]));
+    }
+    var u = el('td');
+    if (ji) u.appendChild(el('span', 'tag ok', d.reflector && joined.length > 1 ? 'reflects' : 'joined'));
+    else { var w = why(n); u.appendChild(el('span', 'tag ' + w[0], w[1])); }
+    tr.appendChild(u);
+    return tr;
+  }, 'plain|The kernel shows no interface', {own: true}));
+  return card;
 }
 function drawAvahiSettings() {
   var d = AV.d, host = $('sect-mdns');
@@ -350,7 +394,7 @@ function drawAvahiCopies() {
   h.appendChild(el('span', 'right muted small', num(list.length) + ' kept'));
   card.appendChild(h);
   card.appendChild(el('p', 'note', 'Kept beside avahi-daemon.conf before each change - the last ten. Put back, what fake-igd sets in the file is as it was in the copy, and avahi-daemon is restarted with it (the file as it is now is kept as a copy first).'));
-  card.appendChild(listTable(['Kept', 'The copy', 'Size', ''], list, function (c) {
+  card.appendChild(listTable(['Kept', 'The copy', {words: 'Size', cls: 'num'}, ''], list, function (c) {
     var tr = el('tr');
     tr.appendChild(stampCell(c.at));
     tr.appendChild(noI18n(el('td', 'mono small', c.name)));

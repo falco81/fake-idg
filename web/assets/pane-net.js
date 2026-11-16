@@ -12,7 +12,8 @@
       NET.d = d; NET.fails = 0; NET.failSince = 0;
       var devs = d.now.devices || [];
       if (!NET.dev || !devs.some(function (x) { return x.dev === NET.dev; })) {
-        var pick = devs.filter(function (x) { return x.dev === d.now.page_dev; })[0] ||
+        var pick = devs.filter(function (x) { return d.job && x.dev === d.job.dev; })[0] ||
+                   devs.filter(function (x) { return x.dev === d.now.page_dev; })[0] ||
                    devs.filter(function (x) { return x.default; })[0] || devs[0] || {};
         NET.dev = pick.dev || '';
       }
@@ -59,8 +60,8 @@
     liveFill(real, function (host) {
       var d = NET.d;
       var devs = d.now.devices || [];
-      /* On trial: in the banner on every page (#trials), as otp's - not a card here. */
-      if (d.job && d.job.state) host.appendChild(progressCard(d.job));
+      /* While a change is under way its interface is the one shown, as otp shows the node changed. */
+      if (jobActive(d.job) && d.job.dev && devOf(d.job.dev)) NET.dev = d.job.dev;
       if (devs.length > 1) {
         var seg = el('div', 'seg net-nodes');
         devs.forEach(function (x) {
@@ -75,6 +76,9 @@
         host.appendChild(seg);
       }
       var n = devOf(NET.dev);
+      /* otp's order: the interfaces, then the change under way, then As it is now. On trial: in the
+         banner on every page (#trials), as otp's - not a card here. */
+      if (d.job && d.job.state) host.appendChild(progressCard(d.job));
       host.appendChild(nowCard(n));
       if (!jobActive(d.job) && !onTrial(d)) host.appendChild(formCard(n));
     }, live, function () { explainWhatWasDrawn(real); });
@@ -194,22 +198,25 @@
     g1.appendChild(formField('Host name (FQDN)', host, 'The machine\'s whole name - one for the machine, whichever interface is changed.'));
     card.appendChild(g1);
     var s1 = msect('IPv4', '');
-    var g2 = el('div', 'formgrid');
-    g2.appendChild(formField('How', m4, 'Automatic: the address, gateway and - unless set below - DNS servers come from a DHCP server.'));
-    g2.appendChild(formField('Address with its prefix', a4, 'e.g. 192.0.2.10/24 - /24 is the mask 255.255.255.0.'));
-    g2.appendChild(formField('Gateway', gw, 'Empty: none on this interface (the machine\'s default route is on another one).'));
-    g2.appendChild(formField('DNS servers', dns, 'Separated by commas.'));
-    g2.appendChild(formField('Search domains', search));
+    /* IPv4 and IPv6 in one grid of five columns: each field under its fellow of the other family -
+       How under How, the address under the address - and in its column also while others are hidden. */
+    var col = function (item, i) { item.classList.add('nc' + i); return item; };
+    var g2 = el('div', 'formgrid net-grid');
+    g2.appendChild(col(formField('How', m4, 'Automatic: the address, gateway and - unless set below - DNS servers come from a DHCP server.'), 1));
+    g2.appendChild(col(formField('Address with its prefix', a4, 'e.g. 192.0.2.10/24 - /24 is the mask 255.255.255.0.'), 2));
+    g2.appendChild(col(formField('Gateway', gw, 'Empty: none on this interface (the machine\'s default route is on another one).'), 3));
+    g2.appendChild(col(formField('DNS servers', dns, 'Separated by commas.'), 4));
+    g2.appendChild(col(formField('Search domains', search), 5));
     s1._body.appendChild(g2);
     card.appendChild(s1);
     var s2 = msect('IPv6 (dual stack)', 'Switched on, the interface takes IPv6 beside IPv4. fake-igd itself answers the PS5 over IPv4 (SSDP and SOAP); the pages answer over both where nginx listens on IPv6.');
     var r6 = el('div', 'formgrid');
     r6.appendChild(formField('IPv6', s6));
-    var g6 = el('div', 'formgrid');
-    g6.appendChild(formField('How', mode6));
-    g6.appendChild(formField('Address with its prefix', a6, 'e.g. 2001:db8::10/64'));
-    g6.appendChild(formField('Gateway', gw6));
-    g6.appendChild(formField('DNS servers', dns6));
+    var g6 = el('div', 'formgrid net-grid');
+    g6.appendChild(col(formField('How', mode6), 1));
+    g6.appendChild(col(formField('Address with its prefix', a6, 'e.g. 2001:db8::10/64'), 2));
+    g6.appendChild(col(formField('Gateway', gw6), 3));
+    g6.appendChild(col(formField('DNS servers', dns6), 4));
     s2._body.appendChild(r6);
     s2._body.appendChild(g6);
     card.appendChild(s2);
@@ -228,14 +235,12 @@
     m4.addEventListener('change', paint);
     /* The interface these pages are reached by (or the one fake-igd answers the PS5 on): said
        before anything is pressed, the same as otp's note on the VIP address's network. */
-    var warn = el('div', 'note warn net-elsewhere');
     var words = [];
     if (n.dev === d.now.page_dev) words.push('These pages are reached through ' + n.dev + ': a new address or DHCP here moves them - the page follows the new address, you sign in there again and press Keep it within ' + d.trial_min + ' min, or it goes back by itself.');
     if (n.answers) words.push('fake-igd answers the PS5 on ' + n.dev + ': it takes the new address by itself within a minute; a PS5 that has the old one asks again.');
-    warn.appendChild(el('div', 'small', words.join(' ')));
-    warn.hidden = !words.length;
-    card.appendChild(warn);
-    if (!d.trial_min) card.appendChild(el('p', 'note bad', 'Taken back unless kept is 0: a change is kept at once - a typo in the gateway or the prefix can leave this machine unreachable.'));
+    /* otp's p.note.warn, in the card's own rhythm: as wide as the sections above it, 14 px from them. */
+    if (words.length) card.appendChild(el('p', 'note warn net-warn', words.join(' ')));
+    if (!d.trial_min) card.appendChild(el('p', 'note bad net-warn', 'Taken back unless kept is 0: a change is kept at once - a typo in the gateway or the prefix can leave this machine unreachable.'));
     var want = function () {
       return {dev: n.dev, hostname: host.value.trim(),
               ipv4: {method: m4.value, addr: a4.value.trim(), gw: gw.value.trim(), dns: dns.value, search: search.value},
@@ -313,7 +318,7 @@
     });
     card.appendChild(ol);
     if (j.state === 'done' || j.state === 'failed') {
-      var row = el('div', 'actions');
+      var row = el('div', 'actions hide-row');
       row.appendChild(hideButton(function () {
         return api('net', {action: 'hide'}).then(function (x) { NET.d = x; drawNet(); });
       }));

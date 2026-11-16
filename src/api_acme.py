@@ -1541,7 +1541,7 @@ def view(ctx):
             "work": work, "challenge": c.get("acme_challenge") or "http-01", "dns_guide": dns_guide(ctx, c),
             "manual": {k: v for k, v in (_meta(ctx.store, "acme:manual") or {}).items()
                        if k in ("rr", "txt", "at", "done")} or None,
-            "log": log if isinstance(log, list) else [], "tls_root": T.ask_state(ctx)}
+            "log": log if isinstance(log, list) else [], "tls_root": T.ask_state(ctx), "node": socket.gethostname()}
 
 
 def get_acme(ctx):

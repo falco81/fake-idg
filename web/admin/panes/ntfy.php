@@ -26,7 +26,7 @@
       <h2>The certificate authority <span class="right muted small" id="nca-when"></span></h2>
       <p class="note">Needed only when your own ntfy server's certificate was signed by an authority of your own
         that this machine does not already trust. Paste one (or a whole chain), or read it from the .crt / .pem /
-        .cer file, and press Add it: it is kept beside config.json and set as the CA certificate of the ntfy
+        .cer file, and press Save the changes below: it is kept beside config.json and set as the CA certificate of the ntfy
         server - fake-igd.service is restarted with it. Each is listed below.</p>
       <div id="nca-state"></div>
       <textarea id="nca-pem" rows="5" class="mono admin-only" style="width:100%;margin-top:10px"

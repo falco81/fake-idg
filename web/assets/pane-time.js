@@ -111,7 +111,7 @@
       var srcs = nd.sources || [];
       var stats = nd.stats || {};
       if (!srcs.length) sc.appendChild(el('p', 'note', 'No source - chrony has none, or is not installed.'));
-      else sc.appendChild(listTable(['State', 'Source', 'Stratum', 'Asked every', 'Reached', 'Last heard', 'Offset'], srcs, function (s) {
+      else sc.appendChild(listTable(['State', 'Source', {words: 'Stratum', cls: 'num'}, {words: 'Asked every', cls: 'num'}, 'Reached', 'Last heard', {words: 'Offset', cls: 'num'}], srcs, function (s) {
         var tr = el('tr', 'tappable');
         var stt = STATES[s.state] || ['', s.state];
         var td = el('td');

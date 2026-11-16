@@ -101,15 +101,26 @@ def view(ctx):
     lines = M.journal(400) if st["service"]["state"] in ("active", "activating", "reloading") else []
     now = M.running_with(lines)
     kernel = M.system_ifaces()
+    flags = _flags()
     st.update({
         "installed": True, "keys": keys, "node": _node(),
         "system_interfaces": sorted(kernel),
-        "kernel": [{"name": n, "ipv4": kernel[n]} for n in sorted(kernel)],
+        "kernel": [dict({"name": n, "ipv4": kernel[n]}, **flags.get(n, {})) for n in sorted(kernel)],
         "since_at": since, "changed_at": changed,
         "file_newer": bool(since and changed and changed > since + 1),
         "now": now, "copies": M.copies(), "root": ctx.root_result(), "at": time.time(),
     })
     return st
+
+
+def _flags():
+    """{name: {up, loopback, multicast}} of the kernel's interfaces - the table of the pane (1.7.2)."""
+    try:
+        import api_upnp
+        return {r["name"]: {"up": r["up"], "loopback": r["loopback"], "multicast": r["multicast"]}
+                for r in api_upnp.kernel_ifaces()}
+    except Exception:                                    # noqa: BLE001 - the table goes without them
+        return {}
 
 
 def _node():

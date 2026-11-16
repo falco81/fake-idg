@@ -184,19 +184,37 @@ function drawOsup(live) {
       if (!d.helper) uc.appendChild(el('p', 'note bad', 'Root\'s helper for this (root_osup.py) is not installed - install.sh --upgrade puts it in.'));
       host.appendChild(uc);
     }
-    /* How far it is. */
-    if (plan.id) {
+    /* How far it is - as otp's: the whole bar, then the step of this server in a row of its own
+       (a job of dnf's running without a plan - the schedule's, sudo upnp - shown the same). */
+    var upJob = job.kind === 'upgrade' && job.state === 'running';
+    if (plan.id || upJob) {
+      var pstate = plan.id ? plan.state : 'running';
       var pc = el('div', 'card full');
       pc.appendChild(el('h2', '', 'The update'));
-      var w = OU_STATE[plan.state] || OU_STATE.running;
-      pc.appendChild(el('p', 'note', 'Started by ' + (plan.by || '?') + ' · ' + ago(plan.at) + ' · ' + w[0]
-        + (plan.reboot === 'auto' ? ' · restarted where needed' : '') + (plan.security ? ' · security updates only' : '')
-        + (plan.said ? ' · ' + plan.said : '')));
-      var pct = plan.state === 'running' ? (job.kind === 'upgrade' ? Number(job.pct || 1) : 1) : 100;
-      pc.appendChild(upBar(pct, plan.state === 'failed' ? 'bad' : (plan.state === 'done' ? 'good' : ''),
-        num(pct) + ' %' + (plan.state === 'running' && job.kind === 'upgrade' && job.phase ? ' · ' + job.phase : '')
-        + (plan.state === 'done' ? (plan.reboot_needed ? ' · a restart is needed' : ' · no restart needed') : ''), true));
-      if (plan.state !== 'running') pc.appendChild(hideBar(function () { return api('osup', {action: 'hide'}).then(function (x) { OU.d = x; drawOsup(); }); }));
+      var w = OU_STATE[pstate] || OU_STATE.running;
+      pc.appendChild(el('p', 'note', (plan.id ? 'Started by ' + (plan.by || '?') + ' · ' + ago(plan.at) : 'Started ' + ago(job.began || job.at))
+        + ' · ' + w[0] + (plan.reboot === 'auto' ? ' · restarted where needed' : '')
+        + ((plan.id ? plan.security : job.security_only) ? ' · security updates only' : '')));
+      var pct = pstate === 'running' ? (job.kind === 'upgrade' ? Math.max(1, Math.min(99, Number(job.pct || 1))) : 1) : 100;
+      var good = pstate === 'done', bad = pstate === 'failed';
+      pc.appendChild(upBar(pct, bad ? 'bad' : (good ? 'good' : ''), num(pct) + ' % · ' + (good ? '1' : '0') + ' of 1 server(s) done', true));
+      var step = pstate === 'running' ? ['updating', 'info'] : (good ? ['done', 'ok'] : ['failed', 'crit']);
+      var said = pstate === 'running' ? (job.said || '') : (plan.said || (good ? (plan.reboot_needed ? 'a restart is needed' : 'no restart needed') : ''));
+      var t = listTable(['Server', 'Step', 'How far', 'What happened', 'When'], [1], function () {
+        var tr = el('tr');
+        tr.appendChild(noI18n(el('td', 'mono', d.node || '')));
+        var c1 = el('td'); c1.appendChild(el('span', 'tag ' + step[1], step[0])); tr.appendChild(c1);
+        var b2 = el('td', 'up-how');
+        b2.appendChild(upBar(pct, bad ? 'bad' : (good ? 'good' : ''), num(pct) + ' %' + (pstate === 'running' && job.phase ? ' · ' + job.phase : '')));
+        tr.appendChild(b2);
+        tr.appendChild(noI18n(el('td', 'small', said)));
+        var at = pstate === 'running' ? job.at : (plan.ended || plan.at);
+        tr.appendChild(el('td', 'muted', at ? ago(at) : '–'));
+        return tr;
+      }, 'plain', {own: true});
+      (t.querySelector('table') || t).classList.add('up-plan-table');
+      pc.appendChild(t);
+      if (plan.id && pstate !== 'running') pc.appendChild(hideBar(function () { return api('osup', {action: 'hide'}).then(function (x) { OU.d = x; drawOsup(); }); }));
       host.appendChild(pc);
     }
     /* What dnf says. */

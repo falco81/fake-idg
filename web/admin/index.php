@@ -25,7 +25,11 @@ if (isset($_GET['api'])) {
         [$status, $body] = igd_call('/api/about/software', 'GET', null, 20.0);
         $data = json_decode((string) $body, true);
         if ($status !== 200 || !is_array($data)) {
-            http_response_code($status ?: 503);
+            if (!$status) {
+                igd_down_answer();
+                exit;
+            }
+            http_response_code($status);
             echo $body ?: json_encode(['ok' => false, 'error' => igd_down_words()]);
             exit;
         }
@@ -45,6 +49,22 @@ if (isset($_GET['api'])) {
         echo json_encode($data);
         exit;
     }
+    if ($what === 'upgrade-state' && !$post) {
+        /* An upgrade going on (1.7.2), read here and not of the API - which is the one
+           restarting: how far it is, the version of these pages on disk now, and whether the API
+           answers again. Asked by the pages while the API does not answer, as otp's pages ask
+           the other node while theirs restarts. Who asked it, only to a page signed in. */
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        $u = igd_upgrading();
+        if ($u && igd_session() === '') {
+            unset($u['by'], $u['said'], $u['id']);
+        }
+        echo json_encode(['ok' => true, 'upgrading' => $u, 'pages' => IGD_VERSION,
+                          'api' => igd_token() !== null && igd_get('/api/health', 2.0) !== null],
+                         JSON_INVALID_UTF8_SUBSTITUTE);
+        exit;
+    }
     if ($post) {
         igd_guard_post();
     }
@@ -57,8 +77,7 @@ if (isset($_GET['api'])) {
             'password' => (string) ($sent['password'] ?? ''),
         ], 30.0);
         if ($status === 0) {
-            http_response_code(503);
-            echo json_encode(['ok' => false, 'error' => igd_down_words()]);
+            igd_down_answer();
             exit;
         }
         $data = json_decode($body, true);
@@ -152,6 +171,15 @@ if (!$me && !igd_local()) {
     $health = ['database' => ['ok' => true], 'users' => 1, 'site' => (string) ($health['site'] ?? '')];
 }
 $initial = $me ? (igd_get('/api/status', 8.0) ?: null) : null;
+if ($initial && igd_upgrading()) {
+    $initial['upgrading'] = igd_upgrading();
+}
+/* The API down while an upgrade goes on (1.7.2): said as that, followed, and the page loaded
+   again by itself once the API answers - not "the API is not answering". */
+$upgrading = !$me ? igd_upgrading() : null;
+if ($upgrading && $upgrading['state'] !== 'running' && $alive) {
+    $upgrading = null;
+}
 $host    = (string) ($_SERVER['HTTP_HOST'] ?? php_uname('n'));
 $site    = (string) ($initial['site'] ?? ($health['site'] ?? ''));
 $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
@@ -180,6 +208,19 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
         On the server:<br>
         <span class="mono">usermod -a -G fake-igd-web <?= h($web_user) ?></span><br>
         <span class="mono">systemctl restart php-fpm nginx</span>
+      </div>
+    <?php elseif ($upgrading): ?>
+      <?php $up_pc = $upgrading['state'] === 'running'
+          ? (int) round(min(84, 5 + 76 * min(0.97, $upgrading['part'] / max(1, $upgrading['parts'] ?: 13))))
+          : 100; ?>
+      <div class="offline upband<?= $upgrading['state'] === 'failed' ? ' bad' : '' ?>" id="up-signin">
+        <b><?= $upgrading['state'] === 'failed' ? 'The upgrade to fake-igd ' . h($upgrading['version']) . ' failed'
+              : 'fake-igd is being ' . ($upgrading['downgrade'] ? 'taken back to ' : 'upgraded to ') . h($upgrading['version']) ?></b>
+        <div class="going up-bar wide"><div class="bar"><span id="up-signin-fill" style="width:<?= $up_pc ?>%"></span></div>
+          <div class="says" id="up-signin-says" data-no-i18n><?= h($upgrading['words']) ?></div></div>
+        <div class="small" id="up-signin-sub"><?= $upgrading['state'] === 'failed'
+              ? h($upgrading['said'] ?: 'its output is in /var/lib/fake-igd/upgrade/last.log') . ' - this page loads again once the API answers.'
+              : 'fake-igd.service and these pages restart once - this page loads again by itself when they are back.' ?></div>
       </div>
     <?php elseif (!$alive): ?>
       <div class="offline">The API is not answering. Nobody can sign in until
@@ -240,6 +281,21 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
   });
   if ($('mfa-box').dataset.stage) mfaStep();
   else $('in-name').focus();
+  /* An upgrade going on (1.7.2): followed here, and the page loaded again once the API is back. */
+  if ($('up-signin')) {
+    var back = function () {
+      fetch('?api=upgrade-state', {credentials: 'same-origin'}).then(function (r) { return r.json(); }).then(function (d) {
+        var u = d.upgrading;
+        if (d.api && (!u || u.state !== 'running')) { location.reload(); return; }
+        if (u && u.state === 'running') {
+          var pc = Math.round(Math.min(84, 5 + 76 * Math.min(0.97, u.part / Math.max(1, u.parts || 13))));
+          $('up-signin-fill').style.width = pc + '%';
+          $('up-signin-says').textContent = u.words + (u.parts ? ' · step ' + u.part + ' of ' + u.parts : '');
+        }
+      }).catch(function () { /* nginx or PHP restarting: asked again */ });
+    };
+    setInterval(back, 2000);
+  }
 }());
 </script>
 </body>
@@ -260,6 +316,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     <b>live</b><br><span id="updated-at">…</span></div>
 </header>
 
+<div id="upband" class="offline upband" hidden aria-live="polite"></div>
 <div id="offline" class="offline" hidden></div>
 <div id="phpsafety" class="offline" hidden></div>
 <div id="problems" class="offline warnish" hidden></div>

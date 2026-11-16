@@ -93,23 +93,29 @@ function paintHeader(s) {
     hs.textContent = hs._base + ' · ' + s.node;
     hs.title = 'this page is answered by ' + s.node + ' · fake-igd ' + (s.version || '');
   }
+  upgradeFromStatus(s);
+  var upOn = upgradeExpected();
+  /* While an upgrade goes on, the service restarting is what it does (fake-igd 1.7.2): not a
+     problem in the bar at the top, nor a red pill - "in maintenance", as otp's pill says. */
+  var probs = (s.problems || []).filter(function (p) { return !(upOn && /^fake-igd\.service is /.test(p)); });
   var pill = $('state-pill');
   var running = s.service && s.service.state === 'active';
   var passive = s.mode === 'passive';
-  var kind = !running ? 'crit' : ((s.problems && s.problems.length) || passive ? 'warn' : 'ok');
+  var kind = upOn ? 'warn' : (!running ? 'crit' : (probs.length || passive ? 'warn' : 'ok'));
   pill.className = 'pill ' + kind;
-  pill.lastChild.textContent = !running ? 'not answering' : (passive ? 'listening only'
-    : (kind === 'warn' ? 'answering, with trouble' : 'answering'));
-  pill.title = running ? 'fake-igd.service is running: mode ' + s.mode + ', AddPortMapping ' + s.mapping_response
-    + ', port ' + s.http_port : 'fake-igd.service is ' + (s.service ? s.service.state : 'unknown') + '.';
+  pill.lastChild.textContent = upOn ? 'in maintenance' : (!running ? 'not answering' : (passive ? 'listening only'
+    : (kind === 'warn' ? 'answering, with trouble' : 'answering')));
+  pill.title = upOn ? upgradeWords(UPG.u) + ' - fake-igd.service and these pages restart once.'
+    : (running ? 'fake-igd.service is running: mode ' + s.mode + ', AddPortMapping ' + s.mapping_response
+    + ', port ' + s.http_port : 'fake-igd.service is ' + (s.service ? s.service.state : 'unknown') + '.');
   explainWhatWasDrawn(pill.parentNode);
   var pr = $('problems');
   clear(pr);
-  (s.problems || []).forEach(function (p, i) {
+  probs.forEach(function (p, i) {
     if (i) pr.appendChild(el('br'));
     pr.appendChild(document.createTextNode(p));
   });
-  pr.hidden = !(s.problems && s.problems.length);
+  pr.hidden = !probs.length;
   drawShellTrials(s);
   $('updated-at').textContent = clockWords(new Date());
   var st = s.stats || {};
@@ -231,10 +237,204 @@ function tick() {
     }
   }).catch(function (e) {
     if (e && e.busy) return;
+    /* An upgrade going on (fake-igd 1.7.2): the API restarting is expected - the band at the
+       top follows it (from the pages' PHP), nothing red. */
+    if (e && e.upgrading) { $('offline').hidden = true; return; }
+    if (upgradeExpected()) { $('offline').hidden = true; upgradeAway(); return; }
     var o = $('offline');
     o.hidden = false;
     o.textContent = 'The API is not answering: ' + (e.message || e);
   }).then(function () { TICK_OUT = 0; });
+}
+
+/* ---- an upgrade going on: the band at the top (fake-igd 1.7.2) ------------------------------
+   What otp's pages show of a node in maintenance for its upgrade - the pill "in maintenance", the
+   card "upgrading", the pages following the node while it restarts - for the one server here: a
+   band at the top of every page with how far it is. From the API's status while it answers, from
+   the pages' PHP while the API restarts (?api=upgrade-state: .upgrade.json, which root's helper
+   and install.sh --upgrade write at each step, also when it was started on the command line), and
+   "not answering for N s" while nginx and PHP restart themselves. Never "the API is not
+   answering". At the end the page loads the new version by itself. */
+var UPG = {u: null, heard: 0, away: 0, sawRunning: false, timer: null, reloading: false, asking: false};
+var PAGE_VERSION = (function () {
+  var sc = document.querySelector('script[src*="admin.js"]');
+  var m = sc && /[?&]v=([0-9.]+)/.exec(sc.getAttribute('src') || '');
+  return m ? m[1] : '';
+}());
+function upgradeWords(u) {
+  if (!u) return '';
+  if (u.state === 'done') return 'fake-igd ' + (u.version || '') + ' is in';
+  if (u.state === 'failed') return 'The ' + (u.downgrade ? 'going back' : 'upgrade') + ' to fake-igd ' + (u.version || '?') + ' failed';
+  return 'fake-igd is being ' + (u.downgrade ? 'taken back to ' : 'upgraded to ') + (u.version || 'a new version');
+}
+/* What the status says of an upgrade: the pages' own word (.upgrade.json, merged in by PHP) while
+   it runs, the API's (asked, taken by root) otherwise. */
+function upgradeOf(s) {
+  var mine = s && s.upgrading;
+  var api = s && s.upgrade;
+  if (api && api.busy && !(mine && mine.state === 'running')) {
+    return {state: 'running', version: api.version || '', part: 0, parts: 0, asked: api.state === 'asked',
+            words: api.state === 'asked' ? 'handed to root (fake-igd-upgrade.service)' : 'install.sh --upgrade runs (root)',
+            at: s.now || Date.now() / 1000, started: s.now || Date.now() / 1000, now: s.now};
+  }
+  return mine || null;
+}
+function upgradeFromStatus(s) {
+  var u = upgradeOf(s);
+  if (u) { upgradeHeard(u, false); upgradeEnd(s); return; }
+  /* Not said any more: ended (an upgrade the pages' file did not follow), or never was. */
+  if (UPG.u && UPG.u.state === 'running') { UPG.u = {state: 'done', version: s.version, part: 1, parts: 1}; upgradeEnd(s); }
+  UPG.away = 0;
+  drawUpBand();
+}
+function upgradeHeard(u, away) {
+  var was = UPG.u && UPG.u.state === 'running';
+  UPG.u = u;
+  UPG.phpAway = false;                  /* heard of, so nginx and PHP answer again */
+  UPG.heard = Date.now();
+  UPG.skew = u.now ? u.now - Date.now() / 1000 : 0;
+  if (u.state === 'running') UPG.sawRunning = true;
+  if (away && !UPG.away) UPG.away = Date.now();
+  if (!away) UPG.away = 0;
+  drawUpBand();
+  /* Begun just now: Settings → Upgrades, when it is open, follows it at once. */
+  if (u.state === 'running' && !was && typeof paneLive === 'function' && paneLive('upgrade')
+      && typeof loadUpgrade === 'function') setTimeout(function () { loadUpgrade(true); }, 0);
+}
+/* Whether the API and these pages may be away because of an upgrade - for as long as one runs,
+   at most half an hour since it was last heard of; and a minute after its end, while the page
+   loads the new version. */
+function upgradeExpected() {
+  if (!UPG.u) return false;
+  var since = Date.now() - UPG.heard;
+  if (UPG.u.state === 'running') return since < 30 * 60 * 1000;
+  return UPG.reloading || (UPG.sawRunning && UPG.u.state === 'done' && since < 60 * 1000);
+}
+/* The API answers and the upgrade has ended: the new version's pages loaded - once, and never over
+   changes not saved yet. */
+function upgradeEnd(s) {
+  var u = UPG.u;
+  if (!u || u.state !== 'done' || !UPG.sawRunning || UPG.reloading) return;
+  var key = 'igd.upgrade.reloaded';
+  var mark = (u.id || '') + ':' + (s.version || u.version || '');
+  var did = '';
+  try { did = sessionStorage.getItem(key) || ''; } catch (e) { did = ''; }
+  var unsaved = (typeof DIRTY === 'object' && DIRTY && Object.keys(DIRTY).length) ||
+                (typeof PENDING === 'object' && PENDING && Object.keys(PENDING).length);
+  if (did === mark || unsaved) { UPG.offerLoad = true; drawUpBand(); return; }
+  UPG.reloading = true;
+  drawUpBand();
+  try { sessionStorage.setItem(key, mark); } catch (e) { /* a private window: loaded once all the same */ }
+  setTimeout(function () { location.reload(); }, 1500);
+}
+/* The API does not answer and an upgrade goes on: asked of the pages' PHP how far it is - which
+   may itself be restarting (nginx, php-fpm): then only how long nothing has answered. */
+function upgradeAway() {
+  if (!UPG.away) UPG.away = Date.now();
+  drawUpBand();
+  if (UPG.asking) return;
+  UPG.asking = true;
+  fetch('?api=upgrade-state', {credentials: 'same-origin'}).then(function (r) { return r.json(); }).then(function (d) {
+    UPG.phpAway = false;
+    if (d && d.upgrading) upgradeHeard(d.upgrading, !d.api);
+    if (d && d.api) setTimeout(tick, 300);
+  }).catch(function () { UPG.phpAway = true; drawUpBand(); })
+    .then(function () { UPG.asking = false; });
+}
+function upgradePercent(u) {
+  if (!u) return 0;
+  if (u.state === 'done' || u.state === 'failed') return 100;
+  if (u.asked) return 2;
+  var now = Date.now() / 1000 + (UPG.skew || 0);
+  var since = Math.max(0, now - Number(u.at || now));
+  var parts = Number(u.parts || 0) || 13;
+  return Math.round(Math.min(84, 5 + 76 * Math.min(0.97, Number(u.part || 0) / parts) + Math.min(3, since / 30)));
+}
+function drawUpBand() {
+  var band = $('upband');
+  if (!band) return;
+  var u = UPG.u;
+  var hid = '';
+  try { hid = sessionStorage.getItem('igd.upgrade.hidden') || ''; } catch (e) { hid = ''; }
+  var show = u && (u.state === 'running' || (u.state === 'done' && UPG.sawRunning)
+                   || (u.state === 'failed' && hid !== String(u.id || u.at)));
+  if (!show) {
+    band.hidden = true;
+    clear(band);
+    if (UPG.timer) { clearInterval(UPG.timer); UPG.timer = null; }
+    return;
+  }
+  var kind = u.state === 'failed' ? 'bad' : (u.state === 'done' ? 'good' : '');
+  band.className = 'offline upband' + (kind ? ' ' + kind : '');
+  band.hidden = false;
+  liveFill(band, function (b) {
+    var head = el('div', 'upband-head');
+    head.appendChild(el('b', '', upgradeWords(u)));
+    var bits = [];
+    if (u.from) bits.push('from ' + u.from);
+    if (u.by) bits.push('asked by ' + u.by);
+    var t0 = Number(u.started || 0);
+    if (t0 && u.state === 'running') bits.push(span(Date.now() / 1000 + (UPG.skew || 0) - t0) + ' so far');
+    if (bits.length) head.appendChild(noI18n(el('span', 'upband-sub', bits.join(' · '))));
+    if (u.state === 'failed') {
+      var x = el('button', 'xbtn');
+      x.type = 'button';
+      x.setAttribute('aria-label', 'Hide');
+      x.innerHTML = iconMarkup('close', 14);
+      x.onclick = function () {
+        try { sessionStorage.setItem('igd.upgrade.hidden', String(u.id || u.at)); } catch (e) { /* hidden till F5 */ }
+        band.hidden = true;
+      };
+      head.appendChild(x);
+    }
+    b.appendChild(head);
+    var pc = upgradePercent(u);
+    var says = num(pc) + ' %';
+    if (u.state === 'running' && u.words) says += ' · ' + u.words + (u.parts && u.part ? ' · step ' + u.part + ' of ' + u.parts : '');
+    if (u.state === 'failed' && u.said) says += ' · ' + u.said;
+    var bar = el('div', 'going up-bar wide' + (kind ? ' ' + kind : ''));
+    var track = el('div', 'bar');
+    var fill = el('span', '');
+    fill.style.width = pc + '%';
+    track.appendChild(fill);
+    bar.appendChild(track);
+    bar.appendChild(noI18n(el('div', 'says', says)));
+    b.appendChild(bar);
+    var line = el('div', 'small upband-line');
+    if (UPG.reloading) line.textContent = 'Loading the pages of the new version…';
+    else if (u.state === 'done') {
+      line.appendChild(document.createTextNode('This page is still the one of ' + (PAGE_VERSION || 'the version before') + '. '));
+      var a = el('a', 'fgo', 'Load it again');
+      a.onclick = function () { location.reload(); };
+      line.appendChild(a);
+    } else if (u.state === 'failed') {
+      line.appendChild(document.createTextNode('What install.sh said is in Settings → Upgrades. '));
+      if (ADMIN) {
+        var go = el('a', 'fgo', 'Open Upgrades');
+        go.onclick = function () { location.hash = '#settings/upgrade'; };
+        line.appendChild(go);
+      }
+    } else if (UPG.away) {
+      var away = Math.round((Date.now() - UPG.away) / 1000);
+      line.textContent = (UPG.phpAway ? 'nginx and PHP are restarting' : 'The API of these pages is restarting with the new version')
+        + ' - not answering for ' + span(away) + ', asked again every two seconds; the page comes back by itself.';
+    } else if (u.asked) {
+      line.textContent = 'Handed to root: fake-igd-upgrade.service takes it in a moment.';
+    } else {
+      line.textContent = 'fake-igd.service and these pages restart once - for a few seconds the PS5 gets no answer. '
+        + 'This page follows it and loads the new version by itself.';
+    }
+    b.appendChild(line);
+  }, true);
+  /* Counted every second while it runs; asked every two seconds while nothing answers. */
+  if (u.state === 'running' && !UPG.timer) {
+    UPG.timer = setInterval(function () {
+      if (!UPG.u || UPG.u.state !== 'running') { clearInterval(UPG.timer); UPG.timer = null; return; }
+      drawUpBand();
+      UPG.beat = (UPG.beat || 0) + 1;
+      if (UPG.away && !document.hidden && UPG.beat % 2 === 0) tick();
+    }, 1000);
+  }
 }
 $('updated').onclick = function () {
   LIVE = !LIVE;
@@ -541,12 +741,19 @@ function paintCards() {
   if (!s) return;
   var sv = s.service || {}, st = s.stats || {};
   var on = sv.state === 'active';
-  setCard('service', on ? 'running' : (sv.state || '?'),
-          on ? 'since ' + (sv.since || '?') + ' · restarted ' + (sv.restarts || 0) + ' time(s)'
-             : 'nothing is answered; sudo upnp start · Settings → The service', on ? 'ok' : 'crit');
-  CARD_WHY['card-service'] = {level: on ? 'ok' : 'crit', words: on
-    ? 'Green: fake-igd.service is running and answers on the network.'
-    : 'Red: fake-igd.service is ' + (sv.state || 'unknown') + ' - nobody on the network is answered, nothing is written down.'};
+  var upOn = upgradeExpected();
+  /* In maintenance while it is upgraded, as otp's "This server" card says it (fake-igd 1.7.2). */
+  var upTo = UPG.u && UPG.u.version ? 'fake-igd ' + UPG.u.version : 'the new version';
+  setCard('service', upOn ? 'maintenance' : (on ? 'running' : (sv.state || '?')),
+          upOn ? (on ? 'being upgraded to ' + upTo + ' · restarts once' : 'restarting with ' + upTo + ' - back in a moment')
+             : (on ? (s.node || s.host || '') + ' · ' + s.version + ' · ' + (sv.since_at ? 'up ' + upTime(Date.now() / 1000 - sv.since_at) : 'since ' + (sv.since || '?'))
+               + (Number(sv.restarts) ? ' · restarted ' + sv.restarts + ' time(s)' : '')
+             : 'nothing is answered; sudo upnp start · Settings → The service'),
+          upOn ? 'warn' : (on ? 'ok' : 'crit'));
+  CARD_WHY['card-service'] = {level: upOn ? 'warn' : (on ? 'ok' : 'crit'), words: upOn
+    ? 'Yellow: in maintenance - being upgraded to ' + upTo + '; fake-igd.service restarts once, for a few seconds nobody on the network is answered.'
+    : (on ? 'Green: fake-igd.service is running and answers on the network.'
+       : 'Red: fake-igd.service is ' + (sv.state || 'unknown') + ' - nobody on the network is answered, nothing is written down.')};
   var passive = s.mode !== 'active';
   setCard('mode', s.mode + ' · ' + s.mapping_response,
           (passive ? 'only listens and logs' : 'answers like a UPnP router') + ' · public IP '
@@ -571,11 +778,12 @@ function paintCards() {
     : (m.state === 'active' ? 'Green: avahi-daemon runs' + (m.reflector ? ' and reflects mDNS between the interfaces.' : '; its reflector is off.')
        : 'Yellow: avahi-daemon is ' + m.state + '.')};
   var up = s.upgrade || {};
-  var ut = up.busy ? 'warn' : (up.newer ? 'warn' : 'ok');
-  setCard('upgrade', up.busy ? 'upgrading' : (up.newer ? up.newest : s.version),
-          up.busy ? 'to fake-igd ' + (up.version || '') : (up.newer ? 'is out - this server runs ' + s.version
+  var upBusy = up.busy || (upOn && UPG.u && UPG.u.state === 'running');
+  var ut = upBusy ? 'warn' : (up.newer ? 'warn' : 'ok');
+  setCard('upgrade', upBusy ? 'upgrading' : (up.newer ? up.newest : s.version),
+          upBusy ? 'to fake-igd ' + (up.version || (UPG.u && UPG.u.version) || '') : (up.newer ? 'is out - this server runs ' + s.version
           : 'the newest there is'), ut);
-  CARD_WHY['card-upgrade'] = {level: ut, words: up.busy ? 'Yellow: an upgrade is going on.'
+  CARD_WHY['card-upgrade'] = {level: ut, words: upBusy ? 'Yellow: an upgrade is going on.'
     : (up.newer ? 'Yellow: fake-igd ' + up.newest + ' is out; this server runs ' + s.version + '.'
        : 'Green: this server runs the newest version there is.')};
 }
@@ -669,9 +877,19 @@ function peekIfacesCard() {
       var tr = el('tr');
       tr.appendChild(noI18n(el('td', 'mono', n)));
       tr.appendChild(noI18n(el('td', 'mono', s.interfaces[n])));
-      tr.appendChild(noI18n(el('td', 'mono small', 'http://' + s.interfaces[n] + ':' + s.http_port + '/rootDesc.xml')));
+      /* The address and its copy button on one line (otp's cert-crl-url-in). */
+      var url = 'http://' + s.interfaces[n] + ':' + s.http_port + '/rootDesc.xml';
+      var td = el('td', 'cert-crl-url'), line = el('div', 'cert-crl-url-in');
+      var u = noI18n(el('span', 'mono', url));
+      u.title = url;
+      line.appendChild(u);
+      var cp = iconButton('copy', 'Copy the address');
+      cp.onclick = function (ev) { ev.stopPropagation(); copyText(url, cp, 'the address copied'); };
+      line.appendChild(cp);
+      td.appendChild(line);
+      tr.appendChild(td);
       return tr;
-    }, 'plain|None in the log since the service last started'));
+    }, 'plain if-t|None in the log since the service last started'));
   }, ADMIN ? {tab: 'settings', pane: 'network', words: 'Open Settings', icon: 'gear'} : null);
 }
 function peekMapsCard() {
@@ -686,7 +904,7 @@ function peekMdnsCard() {
     if (!m || d.installed === false) { body.appendChild(el('p', 'note', 'avahi-daemon is not installed here.')); return; }
     var sv = d.service || {};
     body.appendChild(peekFacts([['avahi-daemon', sv.state || m.state], ['The reflector', m.reflector ? 'on' : 'off'],
-      ['Interfaces', (d.interfaces || []).map(function (i) { return i.name || i; }).join(', ') || 'every one']]));
+      ['Interfaces', ((d.now || {}).interfaces || []).map(function (i) { return i.name || i; }).join(', ') || (sv.state === 'active' ? 'none joined' : '–')]]));
   }, {tab: 'mdns', words: 'Open mDNS', icon: 'wifi'});
 }
 function peekUpgradeCard() {
@@ -955,7 +1173,7 @@ function portPeek(r) {
     body.appendChild(el('p', 'note', 'Forward ' + String(r.proto).toUpperCase() + ' ' + r.port + ' to '
       + r.client + ':' + (r.internal_port || r.port) + ' - Rules for the router makes it for iptables, nftables, MikroTik or firewalld.'));
     body.appendChild(el('h3', 'peek-h', 'Its requests'));
-    body.appendChild(requestsTable(d.requests || []));
+    body.appendChild(requestsTable(d.requests || [], ['client', 'port', 'for']));
   }, {tab: 'requests', words: 'Open its requests', icon: 'list', go: function () {
     openRequests({q: 'client:' + r.client + ' port:' + r.port + ' proto:' + String(r.proto).toLowerCase(), result: 'ports'});
   }});
@@ -1005,28 +1223,45 @@ function openRequests(f) {
   if ($('rq-q')._sbPaint) $('rq-q')._sbPaint();
   if (TAB === 'requests') loadRequests(); else showTab('requests');
 }
-function requestsTable(rows) {
-  return listTable(['When', 'Client', 'Action', 'Protocol', {words: 'Port', cls: 'num'}, 'To', {words: 'Lease', cls: 'num'},
-                    'Answered', 'What for', ''], rows, function (r) {
+/* The requests as a table; `leave` the columns a popup already says (its port, its client) - left out
+   there, so the table fits the popup without a scroller of its own. */
+function requestsTable(rows, leave) {
+  leave = leave || [];
+  var has = function (c) { return leave.indexOf(c) < 0; };
+  var heads = ['When'];
+  if (has('client')) heads.push('Client');
+  heads.push('Action');
+  if (has('port')) heads.push('Protocol', {words: 'Port', cls: 'num'});
+  heads.push('To', {words: 'Lease', cls: 'num'}, 'Answered');
+  if (has('for')) heads.push('What for');
+  if (has('client')) heads.push('');
+  return listTable(heads, rows, function (r) {
     var tr = el('tr');
     if (refusedWords(r.result)) tr.className = 'is-banned';
     tr.appendChild(stampCell(r.at));
-    tr.appendChild(addrCell(r.client, r.name));
+    if (has('client')) tr.appendChild(addrCell(r.client, r.name));
     tr.appendChild(noI18n(el('td', 'mono small', r.action || '')));
-    var tp = el('td'); if (r.protocol) tp.appendChild(protoTag(r.protocol)); tr.appendChild(tp);
-    tr.appendChild(noI18n(el('td', 'num mono', r.external_port || '')));
+    if (has('port')) {
+      var tp = el('td'); if (r.protocol) tp.appendChild(protoTag(r.protocol)); tr.appendChild(tp);
+      tr.appendChild(noI18n(el('td', 'num mono', r.external_port || '')));
+    }
     tr.appendChild(noI18n(el('td', 'mono small', r.internal_client ? r.internal_client + ':' + (r.internal_port || '') : '')));
-    tr.appendChild(el('td', 'num muted', r.lease !== undefined && r.lease !== null && r.lease !== '' ? num(r.lease) + ' s' : ''));
+    var ls = el('td', 'num muted', r.lease !== undefined && r.lease !== null && r.lease !== '' ? num(r.lease) + ' s' : '');
+    ls.style.whiteSpace = 'nowrap';
+    tr.appendChild(ls);
     var res = el('td');
     if (r.result || r.action === 'AddPortMapping') res.appendChild(resultTag(r.result || 'ok'));
     tr.appendChild(res);
-    tr.appendChild(noI18n(el('td', 'small', r.description || '')));
-    var tools = el('td', 'rowtools');
-    var cl = iconButton('people', 'The client');
-    cl.onclick = function (ev) { ev.stopPropagation(); clientPeek(r.client); };
-    tools.appendChild(cl);
-    tr.appendChild(tools);
-    tr.onclick = function () { requestPeek(r); };
+    if (has('for')) tr.appendChild(noI18n(el('td', 'small', r.description || '')));
+    if (has('client')) {
+      var tools = el('td', 'rowtools');
+      var cl = iconButton('people', 'The client');
+      cl.onclick = function (ev) { ev.stopPropagation(); clientPeek(r.client); };
+      tools.appendChild(cl);
+      tr.appendChild(tools);
+    }
+    tr.onclick = function () { if (leave.length) modalOver(function () { requestPeek(r); }); else requestPeek(r); };
+    if (leave.length) tr.classList.add('tappable');
     return tr;
   }, 'rows|Nothing was asked in this window', {own: true});
 }
@@ -1144,7 +1379,7 @@ function clientPeek(ip, known) {
       return tr;
     }, 'plain|It has asked for no port'));
     body.appendChild(el('h3', 'peek-h', 'Its last requests'));
-    body.appendChild(requestsTable(three[2].requests || []));
+    body.appendChild(requestsTable(three[2].requests || [], ['client']));
   }, {tab: 'requests', words: 'Open its requests', icon: 'list', go: function () { openRequests({client: ip}); }});
 }
 

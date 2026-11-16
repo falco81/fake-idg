@@ -305,6 +305,16 @@ def get_status(ctx):
     s["uptime"] = _uptime()
     s["host"] = node_name()
     s["now"] = time.time()
+    # When fake-igd.service started, as a time (the Overview card says "up 1 h 35 min", as otp's).
+    sv = s.get("service")
+    if isinstance(sv, dict) and sv.get("since") and "since_at" not in sv:
+        parts = str(sv["since"]).split()
+        for take in (parts[1:3], parts[0:2]):
+            try:
+                sv["since_at"] = time.mktime(time.strptime(" ".join(take), "%Y-%m-%d %H:%M:%S"))
+                break
+            except (ValueError, OverflowError):
+                continue
     return s
 
 
@@ -355,6 +365,10 @@ LIST_FIELDS = {
                ("what", "what it says", "what~password"),
                ("level", "info or warn", "level:warn"),
                ("from", "the address it was done from", "from:10.0.*")],
+    # Outgoing mail (round 3): read by igd_mail.listing itself - only offered here, as otp's mailq box.
+    "mailq": [("to", "the address it goes to", "to:*@example.cz"),
+              ("state", "waiting, sending, sent, failed or expired", "state:waiting"),
+              ("kind", "alert, report or test", "kind:alert")],
 }
 
 
@@ -502,6 +516,7 @@ GETTERS = {
                 "searches": lambda r: r.get("searches"), "requests": lambda r: r.get("requests")},
     "events": {"kind": lambda r: r.get("kind"), "who": lambda r: r.get("who"), "what": lambda r: r.get("words"),
                "level": lambda r: r.get("level"), "from": lambda r: r.get("addr")},
+    "mailq": {"to": lambda r: r.get("to"), "state": lambda r: r.get("state"), "kind": lambda r: r.get("kind")},
 }
 
 
@@ -837,6 +852,9 @@ def get_suggest(ctx):
                 r["name"] = names.get(r.get("client"), "")
     elif name == "ports":
         rows = get_ports(ctx)["ports"]
+    elif name == "mailq":
+        import igd_mail
+        rows = igd_mail.listing(ctx.store, "", "", 1000, 0)["rows"]
     else:
         rows = A.guarded(U.clients_data, A.load_cfg(), None)
     got = collections.Counter()

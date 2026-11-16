@@ -20,7 +20,7 @@
     </div>
     <div class="card full">
       <h2>The certificate authority <span class="right muted small" id="mca-when"></span></h2>
-      <p class="note">Needed only when the mail server's certificate was signed by an authority of your own that this machine does not already trust. Paste one (or a whole chain), or read it from the .crt / .pem / .cer file, and press Add it. Each is listed and can be taken out by itself.</p>
+      <p class="note">Needed only when the mail server's certificate was signed by an authority of your own that this machine does not already trust. Paste one (or a whole chain), or read it from the .crt / .pem / .cer file, and press Save the changes below. Each is listed and can be taken out by itself.</p>
       <div id="mca-state"></div>
       <textarea id="mca-pem" rows="5" class="mono admin-only" style="width:100%;margin-top:10px"
                 placeholder="-----BEGIN CERTIFICATE-----&#10;MIID...&#10;-----END CERTIFICATE-----"></textarea>

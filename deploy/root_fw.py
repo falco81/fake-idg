@@ -293,3 +293,45 @@ def trial_do(action, payload, by):
         got = report(["not yet - it waits to be kept until %s"
                       % time.strftime("%H:%M:%S", time.localtime(float(t["until"])))])
     return got
+
+
+# ---- SNMPv3's port (1.7.2): one of "what fake-igd needs", while SNMP is on ----------------------
+# As otp's fw_auto "snmp" (1.0.182): from the networks of "SNMP only from", or from everywhere;
+# every one of them left out (none an address or a network): closed, never opened to everybody.
+# fake_igd_web.builtin() puts it after the pages; the settings are read from the database (read
+# only), never from an ask.
+def snmp_item(off=None):
+    s = W.module_settings()
+    if s.get("snmp") is not True:
+        return None
+    try:
+        port = int(s.get("snmp_port") or 161)
+    except (TypeError, ValueError):
+        port = 161
+    if not 1 <= port <= 65535:
+        port = 161
+    raw = s.get("snmp_from") if isinstance(s.get("snmp_from"), list) else []
+    nets = []
+    for one in raw:
+        try:
+            n = ipaddress.ip_network(str(one).strip(), strict=False)
+        except ValueError:
+            continue
+        if str(n) not in nets:
+            nets.append(str(n))
+    if not nets and raw:
+        nets = ["127.0.0.1/32"]
+
+    def line(src):
+        return "-A %s%s -p udp -m udp --dport %d -m comment --comment \"fake-igd: snmp\" -j ACCEPT" % (
+            W.CHAIN, (" -s %s" % src) if src else "", port)
+    lines = {4: [], 6: []}
+    rules = []
+    for f in (4, 6):
+        srcs = [n for n in nets if ipaddress.ip_network(n).version == f] if nets else [None]
+        for src in srcs:
+            lines[f].append(line(src))
+            rules.append({"family": f, "proto": "udp", "port": str(port), "source": src or "", "iface": ""})
+    return {"key": "snmp", "title": "SNMPv3", "fixed": False, "on": "snmp" not in (off or []),
+            "why": "the monitoring asks this machine (Settings → Monitoring); from the networks set there only",
+            "lines": lines, "rules": rules}

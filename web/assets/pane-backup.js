@@ -159,10 +159,17 @@
     };
     acts.appendChild(tryb);
     var dl = cmdButton('Download one here', 'download', '');
-    dl.disabled = !d.locked || (d.job && d.job.running);
-    explain(dl, d.locked ? 'A backup made now, saved on the computer you are sitting at - locked with the password as the others.'
-      : 'Set the password of the backups first: an unlocked backup would hold every account readable.');
+    /* Pressable as otp's; with no password it says why not and takes you to the password (otp asks
+       whether to download it unlocked - fake-igd never writes an unlocked backup). */
+    explain(dl, 'A backup made now, saved on the computer you are sitting at - locked with the password as the others.');
     dl.onclick = function () {
+      if (!d.locked) {
+        confirmThen('Set the password of the backups first', 'No password of the backups is set: a backup holds <b>every account and every secret</b> of this installation, and fake-igd writes none that is not locked. Set it, save, and download one then.', 'Set the password', function () {
+          var box = $('set-rbackup_password');
+          if (box) { box.scrollIntoView({block: 'center'}); box.focus(); }
+        }, false);
+        return;
+      }
       busy(dl, true);
       api('backup', {action: 'download'}).then(function (x) {
         toast(x.message, 'good'); RB.job = x.job; rbWatch(function (j) {
@@ -913,13 +920,20 @@
       bar.innerHTML = '<div class="bar"><span id="rbr-fill"></span></div><div class="says" id="rbr-says"></div>';
       body.appendChild(bar);
     }, [{words: 'Close', close: true}], 'medium');
+    var empty = 0;
     var step = function () {
+      /* Not after its popup is closed, nor for ever on nothing (otp 1.0.206). */
       if (!$('rbr-fill')) return;
       api('backup-job').then(function (d) {
         var j = d.job || {};
+        if (!j.running && !j.what && !j.result && !j.error && ++empty > 60) {
+          if ($('rbr-says')) $('rbr-says').textContent = 'No word of it for a minute - the service may have started again. Load the page again to see what is here now.';
+          return;
+        }
         if ($('rbr-fill')) $('rbr-fill').style.width = (j.whole ? Math.round(100 * j.done / j.whole) : 5) + '%';
-        if ($('rbr-says')) $('rbr-says').textContent = j.says || '';
+        if ($('rbr-says')) $('rbr-says').textContent = (j.what || '') + (j.says ? ' — ' + j.says : '');
         if (j.running) { setTimeout(step, 1000); return; }
+        if (!j.what && !j.result && !j.error) { setTimeout(step, 1000); return; }
         if (j.error) { if ($('rbr-says')) $('rbr-says').textContent = j.error; toast('putting it back failed: ' + j.error, 'bad'); return; }
         var r = j.result || {};
         var said = $('rbr-says');

@@ -106,7 +106,8 @@
       var left = t.not_after ? Math.floor((t.not_after - Date.now() / 1000) / 86400) : null;
       var acme = t.how === 'ACME';
       var dot = !acme ? 'dim' : (st.ok === false ? 'warn' : (left !== null && left < 14 ? 'warn' : 'ok'));
-      var c = nodeCard((d.names || [])[0] || 'these pages', dot,
+      /* The machine's own name at the head, as otp's node's (the names are under For). */
+      var c = nodeCard(d.node || (d.names || [])[0] || 'this server', dot,
         acme ? (st.ok === false ? 'the last try failed' : 'from the CA') : (t.not_after ? 'not from the CA' : 'no certificate'),
         acme ? (st.ok === false ? 'warn' : 'ok') : 'dim');
       var care = el('span', 'tag ' + (t.care && t.wanted ? 'info' : 'dim'),

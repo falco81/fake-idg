@@ -83,7 +83,7 @@ function readCertFile(file, box) {
     var ok = text.indexOf('-----BEGIN CERTIFICATE-----') >= 0;
     box.value = ok ? text.trim() : '';
     box.dispatchEvent(new Event('input'));
-    toast(ok ? 'read ' + file.name + ' - Add it keeps it' : file.name + ' is not a certificate', ok ? 'good' : 'bad');
+    toast(ok ? 'read ' + file.name + ' - Save the changes adds it' : file.name + ' is not a certificate', ok ? 'good' : 'bad');
   };
   reader.readAsArrayBuffer(file);
 }
@@ -163,6 +163,17 @@ $('mca-save').onclick = function () {
     toast(r.message, 'good'); $('mca-pem').value = ''; loadMail();
   }).catch(oops).then(function () { busy($('mca-save'), false); });
 };
+/* As otp's: no Add it - what is pasted waits for the save bar at the bottom. */
+$('mca-save').hidden = true;
+$('mca-pem').addEventListener('input', function () {
+  var pem = $('mca-pem').value.trim();
+  if (!pem) { delete PENDING.mca; markDirtyCount(); return; }
+  pendingSet('mca', {save: function () {
+    return api('mail', {action: 'ca', mode: 'add', ca: $('mca-pem').value.trim()}).then(function (r) {
+      toast(r.message, 'good'); $('mca-pem').value = ''; loadMail(); return true;
+    });
+  }, reset: function () { $('mca-pem').value = ''; }});
+});
 $('mca-file').onclick = function () { $('mca-input').click(); };
 $('mca-input').onchange = function () {
   var file = this.files && this.files[0];
@@ -325,6 +336,8 @@ function mailqPeek(qid) {
         {words: 'Close', close: true}].filter(function (b) { return !b.hidden; }), 'medium');
   }).catch(oops);
 }
+/* The box offers its fields and values, as otp's (to:, state:, kind:). */
+qSuggest($('mq-q'), 'mailq');
 $('mq-q').addEventListener('input', debounce(function () { MQ.page = 0; loadMailq(); }, 300));
 searchButtons($('mq-q'), function () { MQ.page = 0; loadMailq(); }, ['mq-state']);
 $('mq-state').onchange = function () { MQ.page = 0; loadMailq(); };

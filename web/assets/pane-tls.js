@@ -79,12 +79,13 @@
     title.appendChild(noI18n(el('b', '', reached || (info && info.cn) || d.host || '–')));
     title.appendChild(el('span', 'tag dim', 'this one'));
     var where = (d.names || []).concat(d.ips || []);
-    title.appendChild(el('span', 'cert-for', 'the certificate answered on ' + (where.length ? where.join(', ') : 'every name and address of this server')));
-    /* The machine's own host name, said as the machine's - not one of the certificate's names. */
-    var mach = el('span', 'cert-for');
-    mach.appendChild(document.createTextNode('this machine: '));
-    mach.appendChild(noI18n(el('span', 'mono', d.machine || d.host || '?')));
-    title.appendChild(mach);
+    /* The machine's own host name, said as the machine's - not one of the certificate's names; on the
+       line under it, in the same box (one .cert-for, as otp's, so the cards stand level). */
+    var fr = el('span', 'cert-for', 'the certificate answered on ' + (where.length ? where.join(', ') : 'every name and address of this server'));
+    fr.appendChild(el('br'));
+    fr.appendChild(document.createTextNode('this machine: '));
+    fr.appendChild(noI18n(el('span', 'mono', d.machine || d.host || '?')));
+    title.appendChild(fr);
     head.appendChild(title);
     var days = info ? daysLeft(info.not_after) : null;
     head.appendChild(el('span', 'tag ' + certTone(days), days === null ? 'no certificate' :
@@ -107,22 +108,27 @@
                    ['Valid until', info.not_after ? stamp(info.not_after) : '–'],
                    ['Key', (info.key || '–') + (alt && alt.key ? ' + ' + alt.key + ' (a second certificate beside it)' : '')]];
       if (info.san && info.san.length) facts.push(['Names', noI18n(el('span', '', info.san.join(', ')))]);
+      /* The chain as clients that fetch nothing check it (otp 1.0.269): curl, a VPN client - checked
+         with the root kept beside a private authority's certificate too. */
       var chainEl = el('span', '');
-      var cs = cur.chain_state || {};
-      if (info.self_signed) chainEl.textContent = 'none - signed by itself';
-      else if (cs.ok === false) { chainEl.className = 'bad'; chainEl.textContent = cs.words; }
-      else if (cs.ok) { chainEl.className = 'good'; chainEl.textContent = cs.words; }
-      else chainEl.textContent = (cur.chain_info || []).length + ' between it and the root' + (cs.words ? ' (' + cs.words + ')' : '');
+      var cs = cur.chain_state || null;
+      if (info.self_signed) chainEl.textContent = cur.chain_info ? (cur.chain_info.length + ' between it and the root') : '–';
+      else if (cs && cs.ok === false) { chainEl.className = 'bad'; chainEl.textContent = cs.words; }
+      else if (cs && cs.ok) { chainEl.className = 'good'; chainEl.textContent = cs.words; }
+      else chainEl.textContent = cur.chain_info ? (cur.chain_info.length + ' between it and the root') : '–';
       facts.push(['Chain', chainEl]);
       if ((cur.chain_info || []).length) {
         facts.push(['Authorities', noI18n(el('span', '', cur.chain_info.map(function (c) { return c.cn || c.subject; }).join(' → ')))]);
       }
-      /* What it leads to, and what nginx sends now, checked as curl checks it (otp's Root and Sent). */
-      if (!info.self_signed) facts.push(['Root', cur.root_cn ? noI18n(el('span', '', cur.root_cn)) : '–']);
+      /* The second (ECDSA) certificate's chain (otp 1.0.270): the one most clients take. */
+      var acs = (cur.alt && cur.alt.chain_state) || null;
+      if (acs && acs.words && (acs.ok === false || (acs.fetched && acs.fetched.length)))
+        facts.push(['Chain (second)', el('span', acs.ok === false ? 'bad' : 'good', acs.words)]);
+      facts.push(['Root', cur.root_info && cur.root_info.length ? noI18n(el('span', '', cur.root_info[0].cn || 'given')) : 'not given']);
+      /* nginx checked as a client that fetches nothing, after it took the certificate (otp's Sent). */
       var sc = cur.sent;
-      if (sc && sc.words && (sc.ok !== null && sc.ok !== undefined || sc.same === false))
+      if (sc && sc.words && (sc.ok !== null && sc.ok !== undefined || sc.same === false) && !info.self_signed)
         facts.push(['Sent', el('span', sc.ok ? 'good' : 'bad', sc.words)]);
-      else if (sc && sc.words && sc.ok === null && !info.self_signed) facts.push(['Sent', el('span', 'dim', sc.words)]);
       if (info.fingerprint) facts.push(['SHA-256', noI18n(el('span', 'mono small', info.fingerprint))]);
       var kv = el('dl', 'cert-kv');
       facts.forEach(function (f) {
@@ -164,11 +170,13 @@
     card.appendChild(chips);
     /* What root did with the last ask. */
     var r = d.root;
-    if (r) {
+    if (r && r.state === 'working' && r.progress) {
+      card.appendChild(certProgress(r.progress));
+    } else if (r) {
       var st = el('div', 'cert-state');
       var bad = r.state === 'failed' || r.state === 'late';
       st.appendChild(el('span', 'dot ' + (bad ? 'crit' : (r.state === 'done' ? 'ok' : 'warn'))));
-      var what = {put: 'the certificate', policy: 'the TLS settings', put_back: 'the certificate from before ACME', acme_http: 'the ACME location of port 80'}[r.action] || 'it';
+      var what = {put: 'the certificate', policy: 'the TLS settings', put_back: 'the certificate from before ACME', acme_http: 'the ACME location of port 80', chain: 'the chain'}[r.action] || 'it';
       st.appendChild(el('span', '', r.state === 'failed' ? 'root could not put ' + what + ' in: ' + ((r.said || []).slice(-1)[0] || '')
         : (r.state === 'done' ? what + ' in place - ' + ((r.said || [])[0] || '') + ' (' + ago(r.at) + ')'
           : (r.state === 'late' ? (r.said || [])[0] : what + ' being put in…'))));
@@ -193,9 +201,34 @@
       explain(pb, 'The protocols, the ciphers, the DH parameters and HSTS of these pages - kept as they are whichever way the certificate came, ACME and its renewals too.');
       pb.onclick = function () { certPolicy(d); };
       tools.appendChild(pb);
+      var bef = d.before;
+      if (bef && !bef.ran_out && ac.on) tools.appendChild(putBackButton(bef));
+      if (cur && cur.pem && info && !info.self_signed) {
+        /* Complete the chain (otp 1.0.269): checked again against the system's roots, the missing
+           intermediates fetched from their CA Issuers addresses - as browsers do. */
+        var cs2 = cur.chain_state || {};
+        var sc2 = cur.sent || {};
+        var bad = cs2.ok === false || ((cur.alt && cur.alt.chain_state) || {}).ok === false ||
+          (sc2.same && sc2.ok === false && !(cs2.ok && cur.root_info && cur.root_info.length));
+        var ch = cmdButton(bad ? 'Complete the chain' : 'Check the chain', 'refresh', bad ? 'small primary' : 'small');
+        explain(ch, 'Checked against the system\'s root authorities; an intermediate the certificate did not come with is fetched from its CA Issuers address, as browsers do it - so that curl, a VPN client and other clients that fetch nothing take it too.');
+        ch.onclick = function () {
+          busy(ch, true);
+          api('tls', {action: 'tls_chain'}).then(function (x) { toast(x.message, x.complete ? 'good' : 'warn'); drawTls(x); })
+            .catch(oops).then(function () { busy(ch, false); });
+        };
+        tools.appendChild(ch);
+        /* Or by hand: when it cannot be fetched - no CA Issuers address, no way out, a private CA -
+           only the missing authority, never the certificate and its key again. */
+        if (bad) {
+          var addc = cmdButton('Upload the missing authority', 'upload', 'small');
+          addc.onclick = function () { certChainAdd(d); };
+          tools.appendChild(addc);
+        }
+      }
       if (cur && cur.pem) {
         var dl = cmdButton('Download', 'download', 'small');
-        dl.title = 'The certificate, PEM - alone or with its chain';
+        dl.title = 'The certificate in the format chosen - PEM, DER, PKCS#7, or PFX with its private key';
         dl.onclick = function () { certExport(d); };
         tools.appendChild(dl);
       }
@@ -241,7 +274,7 @@
   function certUpload(d) {
     var got = [];
     modal('A certificate for these pages', function (body) {
-      body.appendChild(el('p', 'note', 'PEM files - the certificate, its key, the chain, the root, in any order or all in one - or one PFX / PKCS#12 file. Checked here before root puts it in: the key is the certificate\'s own, it has not run out, and the chain leads to a root. ' +
+      body.appendChild(el('p', 'note', 'PEM files - the certificate, its key, the chain, the root, in any order or all in one - or one PFX / PKCS#12 file. An RSA and an ECDSA certificate of the same names together (both keys in the PEM, or two PFX files): both are put in, the ECDSA one beside - nginx gives each client the one it takes. ' +
         (d.pending ? 'A request waits here: the certificate the authority sent back is enough, its key is here.' : 'The key has to come with it.')));
       var drop = el('div', 'drop');
       var inp = el('input'); inp.type = 'file'; inp.multiple = true; inp.hidden = true;
@@ -279,10 +312,11 @@
         {words: 'Put it in', cls: 'primary', icon: 'save', go: function (b) {
           var pem = got.filter(function (x) { return x.pem; }).map(function (x) { return x.pem; }).join('\n') + '\n' + ($('tu-paste').value || '');
           var pfx = got.filter(function (x) { return x.pfx; });
-          if (pfx.length > 1) { toast('one PFX / PKCS#12 file at most', 'bad'); return; }
+          if (pfx.length > 2) { toast('two PFX / PKCS#12 files at most - an RSA and an ECDSA one', 'bad'); return; }
           if (!pfx.length && !/-----BEGIN /.test(pem)) { toast('choose the files first, or paste the PEM', 'bad'); return; }
           busy(b, true);
           api('tls', {action: 'tls_upload', cert: pem, pfx: pfx.length ? pfx[0].pfx : '',
+                      pfx2: pfx.length > 1 ? pfx[1].pfx : '',
                       password: (($('tu-pw') || {}).value) || '', add_names: addNames()}).then(function (x) {
             toast(x.message, 'good'); closeModal(); drawTls(x);
           }).catch(function (e) { $('tu-said').className = 'said bad'; $('tu-said').textContent = e.message; }).then(function () { busy(b, false); });
@@ -370,20 +404,189 @@
         }}], 'medium');
   }
 
+  /* What root is doing, as a bar (otp's certProgress, 1.0.50): the steps done, and in the long one -
+     making DH parameters - the time gone against the time it usually takes (never shown as more than
+     95 % before it is done). */
+  function certProgress(p) {
+    var box = el('div', 'cert-prog');
+    var total = Number(p.total) || 4, step = Math.max(1, Number(p.step) || 1);
+    var gone = Math.max(0, (Number(p.now) || 0) - (Number(p.at) || 0));
+    var part = p.expect_s ? Math.min(0.95, gone / Number(p.expect_s)) : 0.5;
+    var pct = Math.min(99, Math.round(((step - 1) + part) / total * 100));
+    var head = el('div', 'cert-prog-h');
+    head.appendChild(el('span', '', p.words || 'working'));
+    head.appendChild(noI18n(el('b', '', pct + ' %')));
+    box.appendChild(head);
+    var bar = el('div', 'cert-prog-bar');
+    var fill = el('span', '');
+    fill.style.width = pct + '%';
+    bar.appendChild(fill);
+    box.appendChild(bar);
+    var mm = function (sec) { sec = Math.round(sec); return Math.floor(sec / 60) + ':' + ('0' + (sec % 60)).slice(-2); };
+    var where = (TLS.last && TLS.last.machine) || 'this server';
+    box.appendChild(el('div', 'cert-prog-s', p.expect_s
+      ? 'on ' + where + ' - ' + mm(gone) + ' so far, usually about ' + Math.round(p.expect_s / 60 || 1) + ' min'
+      : 'on ' + where + ' - step ' + step + ' of ' + total));
+    return box;
+  }
+
+  /* Back to the one before (otp's acmePutBackButton, 1.0.170). */
+  function putBackButton(before) {
+    var b = cmdButton('Back to the one before…', 'undo', 'small');
+    var words = (before.issuer || '').replace(/^CN=/, '').split(',')[0];
+    explain(b, 'The certificate it had before ACME replaced it' + (words ? ' - from ' + words : '') + (before.not_after ? ', good until ' + new Date(before.not_after * 1000).toLocaleDateString(numLang()) : '') + '. Put back as it was; ACME no longer renews this one. The TLS settings stay.');
+    b.onclick = function () {
+      confirmThen('Put the certificate from before ACME back?', 'The one from the CA is taken out and the one it had before - ' + htmlText(words || before.how || '') + ' - put back. ACME no longer renews this one (Look after it gives it back).', 'Put it back', function () {
+        busy(b, true);
+        api('acme', {action: 'put_back'}).then(function (x) { toast(x.message, 'good'); loadTls(); })
+          .catch(function (e) { busy(b, false); oops(e); });
+      }, false);
+    };
+    return b;
+  }
+
+  /* The dialog Upload the missing authority (otp's certChainAdd, 1.0.269). */
+  function certChainAdd(d) {
+    var cur = d.cert || {};
+    var cs = cur.chain_state || {};
+    var last = (cur.chain_info || []).length ? cur.chain_info[cur.chain_info.length - 1] : (cur.info || {});
+    var missing = cs.missing || cs.private_root || String(last.issuer || '').replace(/^.*?CN=/, '').split(',')[0] || '?';
+    var area;
+    modal('Upload the missing authority', function (body) {
+      var p = el('p', 'note');
+      p.appendChild(el('span', '', 'Missing in the chain:'));
+      p.appendChild(document.createTextNode(' '));
+      p.appendChild(noI18n(el('b', '', missing)));
+      body.appendChild(p);
+      body.appendChild(el('p', 'note', 'The certificate of that authority - the intermediate (or several) your certificate authority gives with the certificate, often called "CA bundle", "intermediate" or "chain" - as PEM or a .cer / .crt file. Only certificates of authorities, never a key; the certificate and its key stay as they are. A root is kept to check with and never sent.'));
+      area = noI18n(el('textarea', 'mono'));
+      area.rows = 8; area.spellcheck = false; area.placeholder = '-----BEGIN CERTIFICATE-----';
+      body.appendChild(area);
+      var fr = el('div', 'btnrow');
+      fr.style.margin = '8px 0 0';
+      var pick = cmdButton('Read a file…', 'upload', 'small');
+      var input = el('input'); input.type = 'file'; input.hidden = true;
+      input.accept = '.pem,.crt,.cer,.der,.cert,.ca-bundle';
+      pick.onclick = function () { input.click(); };
+      input.onchange = function () {
+        var f = input.files && input.files[0];
+        if (!f) return;
+        if (f.size > 262144) { toast('that file is far bigger than certificates are', 'warn'); return; }
+        var r = new FileReader();
+        r.onload = function () { area.value = osrFileText(r.result); };
+        r.readAsArrayBuffer(f);
+      };
+      fr.appendChild(pick); fr.appendChild(input);
+      body.appendChild(fr);
+      setTimeout(function () { area.focus(); }, 60);
+    }, [{words: 'Cancel', close: true}, {words: 'Add it to the chain', cls: 'primary', icon: 'add', go: function (b) {
+      busy(b, true);
+      api('tls', {action: 'tls_chain_add', text: area.value.trim()}).then(function (x) {
+        closeModal();
+        toast(x.message, x.complete ? 'good' : 'warn');
+        drawTls(x);
+      }).catch(function (e) { busy(b, false); oops(e); });
+    }}], 'medium');
+  }
+
+  /* A certificate downloaded (otp's certExport, 1.0.191): its format chosen in a window - with its
+     private key (PFX, PEM) only locked with a passphrase typed twice; root makes those (the key is
+     root's alone here). */
+  var CERT_FORMATS = [
+    ['pem', '.crt', 'The certificate', 'PEM - the certificate alone. nginx, Apache, most of Linux.', false],
+    ['fullchain', '.pem', 'Certificate and chain', 'PEM - the certificate and the authorities that signed it, one file.', false],
+    ['der', '.cer', 'Certificate, binary', 'DER - the certificate alone. Windows, Java, network devices.', false],
+    ['p7b', '.p7b', 'Certificate and chain, PKCS#7', 'The certificate with its chain, no key. Windows and IIS import it.', false],
+    ['pfx', '.pfx', 'With the private key, PKCS#12', 'The certificate, its chain and its private key in one file locked with a password. Windows, IIS, Exchange, Azure, browsers.', true],
+    ['pemkey', '.pem', 'With the private key, PEM', 'The certificate, its chain and its private key locked with a passphrase (PKCS#8, AES-256).', true]
+  ];
+  function b64Save(name, b64, type) {
+    var bin = atob(b64), arr = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([arr], {type: type || 'application/octet-stream'}));
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  }
   function certExport(d) {
     var cur = d.cert || {};
-    var kind;
-    modal('Download the certificate', function (body) {
-      body.appendChild(el('p', 'note', 'The certificate nginx answers with now. Its private key stays with root and is never sent to the pages.'));
-      kind = selectBox([['pem', 'the certificate, PEM (.crt)'], ['fullchain', 'the certificate and its chain, PEM (-fullchain.pem)']], 'pem');
-      body.appendChild(formField('Format', kind));
-    }, [{words: 'Cancel', close: true},
-        {words: 'Download', cls: 'primary', icon: 'download', go: function () {
-          var name = ((cur.info || {}).cn || d.host || 'fake-igd').replace(/[^A-Za-z0-9._-]/g, '_');
-          if (kind.value === 'fullchain') saveText(name + '-fullchain.pem', cur.pem + (cur.chain || ''));
-          else saveText(name + '.crt', cur.pem);
+    var info = cur.info || {};
+    var st = {kind: 'pfx', legacy: false, which: 'rsa'};
+    var alt = cur.alt && cur.alt.info ? cur.alt.info : null;
+    modal('Download the certificate of these pages', function (body) {
+      if (info.subject) body.appendChild(noI18n(el('p', 'muted small', info.subject + (info.not_after ? ' · until ' + stamp(info.not_after) : ''))));
+      /* Two certificates of the same names (otp 1.0.240): which of them, or both in a .zip. */
+      if (alt) {
+        var sg = el('div', 'seg');
+        [['rsa', 'RSA (' + (info.key || 'the main one') + ')'], ['ec', 'ECDSA (' + (alt.key || 'the second one') + ')'], ['both', 'Both (.zip)']].forEach(function (o) {
+          var bb = el('button', o[0] === st.which ? 'on' : '', o[1]);
+          bb.type = 'button';
+          bb.onclick = function () { st.which = o[0]; Array.prototype.forEach.call(sg.children, function (x) { x.classList.toggle('on', x === bb); }); };
+          sg.appendChild(bb);
+        });
+        var wf = formField('Which certificate', sg, 'Both: one .zip with the two files in the format below - each key locked with the same password.');
+        wf.style.marginBottom = '12px';
+        body.appendChild(wf);
+      }
+      var list = el('div', 'fmt-list');
+      var keyBox = el('div', 'fmt-key');
+      var draw = function () {
+        list.querySelectorAll('.fmt').forEach(function (b) { b.classList.toggle('on', b.dataset.kind === st.kind); b.setAttribute('aria-checked', b.dataset.kind === st.kind ? 'true' : 'false'); });
+        var f = CERT_FORMATS.filter(function (x) { return x[0] === st.kind; })[0];
+        keyBox.hidden = !f[4];
+        $('cx-legacy-row').hidden = st.kind !== 'pfx';
+      };
+      CERT_FORMATS.forEach(function (f) {
+        var b = el('button', 'fmt' + (f[4] ? ' with-key' : ''));
+        b.type = 'button';
+        b.dataset.kind = f[0];
+        b.setAttribute('role', 'radio');
+        b.appendChild(el('span', 'fmt-ext', f[1]));
+        var t = el('span', 'fmt-text');
+        t.appendChild(el('b', '', f[2]));
+        t.appendChild(el('span', 'fmt-says', f[3]));
+        if (f[4]) t.appendChild(el('span', 'tag warn', 'private key'));
+        b.appendChild(t);
+        b.onclick = function () { st.kind = f[0]; draw(); };
+        list.appendChild(b);
+      });
+      body.appendChild(list);
+      keyBox.appendChild(el('p', 'note warn', 'The private key leaves this machine. Whoever holds the file and its password can be these pages. The download, and by whom, goes into Events.'));
+      var p1 = secretBox('', '10 characters at least', 'mono');
+      var p2 = secretBox('', 'the same again', 'mono');
+      p1.id = 'cx-p1'; p2.id = 'cx-p2';
+      p1.autocomplete = p2.autocomplete = 'new-password';
+      var g = el('div', 'formgrid');
+      g.appendChild(formField('Password of the file', p1));
+      g.appendChild(formField('The password again', p2));
+      keyBox.appendChild(g);
+      var lg = switchBox(false);
+      lg._input.onchange = function () { st.legacy = !!lg._get(); };
+      var row = formField('For older Windows', lg, 'Windows before 10 (1709) and Server 2016 open no AES-protected PFX: 3DES then, as they need.');
+      row.id = 'cx-legacy-row';
+      keyBox.appendChild(row);
+      body.appendChild(keyBox);
+      draw();
+    }, [
+      {words: 'Cancel', close: true},
+      {words: 'Download', cls: 'primary', icon: 'download', go: function (button) {
+        var f = CERT_FORMATS.filter(function (x) { return x[0] === st.kind; })[0];
+        var req = {action: 'tls_export', kind: st.kind, which: st.which};
+        if (f[4]) {
+          var a = $('cx-p1').value, b2 = $('cx-p2').value;
+          if (a.length < 10) { toast('a password of 10 characters at least', 'bad'); $('cx-p1').focus(); return; }
+          if (a !== b2) { toast('the two passwords are not the same', 'bad'); $('cx-p2').focus(); return; }
+          req.password = a;
+          req.legacy = st.legacy;
+        }
+        busy(button, true);
+        api('tls', req).then(function (x) {
+          b64Save(x.name, x.data, x.type);
           closeModal();
-        }}], 'small');
+        }).catch(oops).then(function () { busy(button, false); });
+      }}], 'medium');
   }
 
   function tlsRow(words, says, control) {
@@ -593,7 +796,7 @@
       grid.style.marginTop = '16px';
       var c = el('div', 'card pw-node');
       var hd = el('div', 'pw-head');
-      hd.appendChild(el('span', 'dot ' + (n.at ? 'ok' : 'bad')));
+      hd.appendChild(el('span', 'dot ok'));          /* otp: whether the node answers - this one does */
       hd.appendChild(noI18n(el('b', '', n.name || 'this server')));
       hd.appendChild(el('span', 'tag info', 'this page'));
       hd.appendChild(osrStatusTag(n));

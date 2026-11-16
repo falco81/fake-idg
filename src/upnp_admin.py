@@ -399,7 +399,10 @@ def _downgrade(M, args):
     if not args.yes and not _ask("go back?"):
         print("  nothing done")
         return 1
-    p = subprocess.Popen([py, "-I", helper, "--run", os.path.abspath(args.path), "--downgrade"],
+    # Announced as one asked from the pages is (1.7.2): root's helper writes plan.json, status.json
+    # and last.log for the API, and the pages' own file - the pages show it going on, and follow it
+    # while the API restarts. Who asked, as `upnp upgrade online` says it.
+    p = subprocess.Popen([py, "-I", helper, "--run", os.path.abspath(args.path), "--downgrade", "--by", who_runs()],
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     for ln in p.stdout:
         print(_log_line(M, ln.rstrip("\n")))

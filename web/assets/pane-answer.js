@@ -178,12 +178,12 @@
       Object.keys(d.answered || {}).forEach(function (k) { if (k !== 'ok') rej += d.answered[k]; });
       var pub = d.public || {};
       c.appendChild(P.facts([
-        ['AddPortMapping', d.mapping_response === 'reject' ? 'refused (error 501)' : 'accepted - nothing is opened'],
+        ['AddPortMapping', d.mapping_response === 'reject' ? 'refused (error 501)' : 'accepted, opens nothing'],
         ['Who is answered', (d.allowed_clients || []).length ? d.allowed_clients.join(', ') : 'everybody', !!(d.allowed_clients || []).length],
-        ['Public IP reported', pub.now || (pub.set === 'auto' ? 'not found yet' : pub.set), true, pub.now ? '' : 'bad'],
-        ['Where it came from', pub.from || (pub.said || '')],
+        ['Public IP reported', pub.now || (pub.set === 'auto' ? 'not found yet' : pub.set), !!pub.now, pub.now ? '' : 'bad'],
+        ['Where it came from', pub.from || ''],
         ['Asked in 24 hours', num(d.asked_24h || 0) + ' request(s)'],
-        ['Ports accepted / refused', num(acc) + ' / ' + num(rej)],
+        ['Accepted / refused', num(acc) + ' / ' + num(rej)],
         ['Another UPnP router', (d.other || []).length ? d.other.map(function (o) { return o.addr; }).join(', ') : 'none heard', true, (d.other || []).length ? 'bad' : ''],
         ['Running since', d.started ? stamp(d.started) : (s.since || '')],
         ['Read', ago(d.at)]

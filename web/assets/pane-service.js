@@ -33,9 +33,14 @@ function drawService(d, live) {
   var units = d.units || [];
   var up = units.filter(function (u) { return u.state === 'active'; }).length;
   $('sv-said').textContent = num(up) + ' of ' + num(units.length) + ' running' + (d.waiting ? ' · ' + num(d.waiting) + ' asked of root' : '');
+  /* Reload has its column only while a unit can be reloaded now (nginx running): an empty column of
+     every row would only push the others apart. */
+  var reloads = ADMIN && units.some(function (u) { return (u.can || []).indexOf('reload') >= 0 && u.state === 'active'; });
+  var heads = ['Unit', 'State', 'Since', 'At boot', {words: 'Restarts', cls: 'num'}, {words: 'Memory', cls: 'num'}, '', '', ''];
+  if (reloads) heads.push('');
   liveFill($('sv-units'), function (host) {
     if (d.error) host.appendChild(el('p', 'note bad', 'systemctl could not be asked: ' + d.error));
-    host.appendChild(listTable(['Unit', 'State', 'Since', 'At boot', {words: 'Restarts', cls: 'num'}, {words: 'Memory', cls: 'num'}, ''], units, function (u) {
+    host.appendChild(listTable(heads, units, function (u) {
       var tr = el('tr', 'clickable');
       var nm = el('td');
       nm.appendChild(noI18n(el('b', '', u.unit)));
@@ -52,30 +57,34 @@ function drawService(d, live) {
         st.appendChild(el('span', 'sub', t.ran ? t.unit + ' ran ' + ago(t.ran) + (t.result && t.result !== 'success' ? ' - ' + t.result : '') : t.unit + ' has not run since boot'));
       }
       tr.appendChild(st);
-      var since = el('td', 'muted', u.since ? ago(u.since) : '–');
+      var since = el('td', 'muted sv-nw', u.since ? ago(u.since) : '–');
       if (u.since) explain(since, (u.state === 'active' ? 'Running since ' : 'Not running since ') + stamp(u.since) + '.');
       tr.appendChild(since);
       var bt = el('td');
-      var bw = u.boot || '–';
-      bt.appendChild(el('span', 'tag ' + (bw === 'enabled' ? 'ok' : (bw === 'disabled' || bw === 'masked' ? 'warn' : 'dim')), bw));
+      var bw = u.boot || '';
+      if (!bw) { bt.className = 'muted'; bt.textContent = '–'; }
+      else bt.appendChild(el('span', 'tag ' + (bw === 'enabled' ? 'ok' : (bw === 'disabled' || bw === 'masked' ? 'warn' : 'dim')), bw));
       tr.appendChild(bt);
       var rs = el('td', 'num' + (u.restarts ? ' warn' : ''), u.restarts === null || u.restarts === undefined ? '–' : num(u.restarts));
       if (u.restarts) explain(rs, 'systemd restarted it by itself ' + num(u.restarts) + ' time(s) since it was last started by hand or at boot: it stopped or broke. Its journal says why.');
       tr.appendChild(rs);
       tr.appendChild(el('td', 'num', u.memory ? bytes(u.memory) : '–'));
-      var tools = el('td', 'rowtools');
+      /* The buttons stand in columns by their kind - the journal, Reload, Restart, Stop or Start - each in
+         its own cell, empty where a unit has none: one under the other down the table, as otp's rows. */
+      var cell = function (b) { var td = el('td', 'rowtools'); if (b) td.appendChild(b); tr.appendChild(td); };
       var lg = iconButton('log', 'Its journal - the last lines');
       lg.onclick = function (ev) { ev.stopPropagation(); svcJournal(u); };
-      tools.appendChild(lg);
-      if (ADMIN) (u.can || []).forEach(function (a) {
-        if (a === 'stop' && u.state !== 'active' && u.state !== 'activating') return;
-        if (a === 'start' && (u.state === 'active' || u.state === 'activating')) return;
-        if (a === 'reload' && u.state !== 'active') return;
+      cell(lg);
+      var can = ADMIN ? (u.can || []) : [];
+      var on = u.state === 'active' || u.state === 'activating';
+      var mk = function (a) {
         var b = cmdButton(SVC_ACT[a][0], SVC_ACT[a][1], 'small' + (a === 'stop' ? ' danger' : ''));
         b.onclick = function (ev) { ev.stopPropagation(); svcAsk(u, a, b); };
-        tools.appendChild(b);
-      });
-      tr.appendChild(tools);
+        return b;
+      };
+      if (reloads) cell(can.indexOf('reload') >= 0 && u.state === 'active' ? mk('reload') : null);
+      cell(can.indexOf('restart') >= 0 ? mk('restart') : null);
+      cell(on && can.indexOf('stop') >= 0 ? mk('stop') : (!on && can.indexOf('start') >= 0 ? mk('start') : null));
       tr.onclick = function () { svcPeek(u); };
       return tr;
     }, 'plain'));

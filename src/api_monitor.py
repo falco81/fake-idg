@@ -1,4 +1,4 @@
-"""api_monitor.py - Settings → Monitoring (1.6.0): Prometheus metrics at /metrics, as otp's.
+"""api_monitor.py - Settings → Monitoring (1.6.0): Prometheus metrics at /metrics, and SNMPv3 (1.7.2), as otp's.
 
 nginx sends `location = /metrics` to web/metrics.php, which hands the scraper's bearer
 token to POST /api/metrics/scrape (a PUBLIC route: no sign-in, the API token still); the
@@ -9,9 +9,17 @@ What it says: this machine (load, memory, uptime, disks) and fake-igd (the reque
 the ports asked for, the clients, the mappings, the mDNS services, the services' states,
 the outgoing mail, the alerts open, syslog, the certificate, a new version).
 
-SNMPv3 is not here - see the pane: an agent needs UDP port 161 (CAP_NET_BIND_SERVICE for the
-API, a firewall rule), BER, USM with HMAC and AES-CFB, which the standard library has not
-(otp carries its own AES in Python for it) - Prometheus says the same and more.
+SNMPv3 (1.7.2, otp's "SNMPv3 (1.0.182)"): this API answers it itself - igd_snmp.Agent, a thread
+started by background(), on snmp_port/udp (161: CAP_NET_BIND_SERVICE in fake-igd-api.service, as
+otp.service has it; the firewall's "what fake-igd needs" opens it, deploy/root_fw.py). authPriv
+only, one user, its passphrases sealed. What it answers: the system group and FAKE-IGD-MIB
+(deploy/FAKE-IGD-MIB.txt) - the same things /metrics says, typed, and every sample of /metrics
+as a table. Traps (authPriv) when something goes wrong, as the alerts see it, and when it is right
+again.
+
+  GET  /api/snmp                    the agent's state and the settings' (the pane's card)
+  POST /api/snmp {action: test | trap}   asked as the monitoring would / a test trap
+  GET  /api/snmpfile?what=mib       FAKE-IGD-MIB, as the package has it
 """
 import collections
 import hmac
@@ -36,10 +44,79 @@ def _net(v):
         ipaddress.ip_network(v, strict=False)
     except ValueError:
         return "%s is not an address or a net" % v
+    if "%" in str(v):
+        return "%s: no scope id" % v               # root's helper refuses one (otp 1.0.287)
     return ""
 
 
+def _addr(v):
+    try:
+        ipaddress.ip_address(str(v).strip())
+    except ValueError:
+        return "one address of this machine, or empty for every one"
+    return ""
+
+
+def _user(v):
+    return "" if re.match(r"^[A-Za-z0-9._-]{1,32}\Z", v) else "1 to 32 letters, digits and . _ -"
+
+
+def _phrase(v):
+    return "" if 12 <= len(v) <= 128 else "12 to 128 characters"
+
+
+def _traps_to(v):
+    import igd_snmp as SN
+    try:
+        SN.trap_targets(v, strict=True)
+    except ValueError as e:
+        return str(e)
+    return ""
+
+
+SNMP_ON = ("snmp", True)
 SETTINGS = [
+    # --- SNMPv3 (1.7.2): otp's settings, the same names and words (Settings → Monitoring) ---
+    {"key": "snmp", "name": "SNMPv3", "kind": "bool", "default": False,
+     "says": "This machine answers SNMPv3 itself - an agent of fake-igd, no snmpd: the system group and "
+             "fake-igd\u2019s own objects (FAKE-IGD-MIB, <code>deploy/FAKE-IGD-MIB.txt</code>), read only. "
+             "authPriv only: a user with a passphrase for each."},
+    {"key": "snmp_port", "name": "Port (UDP)", "kind": "int", "default": 161, "min": 1, "max": 65535,
+     "only_when": SNMP_ON,
+     "says": "161 is SNMP\u2019s. Another where snmpd of the system has it already (not 1900: SSDP\u2019s)."},
+    {"key": "snmp_bind", "name": "Listen on", "kind": "text", "default": "", "check": _addr, "most": 64,
+     "only_when": SNMP_ON, "says": "Empty: every address of this machine. Or one of its addresses."},
+    {"key": "snmp_from", "name": "SNMP only from", "kind": "list", "default": [], "check": _net,
+     "only_when": SNMP_ON,
+     "says": "The addresses or networks the monitoring asks from, <code>10.0.5.0/24, 192.0.2.7</code>. Empty: "
+             "anybody with the user and its passphrases. The firewall lets in these only."},
+    {"key": "snmp_user", "name": "User", "kind": "text", "default": "", "check": _user, "most": 32,
+     "only_when": SNMP_ON, "says": "The SNMPv3 user (securityName) the monitoring asks as."},
+    {"key": "snmp_auth", "name": "Authentication", "kind": "choice", "default": "SHA-256", "only_when": SNMP_ON,
+     "choices": [("SHA-256", "SHA-256"), ("SHA-512", "SHA-512"), ("SHA-1", "SHA-1")],
+     "says": "HMAC of every message. SHA-256 or SHA-512; SHA-1 only for old monitoring."},
+    {"key": "snmp_auth_pass", "name": "Its passphrase (authentication)", "kind": "secret", "default": "",
+     "check": _phrase, "most": 128, "only_when": SNMP_ON, "says": "12 characters at least. Kept sealed."},
+    {"key": "snmp_priv", "name": "Encryption", "kind": "choice", "default": "AES-128", "only_when": SNMP_ON,
+     "choices": [("AES-128", "AES-128"), ("AES-256", "AES-256")],
+     "says": "Every message encrypted. AES-256 is net-snmp\u2019s and Zabbix\u2019s (\u201cAES256\u201d, not "
+             "Cisco\u2019s \u201cAES256C\u201d)."},
+    {"key": "snmp_priv_pass", "name": "Its passphrase (encryption)", "kind": "secret", "default": "",
+     "check": _phrase, "most": 128, "only_when": SNMP_ON,
+     "says": "12 characters at least - best not the same as the other. Kept sealed."},
+    {"key": "snmp_contact", "name": "Contact (sysContact)", "kind": "text", "default": "", "most": 255,
+     "only_when": SNMP_ON, "says": "Who looks after it - as sysContact.0 says."},
+    {"key": "snmp_location", "name": "Location (sysLocation)", "kind": "text", "default": "", "most": 255,
+     "only_when": SNMP_ON, "says": "Where it is - as sysLocation.0 says."},
+    {"key": "snmp_traps", "name": "Traps when something is wrong", "kind": "bool", "default": False,
+     "only_when": SNMP_ON,
+     "says": "An SNMPv2 trap (authPriv) when something goes wrong - what the alerts see - and when it is "
+             "right again."},
+    {"key": "snmp_trap_to", "name": "Where traps go", "kind": "text", "default": "", "check": _traps_to,
+     "most": 1000, "only_when": ("snmp_traps", True),
+     "says": "host or host:port (162 by default), separated by commas. The receiver knows the user with this "
+             "machine\u2019s engine ID (shown below)."},
+
     {"key": "metrics", "name": "Prometheus metrics (/metrics)", "kind": "bool", "default": False,
      "says": "This machine answers <code>https://SERVER/metrics</code> in Prometheus’ format - the requests and "
              "the ports asked for, the clients, the mappings, the mDNS services, the services, the disks, the "
@@ -59,12 +136,26 @@ def _setting(store, key):
     import igd_panes as PN
     import igd_seal as SEAL
     v = PN.value(store, key)
-    return SEAL.unseal_or(store, v) if key == "metrics_token" else v
+    return SEAL.unseal_or(store, v) if key in SEALED else v
+
+
+SEALED = ("metrics_token", "snmp_auth_pass", "snmp_priv_pass")
 
 
 def on_saved(ctx, changed):
     import igd_seal as SEAL
-    SEAL.seal_settings(ctx.store, ["metrics_token"])        # kept sealed in the database (igd_seal)
+    SEAL.seal_settings(ctx.store, list(SEALED))             # kept sealed in the database (igd_seal)
+    if any(k.startswith("snmp") for k in changed):
+        snmp_start(ctx)
+        if AGENT["a"] is not None:
+            AGENT["a"].looked = 0.0                         # looked at again within the second
+            AGENT["a"].mib_at = 0.0
+    # The firewall's SNMP port follows the settings (as ACME's HTTP-01 does): root puts FAKE-IGD-IN in again.
+    if any(k in changed for k in ("snmp", "snmp_port", "snmp_from")):
+        try:
+            ctx.ask_root({"action": "apply"}, kind="fw")
+        except (OSError, ValueError):
+            pass
 
 
 # ---- this machine ----------------------------------------------------------------------------
@@ -299,7 +390,7 @@ def monitor_get(ctx):
     n, at = mdns_count(ctx.store)
     return {"on": bool(_setting(ctx.store, "metrics")), "token_set": bool(_setting(ctx.store, "metrics_token")),
             "from": _setting(ctx.store, "metrics_from") or [], "mdns": {"n": n, "at": at},
-            "snmp": {"supported": False}}
+            "snmp": snmp_view(ctx)}
 
 
 def monitor_post(ctx):
@@ -316,19 +407,456 @@ def monitor_post(ctx):
         return {"text": metrics_text(ctx)}
     raise ValueError("no such action")
 
+# ---- SNMPv3 (1.7.2): otp's agent, fake-igd's objects ------------------------------------------
+# netSnmpPlaypen.8 - fake-igd has no enterprise number of its own; otp is netSnmpPlaypen.7.
+SNMP_BASE = (1, 3, 6, 1, 4, 1, 8072, 9999, 9999, 8)
+SNMP_GAUGE_MAX = 4294967295
+SNMP_MIB_FILE = "FAKE-IGD-MIB.txt"
+AGENT = {"a": None, "ctx": None, "lock": __import__("threading").Lock(), "problems": None, "problems_at": 0.0}
+
+
+def _node():
+    return socket.gethostname().split(".")[0]
+
+
+def _g(v):
+    """A Gauge32 never past its end (more is said as the most)."""
+    try:
+        v = int(v)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(v, SNMP_GAUGE_MAX))
+
+
+def snmp_c(store):
+    """The user, its protocols and its keys' passphrases - or None while not set (otp's snmp_conf)."""
+    import igd_snmp as SN
+    user = str(_setting(store, "snmp_user") or "").strip()
+    auth = str(_setting(store, "snmp_auth") or "SHA-256")
+    priv = str(_setting(store, "snmp_priv") or "AES-128")
+    ap = str(_setting(store, "snmp_auth_pass") or "")
+    pp = str(_setting(store, "snmp_priv_pass") or "")
+    if not (user and ap and pp) or auth not in SN.SNMP_AUTH or priv not in SN.SNMP_PRIV:
+        return None
+    return {"user": user, "auth": auth, "priv": priv, "ap": ap, "pp": pp}
+
+
+def snmp_conf(store):
+    """What the agent reads every 5 seconds."""
+    if not _setting(store, "snmp"):
+        return {"on": False}
+    return {"on": True, "port": int(_setting(store, "snmp_port") or 161),
+            "bind": str(_setting(store, "snmp_bind") or "").strip(),
+            "from": list(_setting(store, "snmp_from") or []), "c": snmp_c(store),
+            "trap_to": str(_setting(store, "snmp_trap_to") or "") if _setting(store, "snmp_traps") else ""}
+
+
+def snmp_start(ctx):
+    """The agent, once in this process - made the first time SNMPv3 is on (its engine's starts counted)."""
+    if AGENT["ctx"] is None or ctx.method == "BG":
+        AGENT["ctx"] = ctx                              # the background's: no request's behind it
+    with AGENT["lock"]:
+        if AGENT["a"] is not None or not _setting(ctx.store, "snmp"):
+            return AGENT["a"]
+        import igd_snmp as SN
+        state_dir = ctx.cfg.get("state_dir") or "/var/lib/fake-igd"
+        store = ctx.store
+        AGENT["a"] = SN.Agent(state_dir, lambda: snmp_conf(store), snmp_mib,
+                              log=lambda w: sys.stderr.write("api: %s\n" % w))
+        return AGENT["a"]
+
+
+def _problems(ctx):
+    """What the alerts see wrong now (computed the minute before) - {key: {level, title, said}}."""
+    if AGENT["problems"] is not None and time.time() - AGENT["problems_at"] < 180:
+        return AGENT["problems"]
+    al = (ctx.store.meta_json("alerts:state") or {}).get("problems") or {}
+    return al if isinstance(al, dict) else {}
+
+
+def snmp_mib(agent):
+    """Every object of the system group and of FAKE-IGD-MIB answered now: [(oid, kind, value)]
+    (the engine's and usmStats igd_snmp adds). Each part by itself: one that fails leaves the rest."""
+    import upnp as U
+    import igd_snmp as SN
+    ctx = AGENT["ctx"]
+    S, cfg, B = ctx.store, ctx.cfg, SNMP_BASE
+    up = int((time.monotonic() - agent.started) * 100)
+    rows = [(SN.SNMP_SYS + (1, 0), "str", "fake-igd %s - a fake UPnP router (IGD) that opens no port, %s"
+             % (U.VERSION, _node())),
+            (SN.SNMP_SYS + (2, 0), "oid", B),
+            (SN.SNMP_SYS + (3, 0), "ticks", up),
+            (SN.SNMP_SYS + (4, 0), "str", str(_setting(S, "snmp_contact") or "")),
+            (SN.SNMP_SYS + (5, 0), "str", socket.gethostname()),
+            (SN.SNMP_SYS + (6, 0), "str", str(_setting(S, "snmp_location") or "")),
+            (SN.SNMP_SYS + (7, 0), "int", 72)]
+    main = sys.modules.get("__main__")
+    api_up = int((time.time() - float(getattr(main, "STARTED", 0) or time.time())) * 100)
+    rows += [(B + (1, 1, 0), "str", U.VERSION), (B + (1, 2, 0), "str", _node()),
+             (B + (1, 3, 0), "str", str(cfg.get("site_name") or "")), (B + (1, 4, 0), "ticks", api_up)]
+    for part in (_mib_services, _mib_requests, _mib_mdns, _mib_alerts, _mib_cert, _mib_host, _mib_mail,
+                 _mib_logs, _mib_upgrade, _mib_metrics):
+        try:
+            rows += part(ctx, B)
+        except Exception as e:                          # noqa: BLE001
+            sys.stderr.write("api: SNMP, %s: %s\n" % (part.__name__[5:], e))
+    return rows
+
+
+def _mib_services(ctx, B):
+    """.2: the services' table - fake-igd.service, fake-igd-api.service, avahi-daemon.service."""
+    rows = []
+    for i, (unit, st) in enumerate(sorted(unit_states().items()), 1):
+        rows += [(B + (2, 1, 1, 1, i), "int", i), (B + (2, 1, 1, 2, i), "str", unit),
+                 (B + (2, 1, 1, 3, i), "str", str(st)), (B + (2, 1, 1, 4, i), "int", 1 if st == "active" else 0)]
+    return rows
+
+
+def _mib_requests(ctx, B):
+    """.3: the request log - by action, AddPortMapping by its answer, the ports, the devices, the mappings."""
+    import upnp as U
+    try:
+        ev = U.read_events(ctx.cfg)
+    except SystemExit:
+        ev = []
+    by_action, by_result, clients, ports = collections.Counter(), collections.Counter(), set(), set()
+    day, last = time.time() - 86400, 0.0
+    asked_day = refused_day = 0
+    for e in ev:
+        by_action[e.get("action") or "?"] += 1
+        clients.add(e.get("client"))
+        t = e["_t"].timestamp() if e.get("_t") else 0.0
+        last = max(last, t)
+        if e.get("action") == "AddPortMapping":
+            r = str(e.get("result") or "?")
+            by_result[r] += 1
+            ports.add((e.get("client"), str(e.get("protocol") or "").upper(), e.get("external_port")))
+            if t >= day:
+                asked_day += 1
+                refused_day += r != "ok"
+    try:
+        with open(os.path.join(ctx.cfg.get("state_dir") or "/var/lib/fake-igd", "mappings.json"), encoding="utf-8") as f:
+            nmap = len(json.load(f))
+    except (OSError, ValueError, TypeError):
+        nmap = 0
+    rows = [(B + (3, 1, 0), "counter64", sum(by_action.values())),
+            (B + (3, 2, 0), "counter64", sum(by_result.values())),
+            (B + (3, 3, 0), "counter64", by_result.get("ok", 0)),
+            (B + (3, 4, 0), "counter64", sum(n for r, n in by_result.items() if r != "ok")),
+            (B + (3, 5, 0), "gauge", _g(len(ports))),
+            (B + (3, 6, 0), "gauge", _g(len([c for c in clients if c]))),
+            (B + (3, 7, 0), "int", int(last)),
+            (B + (3, 8, 0), "gauge", _g(nmap)),
+            (B + (3, 9, 0), "gauge", _g(asked_day)),
+            (B + (3, 10, 0), "gauge", _g(refused_day))]
+    for i, (a, n) in enumerate(sorted(by_action.items()), 1):
+        rows += [(B + (3, 20, 1, 1, i), "int", i), (B + (3, 20, 1, 2, i), "str", str(a)[:64]),
+                 (B + (3, 20, 1, 3, i), "counter64", n)]
+    for i, (r, n) in enumerate(sorted(by_result.items()), 1):
+        rows += [(B + (3, 21, 1, 1, i), "int", i), (B + (3, 21, 1, 2, i), "str", r[:64]),
+                 (B + (3, 21, 1, 3, i), "counter64", n)]
+    return rows
+
+
+def _mib_mdns(ctx, B):
+    """.4: the mDNS reflector (avahi-daemon), the services it sees, other UPnP routers."""
+    import upnp as U
+    av = unit_states().get("avahi-daemon.service")
+    n, at = mdns_count(ctx.store)
+    rows = [(B + (4, 1, 0), "int", 1 if av == "active" else 0), (B + (4, 2, 0), "str", av or "not installed"),
+            (B + (4, 3, 0), "gauge", _g(n or 0)), (B + (4, 4, 0), "int", int(float(at or 0)))]
+    try:
+        rows.append((B + (4, 5, 0), "gauge", _g(len(U.status_data(ctx.cfg).get("other_igd") or []))))
+    except (SystemExit, Exception):                    # noqa: BLE001
+        pass
+    return rows
+
+
+def _mib_alerts(ctx, B):
+    """.5: what the alerts see wrong now (as otp's otpAlerts)."""
+    probs = _problems(ctx)
+    rows = [(B + (5, 1, 0), "gauge", sum(1 for p in probs.values() if p.get("level") == "bad")),
+            (B + (5, 2, 0), "gauge", sum(1 for p in probs.values() if p.get("level") != "bad"))]
+    for i, (k, p) in enumerate(sorted(probs.items()), 1):
+        rows += [(B + (5, 3, 1, 1, i), "int", i), (B + (5, 3, 1, 2, i), "str", k[:255]),
+                 (B + (5, 3, 1, 3, i), "str", p.get("level") or ""),
+                 (B + (5, 3, 1, 4, i), "str", str(p.get("title") or "")[:255]),
+                 (B + (5, 3, 1, 5, i), "str", str(p.get("said") or "")[:255])]
+    return rows
+
+
+def _mib_cert(ctx, B):
+    """.6: the pages' certificate."""
+    c = certificate()
+    if not c.get("until"):
+        return [(B + (6, 1, 0), "str", c.get("file") or "")]
+    return [(B + (6, 1, 0), "str", c["file"]), (B + (6, 2, 0), "str", (c.get("subject") or "")[:255]),
+            (B + (6, 3, 0), "int", int(c["days"] // 1)), (B + (6, 4, 0), "int", int(c["until"]))]
+
+
+def _mib_host(ctx, B):
+    """.10: this machine, as otp's otpHost - CPU, memory, disks, network as counters (a rate is the
+    monitor's to make), the load, the file systems fake-igd lives on."""
+    B = B + (10,)
+    ab = sys.modules.get("api_about")
+    raw = ab._load_raw() if ab is not None and hasattr(ab, "_load_raw") else {}
+    m = machine()
+    l1, l5, l15 = m.get("load") or (0.0, 0.0, 0.0)
+    rows = [(B + (1, 0), "counter64", int(raw.get("cpu_idle") or 0)),
+            (B + (2, 0), "counter64", int(raw.get("cpu_all") or 0)),
+            (B + (3, 0), "int", m.get("cpus") or 1),
+            (B + (4, 0), "gauge", _g(round(l1 * 100))), (B + (5, 0), "gauge", _g(round(l5 * 100))),
+            (B + (6, 0), "gauge", _g(round(l15 * 100))),
+            (B + (7, 0), "gauge", _g(int(raw.get("mem_total") or m.get("mem_total") or 0) // 1024)),
+            (B + (8, 0), "gauge", _g(int(raw.get("mem_used") or 0) // 1024 or
+                                     (int(m.get("mem_total") or 0) - int(m.get("mem_available") or 0)) // 1024)),
+            (B + (9, 0), "gauge", _g(int(raw.get("swap_used") or 0) // 1024)),
+            (B + (10, 0), "counter64", int(raw.get("disk_rd") or 0)),
+            (B + (11, 0), "counter64", int(raw.get("disk_wr") or 0)),
+            (B + (12, 0), "counter64", int(raw.get("net_rx") or 0)),
+            (B + (13, 0), "counter64", int(raw.get("net_tx") or 0)),
+            (B + (14, 0), "gauge", _g(m.get("uptime") or 0))]
+    for i, d in enumerate(disks(ctx.cfg), 1):
+        try:
+            st = os.statvfs(d["path"])
+            ipct = round(100.0 * (st.f_files - st.f_ffree) / st.f_files) if st.f_files else 0
+        except OSError:
+            ipct = 0
+        rows += [(B + (20, 1, 1, i), "int", i), (B + (20, 1, 2, i), "str", d["path"]),
+                 (B + (20, 1, 3, i), "gauge", _g(d["total"] // 1024)),
+                 (B + (20, 1, 4, i), "gauge", _g(d["used"] // 1024)),
+                 (B + (20, 1, 5, i), "gauge", _g(d["free"] // 1024)),
+                 (B + (20, 1, 6, i), "gauge", _g(round(d["pct"]))),
+                 (B + (20, 1, 7, i), "gauge", _g(ipct))]
+    return rows
+
+
+def _mib_mail(ctx, B):
+    """.14: the outgoing mail, by state (otp's otpMail)."""
+    import igd_mail
+    q = igd_mail.counts(ctx.store)
+    return [(B + (14, i, 0), "gauge", _g(q.get(k, 0))) for i, k in enumerate(igd_mail.STATES, 1)]
+
+
+def _mib_logs(ctx, B):
+    """.17: the logs sent to syslog servers (SIEM): on, in trouble, lines sent."""
+    si = ctx.store.meta_json("siem:state") or {}
+    try:
+        on = bool(sys.modules["api_siem"]._settings(ctx).get("siem"))
+    except Exception:                                   # noqa: BLE001
+        on = bool(_pn_value(ctx.store, "siem"))
+    return [(B + (17, 1, 0), "int", 1 if on else 0), (B + (17, 2, 0), "int", 1 if si.get("trouble") else 0),
+            (B + (17, 3, 0), "counter64", sum(int(v or 0) for v in (si.get("sent") or {}).values()))]
+
+
+def _pn_value(store, key):
+    import igd_panes as PN
+    try:
+        return PN.value(store, key)
+    except KeyError:
+        return None
+
+
+def _mib_upgrade(ctx, B):
+    """.18: a newer fake-igd out (as Upgrades last found it)."""
+    import upnp as U
+    import igd_online as ON
+    row = ON.view(ctx.store.meta_json("upgrade:online") or {}, U.VERSION)
+    return [(B + (18, 1, 0), "int", 1 if row.get("newer") else 0),
+            (B + (18, 2, 0), "str", str((row.get("newest") or {}).get("version") or ""))]
+
+
+def _mib_metrics(ctx, B):
+    """.9: every sample /metrics gives, as a table (name, labels, value) - nothing it has is missing here."""
+    rows = []
+    i = 0
+    for line in metrics_text(ctx).split("\n"):
+        if not line or line.startswith("#"):
+            continue
+        m = re.match(r"^([a-zA-Z_:][\w:]*)(\{.*\})? (\S+)$", line)
+        if m:
+            i += 1
+            rows += [(B + (9, 1, 1, 1, i), "int", i), (B + (9, 1, 1, 2, i), "str", m.group(1)),
+                     (B + (9, 1, 1, 3, i), "str", (m.group(2) or "")[1:-1][:255]),
+                     (B + (9, 1, 1, 4, i), "str", m.group(3))]
+    return rows
+
+
+def snmp_tick(ctx):
+    """Once a minute: the agent started, what the alerts see, and a trap for each thing that went wrong
+    and for each that is right again (otp's snmp_traps_tick)."""
+    AGENT["ctx"] = ctx
+    if not _setting(ctx.store, "snmp"):
+        return
+    ag = snmp_start(ctx)
+    try:
+        al = sys.modules.get("api_alerts") or __import__("api_alerts")
+        cur = al.problems(ctx, al.cfg_of(ctx.store))
+        AGENT["problems"], AGENT["problems_at"] = cur, time.time()
+    except Exception as e:                              # noqa: BLE001
+        sys.stderr.write("api: SNMP, what the alerts see: %s\n" % e)
+        return
+    import igd_snmp as SN
+    if not ag or not _setting(ctx.store, "snmp_traps") or not SN.trap_targets(_setting(ctx.store, "snmp_trap_to")):
+        return
+    if not snmp_c(ctx.store):
+        return
+    S = ctx.store
+    known = {k: v for k, v in (S.meta_json("snmp:trapped") or {}).items() if isinstance(v, dict)}
+    delay = 60 * int(_pn_value(S, "alerts_delay_min") or 0)
+    now = time.time()
+    changed = False
+    for k, p in cur.items():
+        was = known.get(k)
+        if was and was.pop("missing_since", None) is not None:
+            changed = True                              # back before it was over (otp 1.0.271)
+        if not was:
+            known[k] = was = {"since": now, "sent": False, "level": p.get("level")}
+            changed = True
+        since = float(was.get("since") or now)
+        if (not was.get("sent") and now - since >= delay) or \
+                (was.get("sent") and was.get("level") == "warn" and p.get("level") == "bad"):
+            got = ag.trap(SNMP_BASE, 1, [("str", k), ("str", p.get("level") or ""),
+                                         ("str", str(p.get("title") or "")[:255]),
+                                         ("str", str(p.get("said") or "")[:255]), ("str", _node())])
+            was.update(sent=any(v == "sent" for v in got.values()), level=p.get("level"))
+            changed = True
+    for k in [k for k in known if k not in cur]:
+        if known[k].get("sent") and delay:
+            # Over only once away as long as it had to be there (otp 1.0.271): no flapping traps.
+            if not known[k].get("missing_since"):
+                known[k]["missing_since"] = now
+                changed = True
+            if now - float(known[k].get("missing_since") or now) < delay:
+                continue
+        p = known.pop(k)
+        changed = True
+        if p.get("sent"):
+            ag.trap(SNMP_BASE, 2, [("str", k), ("str", "ok"), ("str", "right again"), ("str", ""),
+                                   ("str", _node())])
+    if changed:
+        S.set_meta("snmp:trapped", json.dumps(known))
+
+
+def snmp_view(ctx):
+    """The agent's state and the settings' - the pane's card (otp's snmp_view, one machine)."""
+    import igd_snmp as SN
+    S = ctx.store
+    c = snmp_c(S)
+    st = dict(SN.SNMP_STATE) if AGENT["a"] is not None else {}
+    if not st:
+        # Never started in this process (off since it started): the engine ID as it will be.
+        try:
+            with open(os.path.join(ctx.cfg.get("state_dir") or "/var/lib/fake-igd", "snmp-engine")) as f:
+                st = {"engine": f.read().strip()}
+        except OSError:
+            st = {}
+    traps = bool(_setting(S, "snmp_traps"))
+    return {"on": bool(_setting(S, "snmp")), "ready": bool(c), "node": _node(), "at": time.time(),
+            "agent": st, "user": c["user"] if c else str(_setting(S, "snmp_user") or ""),
+            "auth": str(_setting(S, "snmp_auth") or "SHA-256"), "priv": str(_setting(S, "snmp_priv") or "AES-128"),
+            "port": int(_setting(S, "snmp_port") or 161), "bind": str(_setting(S, "snmp_bind") or ""),
+            "from": list(_setting(S, "snmp_from") or []),
+            "base": ".".join(str(x) for x in SNMP_BASE), "traps": traps,
+            "trap_to": ["%s:%d" % t for t in SN.trap_targets(_setting(S, "snmp_trap_to"))] if traps else [],
+            "mib": SNMP_MIB_FILE, "mib_here": bool(_mib_path())}
+
+
+def snmp_get_route(ctx):
+    if not ctx.me:
+        raise PermissionError("not signed in")
+    return snmp_view(ctx)
+
+
+def snmp_post_route(ctx):
+    """{action: test} - this machine asks its own agent as the monitoring would (discovery, then an authPriv
+    GET); {action: trap} - a test trap to every receiver set."""
+    import igd_snmp as SN
+    me = ctx.need("fulladmin")
+    act = str(ctx.body().get("action") or "")
+    if act not in ("test", "trap"):
+        raise ValueError("no such thing to do")
+    if not _setting(ctx.store, "snmp"):
+        raise ValueError("SNMPv3 is off")
+    c = snmp_c(ctx.store)
+    if not c:
+        raise ValueError("the SNMPv3 user and its two passphrases are not set")
+    ag = snmp_start(ctx)
+    t0 = time.time()
+    out = {"at": time.time(), "engine": ag.engine.hex() if ag else ""}
+    if act == "trap":
+        if not SN.trap_targets(_setting(ctx.store, "snmp_trap_to")) or not _setting(ctx.store, "snmp_traps"):
+            raise ValueError("no receiver of traps is set")
+        try:
+            got = ag.trap(SNMP_BASE, 3, [("str", "test"), ("str", "info"),
+                                         ("str", "a test trap from fake-igd, sent by %s" % me["name"]),
+                                         ("str", ""), ("str", _node())])
+        except (OSError, ValueError) as e:
+            return dict(out, ok=False, error=str(e))
+        ctx.event("%s sent a test SNMP trap to %s" % (me["name"], ", ".join(sorted(got)) or "nobody"))
+        return dict(out, ok=bool(got) and all(v == "sent" for v in got.values()), sent=got)
+    ag.looked = 0.0
+    for _ in range(30):                                 # just switched on: listening within the second
+        if SN.SNMP_STATE.get("listening") or SN.SNMP_STATE.get("error"):
+            break
+        time.sleep(0.1)
+    if not SN.SNMP_STATE.get("listening"):
+        return dict(out, ok=False, error=SN.SNMP_STATE.get("error") or "not listening")
+    bound = str(_setting(ctx.store, "snmp_bind") or "").strip()
+    at = bound if bound and bound not in ("0.0.0.0", "::") else "127.0.0.1"
+    SN.SNMP_SELF["until"] = time.time() + 5
+    try:
+        got = SN.snmp_get(at, int(SN.SNMP_STATE.get("port") or 161), c,
+                          [SN.SNMP_SYS + (1, 0), SN.SNMP_SYS + (3, 0), SNMP_BASE + (1, 1, 0)])
+    except socket.timeout:
+        return dict(out, ok=False, error="no answer in 3 s from %s:%s" % (at, SN.SNMP_STATE.get("port")))
+    except (OSError, ValueError, IndexError) as e:
+        return dict(out, ok=False, error=str(e) or e.__class__.__name__)
+    return dict(out, ok=True, said=got, ms=int((time.time() - t0) * 1000))
+
+
+def _mib_path():
+    here = os.path.dirname(os.path.abspath(__file__))
+    for p in (os.path.join(here, SNMP_MIB_FILE), os.path.join(os.path.dirname(here), "deploy", SNMP_MIB_FILE),
+              os.path.join(here, "deploy", SNMP_MIB_FILE)):
+        if os.path.isfile(p):
+            return p
+    return ""
+
+
+def snmp_file(ctx):
+    """FAKE-IGD-MIB as the package has it - nothing of this server's own is in it."""
+    if not ctx.me:
+        raise PermissionError("not signed in")
+    if str(ctx.arg("what") or "") != "mib":
+        raise ValueError("no such file")
+    p = _mib_path()
+    if not p:
+        raise ValueError("%s is not in this installation" % SNMP_MIB_FILE)
+    with open(p, encoding="utf-8") as f:
+        return {"name": SNMP_MIB_FILE, "text": f.read(4 << 20)}
+
 
 ROUTES = {
     ("GET", "/api/monitor"): monitor_get,
     ("POST", "/api/monitor"): monitor_post,
     ("POST", "/api/metrics/scrape"): scrape,
+    ("GET", "/api/snmp"): snmp_get_route,
+    ("POST", "/api/snmp"): snmp_post_route,
+    ("GET", "/api/snmpfile"): snmp_file,
 }
 
 
 def background(ctx):
-    """Every 5 minutes, while metrics are on: how many services avahi-browse sees (it takes seconds)."""
+    """The SNMP agent started and its traps (1.7.2); every 5 minutes, while metrics or SNMP are on: how
+    many services avahi-browse sees (it takes seconds)."""
     import igd_seal as SEAL
-    SEAL.seal_settings(ctx.store, ["metrics_token"])
-    if not _setting(ctx.store, "metrics"):
+    SEAL.seal_settings(ctx.store, list(SEALED))
+    try:
+        snmp_tick(ctx)
+    except Exception as e:                              # noqa: BLE001 - the metrics go on
+        sys.stderr.write("api: SNMPv3: %s\n" % e)
+    if not (_setting(ctx.store, "metrics") or _setting(ctx.store, "snmp")):
         return
     _n, at = mdns_count(ctx.store)
     if at and time.time() - float(at) < MDNS_EVERY_S:

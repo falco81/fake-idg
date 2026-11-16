@@ -1,0 +1,479 @@
+FAKE-IGD-MIB DEFINITIONS ::= BEGIN
+
+-- fake-igd, the fake UPnP router (IGD) that opens no port: what its own SNMPv3
+-- agent answers (1.7.2) - the pages' API answers it (Settings, Monitoring). Read
+-- only. Under netSnmpPlaypen (net-snmp's subtree for objects of one's own), .8 -
+-- fake-igd has no enterprise number of its own (otp, its model, is .7).
+-- Every sample of https://SERVER/metrics is in fakeIgdMetricTable too.
+
+IMPORTS
+    MODULE-IDENTITY, OBJECT-TYPE, NOTIFICATION-TYPE,
+    Integer32, Gauge32, Counter64, TimeTicks
+        FROM SNMPv2-SMI
+    DisplayString
+        FROM SNMPv2-TC
+    OBJECT-GROUP, NOTIFICATION-GROUP, MODULE-COMPLIANCE
+        FROM SNMPv2-CONF
+    netSnmpPlaypen
+        FROM NET-SNMP-MIB;
+
+fakeIgd MODULE-IDENTITY
+    LAST-UPDATED "202611160000Z"
+    ORGANIZATION "fake-igd"
+    CONTACT-INFO "The administrator of the fake-igd server - Settings, Monitoring."
+    DESCRIPTION  "fake-igd: the services, the requests and the ports asked for, the
+                  devices, the mappings, the mDNS reflector, the alerts, the
+                  certificate, the machine, the mail and the logs of one server."
+    REVISION     "202611160000Z"
+    DESCRIPTION  "First: 1.7.2."
+    ::= { netSnmpPlaypen 8 }
+
+fakeIgdNotifications OBJECT IDENTIFIER ::= { fakeIgd 0 }
+fakeIgdInfo          OBJECT IDENTIFIER ::= { fakeIgd 1 }
+fakeIgdServices      OBJECT IDENTIFIER ::= { fakeIgd 2 }
+fakeIgdRequests      OBJECT IDENTIFIER ::= { fakeIgd 3 }
+fakeIgdMdns          OBJECT IDENTIFIER ::= { fakeIgd 4 }
+fakeIgdAlerts        OBJECT IDENTIFIER ::= { fakeIgd 5 }
+fakeIgdCertificate   OBJECT IDENTIFIER ::= { fakeIgd 6 }
+fakeIgdTrapObjects   OBJECT IDENTIFIER ::= { fakeIgd 8 }
+fakeIgdMetrics       OBJECT IDENTIFIER ::= { fakeIgd 9 }
+fakeIgdHost          OBJECT IDENTIFIER ::= { fakeIgd 10 }
+fakeIgdMail          OBJECT IDENTIFIER ::= { fakeIgd 14 }
+fakeIgdLogs          OBJECT IDENTIFIER ::= { fakeIgd 17 }
+fakeIgdUpgrade       OBJECT IDENTIFIER ::= { fakeIgd 18 }
+
+-- fakeIgdInfo
+
+fakeIgdVersion OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "The version of fake-igd." ::= { fakeIgdInfo 1 }
+fakeIgdNode OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "The name of this machine." ::= { fakeIgdInfo 2 }
+fakeIgdSite OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "The name of this installation (Settings, About)." ::= { fakeIgdInfo 3 }
+fakeIgdApiUptime OBJECT-TYPE
+    SYNTAX TimeTicks MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Since the pages' API (which answers SNMP) started." ::= { fakeIgdInfo 4 }
+
+-- fakeIgdServices
+
+fakeIgdServiceTable OBJECT-TYPE
+    SYNTAX SEQUENCE OF FakeIgdServiceEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "The services of fake-igd: fake-igd.service, fake-igd-api.service, avahi-daemon.service where installed." ::= { fakeIgdServices 1 }
+fakeIgdServiceEntry OBJECT-TYPE
+    SYNTAX FakeIgdServiceEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "One service." INDEX { fakeIgdServiceIndex } ::= { fakeIgdServiceTable 1 }
+FakeIgdServiceEntry ::= SEQUENCE { fakeIgdServiceIndex Integer32, fakeIgdServiceUnit DisplayString, fakeIgdServiceState DisplayString, fakeIgdServiceUp Integer32 }
+fakeIgdServiceIndex OBJECT-TYPE
+    SYNTAX Integer32 (1..65535) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its number now." ::= { fakeIgdServiceEntry 1 }
+fakeIgdServiceUnit OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "The systemd unit." ::= { fakeIgdServiceEntry 2 }
+fakeIgdServiceState OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "active, inactive, failed, unknown..." ::= { fakeIgdServiceEntry 3 }
+fakeIgdServiceUp OBJECT-TYPE
+    SYNTAX Integer32 (0..1) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "1 while it is active." ::= { fakeIgdServiceEntry 4 }
+
+-- fakeIgdRequests: the request log
+
+fakeIgdRequestsTotal OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "SOAP requests in the request log, every action." ::= { fakeIgdRequests 1 }
+fakeIgdPortRequests OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "AddPortMapping asked for." ::= { fakeIgdRequests 2 }
+fakeIgdPortRequestsAnswered OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "AddPortMapping answered ok (none is opened)." ::= { fakeIgdRequests 3 }
+fakeIgdPortRequestsRefused OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "AddPortMapping refused." ::= { fakeIgdRequests 4 }
+fakeIgdPorts OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Ports asked for (device, protocol, port), each once." ::= { fakeIgdRequests 5 }
+fakeIgdClients OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Devices that asked anything." ::= { fakeIgdRequests 6 }
+fakeIgdLastRequest OBJECT-TYPE
+    SYNTAX Integer32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "When the last request came, unix time (0: never)." ::= { fakeIgdRequests 7 }
+fakeIgdMappings OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Port mappings held now." ::= { fakeIgdRequests 8 }
+fakeIgdDayPortRequests OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "AddPortMapping asked for in the last 24 hours." ::= { fakeIgdRequests 9 }
+fakeIgdDayPortRefused OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "AddPortMapping refused in the last 24 hours." ::= { fakeIgdRequests 10 }
+fakeIgdActionTable OBJECT-TYPE
+    SYNTAX SEQUENCE OF FakeIgdActionEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "The requests in the request log, by SOAP action." ::= { fakeIgdRequests 20 }
+fakeIgdActionEntry OBJECT-TYPE
+    SYNTAX FakeIgdActionEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "One action." INDEX { fakeIgdActionIndex } ::= { fakeIgdActionTable 1 }
+FakeIgdActionEntry ::= SEQUENCE { fakeIgdActionIndex Integer32, fakeIgdActionName DisplayString, fakeIgdActionCount Counter64 }
+fakeIgdActionIndex OBJECT-TYPE
+    SYNTAX Integer32 (1..65535) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its number now." ::= { fakeIgdActionEntry 1 }
+fakeIgdActionName OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "The SOAP action." ::= { fakeIgdActionEntry 2 }
+fakeIgdActionCount OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "How many." ::= { fakeIgdActionEntry 3 }
+fakeIgdResultTable OBJECT-TYPE
+    SYNTAX SEQUENCE OF FakeIgdResultEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "AddPortMapping by what it was answered." ::= { fakeIgdRequests 21 }
+fakeIgdResultEntry OBJECT-TYPE
+    SYNTAX FakeIgdResultEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "One answer." INDEX { fakeIgdResultIndex } ::= { fakeIgdResultTable 1 }
+FakeIgdResultEntry ::= SEQUENCE { fakeIgdResultIndex Integer32, fakeIgdResultName DisplayString, fakeIgdResultCount Counter64 }
+fakeIgdResultIndex OBJECT-TYPE
+    SYNTAX Integer32 (1..65535) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its number now." ::= { fakeIgdResultEntry 1 }
+fakeIgdResultName OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "ok, rejected..." ::= { fakeIgdResultEntry 2 }
+fakeIgdResultCount OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "How many." ::= { fakeIgdResultEntry 3 }
+
+-- fakeIgdMdns: the mDNS reflector
+
+fakeIgdMdnsUp OBJECT-TYPE
+    SYNTAX Integer32 (0..1) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "1 while avahi-daemon is active." ::= { fakeIgdMdns 1 }
+fakeIgdMdnsState OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "avahi-daemon's state, or not installed." ::= { fakeIgdMdns 2 }
+fakeIgdMdnsServices OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Services avahi-browse sees on the network (looked every 5 minutes)." ::= { fakeIgdMdns 3 }
+fakeIgdMdnsLookedAt OBJECT-TYPE
+    SYNTAX Integer32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "When they were counted, unix time (0: never)." ::= { fakeIgdMdns 4 }
+fakeIgdOtherIgd OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Other UPnP routers seen on the network." ::= { fakeIgdMdns 5 }
+
+-- fakeIgdAlerts
+
+fakeIgdAlertsBad OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "What the alerts see wrong now: bad." ::= { fakeIgdAlerts 1 }
+fakeIgdAlertsWarn OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "What the alerts see wrong now: warnings." ::= { fakeIgdAlerts 2 }
+fakeIgdAlertTable OBJECT-TYPE
+    SYNTAX SEQUENCE OF FakeIgdAlertEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "Each thing wrong now." ::= { fakeIgdAlerts 3 }
+fakeIgdAlertEntry OBJECT-TYPE
+    SYNTAX FakeIgdAlertEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "One thing wrong." INDEX { fakeIgdAlertIndex } ::= { fakeIgdAlertTable 1 }
+FakeIgdAlertEntry ::= SEQUENCE { fakeIgdAlertIndex Integer32, fakeIgdAlertKey DisplayString, fakeIgdAlertLevel DisplayString, fakeIgdAlertTitle DisplayString, fakeIgdAlertSaid DisplayString }
+fakeIgdAlertIndex OBJECT-TYPE
+    SYNTAX Integer32 (1..65535) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its number now." ::= { fakeIgdAlertEntry 1 }
+fakeIgdAlertKey OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "What it is about, the same while it lasts." ::= { fakeIgdAlertEntry 2 }
+fakeIgdAlertLevel OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "bad or warn." ::= { fakeIgdAlertEntry 3 }
+fakeIgdAlertTitle OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "In a few words." ::= { fakeIgdAlertEntry 4 }
+fakeIgdAlertSaid OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "More of it." ::= { fakeIgdAlertEntry 5 }
+
+-- fakeIgdCertificate: the pages'
+
+fakeIgdCertFile OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "The certificate of the pages (nginx's)." ::= { fakeIgdCertificate 1 }
+fakeIgdCertSubject OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its subject." ::= { fakeIgdCertificate 2 }
+fakeIgdCertDaysLeft OBJECT-TYPE
+    SYNTAX Integer32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Days until it ends." ::= { fakeIgdCertificate 3 }
+fakeIgdCertEnd OBJECT-TYPE
+    SYNTAX Integer32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "When it ends, unix time." ::= { fakeIgdCertificate 4 }
+
+-- fakeIgdHost: this machine
+
+fakeIgdHostCpuIdle OBJECT-TYPE
+    SYNTAX Counter64 UNITS "jiffies" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "CPU time idle (and waiting for the disks), all cores, since boot." ::= { fakeIgdHost 1 }
+fakeIgdHostCpuTotal OBJECT-TYPE
+    SYNTAX Counter64 UNITS "jiffies" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "CPU time in all, all cores, since boot." ::= { fakeIgdHost 2 }
+fakeIgdHostCpuCores OBJECT-TYPE
+    SYNTAX Integer32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "CPU cores." ::= { fakeIgdHost 3 }
+fakeIgdHostLoad1 OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "The load average of a minute, times 100." ::= { fakeIgdHost 4 }
+fakeIgdHostLoad5 OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "The load average of 5 minutes, times 100." ::= { fakeIgdHost 5 }
+fakeIgdHostLoad15 OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "The load average of 15 minutes, times 100." ::= { fakeIgdHost 6 }
+fakeIgdHostMemTotal OBJECT-TYPE
+    SYNTAX Gauge32 UNITS "KiB" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Memory in all." ::= { fakeIgdHost 7 }
+fakeIgdHostMemUsed OBJECT-TYPE
+    SYNTAX Gauge32 UNITS "KiB" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Memory used (all but what is available)." ::= { fakeIgdHost 8 }
+fakeIgdHostSwapUsed OBJECT-TYPE
+    SYNTAX Gauge32 UNITS "KiB" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Swap used." ::= { fakeIgdHost 9 }
+fakeIgdHostDiskRead OBJECT-TYPE
+    SYNTAX Counter64 UNITS "bytes" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Bytes read from the disks since boot." ::= { fakeIgdHost 10 }
+fakeIgdHostDiskWritten OBJECT-TYPE
+    SYNTAX Counter64 UNITS "bytes" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Bytes written to the disks since boot." ::= { fakeIgdHost 11 }
+fakeIgdHostNetRx OBJECT-TYPE
+    SYNTAX Counter64 UNITS "bytes" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Bytes received by the network cards since boot." ::= { fakeIgdHost 12 }
+fakeIgdHostNetTx OBJECT-TYPE
+    SYNTAX Counter64 UNITS "bytes" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Bytes sent by the network cards since boot." ::= { fakeIgdHost 13 }
+fakeIgdHostUptime OBJECT-TYPE
+    SYNTAX Gauge32 UNITS "seconds" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Since the machine started." ::= { fakeIgdHost 14 }
+fakeIgdFsTable OBJECT-TYPE
+    SYNTAX SEQUENCE OF FakeIgdFsEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "The file systems fake-igd lives on, each once." ::= { fakeIgdHost 20 }
+fakeIgdFsEntry OBJECT-TYPE
+    SYNTAX FakeIgdFsEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "One file system." INDEX { fakeIgdFsIndex } ::= { fakeIgdFsTable 1 }
+FakeIgdFsEntry ::= SEQUENCE { fakeIgdFsIndex Integer32, fakeIgdFsPath DisplayString, fakeIgdFsTotal Gauge32, fakeIgdFsUsed Gauge32, fakeIgdFsFree Gauge32, fakeIgdFsUsedPct Gauge32, fakeIgdFsInodesPct Gauge32 }
+fakeIgdFsIndex OBJECT-TYPE
+    SYNTAX Integer32 (1..65535) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its number now." ::= { fakeIgdFsEntry 1 }
+fakeIgdFsPath OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "A path on it." ::= { fakeIgdFsEntry 2 }
+fakeIgdFsTotal OBJECT-TYPE
+    SYNTAX Gauge32 UNITS "KiB" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its size." ::= { fakeIgdFsEntry 3 }
+fakeIgdFsUsed OBJECT-TYPE
+    SYNTAX Gauge32 UNITS "KiB" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Used." ::= { fakeIgdFsEntry 4 }
+fakeIgdFsFree OBJECT-TYPE
+    SYNTAX Gauge32 UNITS "KiB" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Free." ::= { fakeIgdFsEntry 5 }
+fakeIgdFsUsedPct OBJECT-TYPE
+    SYNTAX Gauge32 UNITS "percent" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "How full." ::= { fakeIgdFsEntry 6 }
+fakeIgdFsInodesPct OBJECT-TYPE
+    SYNTAX Gauge32 UNITS "percent" MAX-ACCESS read-only STATUS current
+    DESCRIPTION "How many of its inodes are used." ::= { fakeIgdFsEntry 7 }
+
+-- fakeIgdMail: the outgoing mail
+
+fakeIgdMailSending OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Mail sending (Settings, Outgoing mail)." ::= { fakeIgdMail 1 }
+fakeIgdMailWaiting OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Mail waiting (Settings, Outgoing mail)." ::= { fakeIgdMail 2 }
+fakeIgdMailSent OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Mail sent (Settings, Outgoing mail)." ::= { fakeIgdMail 3 }
+fakeIgdMailFailed OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Mail failed (Settings, Outgoing mail)." ::= { fakeIgdMail 4 }
+fakeIgdMailExpired OBJECT-TYPE
+    SYNTAX Gauge32 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Mail expired (Settings, Outgoing mail)." ::= { fakeIgdMail 5 }
+
+-- fakeIgdLogs: to syslog servers (SIEM)
+
+fakeIgdLogsOn OBJECT-TYPE
+    SYNTAX Integer32 (0..1) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "1 while sending to syslog servers is on." ::= { fakeIgdLogs 1 }
+fakeIgdLogsTrouble OBJECT-TYPE
+    SYNTAX Integer32 (0..1) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "1 while a syslog server is not reached." ::= { fakeIgdLogs 2 }
+fakeIgdLogsSent OBJECT-TYPE
+    SYNTAX Counter64 MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Lines sent." ::= { fakeIgdLogs 3 }
+
+-- fakeIgdUpgrade
+
+fakeIgdUpgradeNewer OBJECT-TYPE
+    SYNTAX Integer32 (0..1) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "1 when a newer fake-igd is out (as Upgrades last found it)." ::= { fakeIgdUpgrade 1 }
+fakeIgdUpgradeNewest OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "The newest version seen." ::= { fakeIgdUpgrade 2 }
+
+-- what the traps carry
+
+fakeIgdTrapKey OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS accessible-for-notify STATUS current
+    DESCRIPTION "What it is about." ::= { fakeIgdTrapObjects 1 }
+fakeIgdTrapLevel OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS accessible-for-notify STATUS current
+    DESCRIPTION "bad, warn, ok or info." ::= { fakeIgdTrapObjects 2 }
+fakeIgdTrapTitle OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS accessible-for-notify STATUS current
+    DESCRIPTION "In a few words." ::= { fakeIgdTrapObjects 3 }
+fakeIgdTrapSaid OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS accessible-for-notify STATUS current
+    DESCRIPTION "More of it." ::= { fakeIgdTrapObjects 4 }
+fakeIgdTrapNode OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS accessible-for-notify STATUS current
+    DESCRIPTION "The machine that sent it." ::= { fakeIgdTrapObjects 5 }
+fakeIgdAlertRaised NOTIFICATION-TYPE
+    OBJECTS { fakeIgdTrapKey, fakeIgdTrapLevel, fakeIgdTrapTitle, fakeIgdTrapSaid, fakeIgdTrapNode }
+    STATUS current
+    DESCRIPTION "Something went wrong (or worse), as the alerts see it."
+    ::= { fakeIgdNotifications 1 }
+fakeIgdAlertCleared NOTIFICATION-TYPE
+    OBJECTS { fakeIgdTrapKey, fakeIgdTrapLevel, fakeIgdTrapTitle, fakeIgdTrapSaid, fakeIgdTrapNode }
+    STATUS current
+    DESCRIPTION "What went wrong is right again."
+    ::= { fakeIgdNotifications 2 }
+fakeIgdTestTrap NOTIFICATION-TYPE
+    OBJECTS { fakeIgdTrapKey, fakeIgdTrapLevel, fakeIgdTrapTitle, fakeIgdTrapSaid, fakeIgdTrapNode }
+    STATUS current
+    DESCRIPTION "Sent from Settings, Monitoring, to try the receiver."
+    ::= { fakeIgdNotifications 3 }
+
+-- fakeIgdMetrics: every Prometheus sample
+
+fakeIgdMetricTable OBJECT-TYPE
+    SYNTAX SEQUENCE OF FakeIgdMetricEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "Every sample https://SERVER/metrics gives, now." ::= { fakeIgdMetrics 1 }
+fakeIgdMetricEntry OBJECT-TYPE
+    SYNTAX FakeIgdMetricEntry MAX-ACCESS not-accessible STATUS current
+    DESCRIPTION "One sample." INDEX { fakeIgdMetricIndex } ::= { fakeIgdMetricTable 1 }
+FakeIgdMetricEntry ::= SEQUENCE { fakeIgdMetricIndex Integer32, fakeIgdMetricName DisplayString, fakeIgdMetricLabels DisplayString, fakeIgdMetricValue DisplayString }
+fakeIgdMetricIndex OBJECT-TYPE
+    SYNTAX Integer32 (1..2147483647) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its number now - samples come and go." ::= { fakeIgdMetricEntry 1 }
+fakeIgdMetricName OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "The metric's name, fake_igd_..." ::= { fakeIgdMetricEntry 2 }
+fakeIgdMetricLabels OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its labels, as Prometheus has them." ::= { fakeIgdMetricEntry 3 }
+fakeIgdMetricValue OBJECT-TYPE
+    SYNTAX DisplayString MAX-ACCESS read-only STATUS current
+    DESCRIPTION "Its value, as text." ::= { fakeIgdMetricEntry 4 }
+
+-- conformance
+
+fakeIgdConformance   OBJECT IDENTIFIER ::= { fakeIgd 99 }
+fakeIgdGroups        OBJECT IDENTIFIER ::= { fakeIgdConformance 1 }
+fakeIgdCompliances   OBJECT IDENTIFIER ::= { fakeIgdConformance 2 }
+
+fakeIgdObjectsGroup OBJECT-GROUP
+    OBJECTS { fakeIgdVersion,
+              fakeIgdNode,
+              fakeIgdSite,
+              fakeIgdApiUptime,
+              fakeIgdServiceIndex,
+              fakeIgdServiceUnit,
+              fakeIgdServiceState,
+              fakeIgdServiceUp,
+              fakeIgdRequestsTotal,
+              fakeIgdPortRequests,
+              fakeIgdPortRequestsAnswered,
+              fakeIgdPortRequestsRefused,
+              fakeIgdPorts,
+              fakeIgdClients,
+              fakeIgdLastRequest,
+              fakeIgdMappings,
+              fakeIgdDayPortRequests,
+              fakeIgdDayPortRefused,
+              fakeIgdActionIndex,
+              fakeIgdActionName,
+              fakeIgdActionCount,
+              fakeIgdResultIndex,
+              fakeIgdResultName,
+              fakeIgdResultCount,
+              fakeIgdMdnsUp,
+              fakeIgdMdnsState,
+              fakeIgdMdnsServices,
+              fakeIgdMdnsLookedAt,
+              fakeIgdOtherIgd,
+              fakeIgdAlertsBad,
+              fakeIgdAlertsWarn,
+              fakeIgdAlertIndex,
+              fakeIgdAlertKey,
+              fakeIgdAlertLevel,
+              fakeIgdAlertTitle,
+              fakeIgdAlertSaid,
+              fakeIgdCertFile,
+              fakeIgdCertSubject,
+              fakeIgdCertDaysLeft,
+              fakeIgdCertEnd,
+              fakeIgdHostCpuIdle,
+              fakeIgdHostCpuTotal,
+              fakeIgdHostCpuCores,
+              fakeIgdHostLoad1,
+              fakeIgdHostLoad5,
+              fakeIgdHostLoad15,
+              fakeIgdHostMemTotal,
+              fakeIgdHostMemUsed,
+              fakeIgdHostSwapUsed,
+              fakeIgdHostDiskRead,
+              fakeIgdHostDiskWritten,
+              fakeIgdHostNetRx,
+              fakeIgdHostNetTx,
+              fakeIgdHostUptime,
+              fakeIgdFsIndex,
+              fakeIgdFsPath,
+              fakeIgdFsTotal,
+              fakeIgdFsUsed,
+              fakeIgdFsFree,
+              fakeIgdFsUsedPct,
+              fakeIgdFsInodesPct,
+              fakeIgdMailSending,
+              fakeIgdMailWaiting,
+              fakeIgdMailSent,
+              fakeIgdMailFailed,
+              fakeIgdMailExpired,
+              fakeIgdLogsOn,
+              fakeIgdLogsTrouble,
+              fakeIgdLogsSent,
+              fakeIgdUpgradeNewer,
+              fakeIgdUpgradeNewest,
+              fakeIgdMetricIndex,
+              fakeIgdMetricName,
+              fakeIgdMetricLabels,
+              fakeIgdMetricValue }
+    STATUS current
+    DESCRIPTION "Every object fake-igd answers."
+    ::= { fakeIgdGroups 1 }
+fakeIgdTrapObjectsGroup OBJECT-GROUP
+    OBJECTS { fakeIgdTrapKey, fakeIgdTrapLevel, fakeIgdTrapTitle, fakeIgdTrapSaid, fakeIgdTrapNode }
+    STATUS current
+    DESCRIPTION "What the traps carry."
+    ::= { fakeIgdGroups 2 }
+fakeIgdNotificationsGroup NOTIFICATION-GROUP
+    NOTIFICATIONS { fakeIgdAlertRaised, fakeIgdAlertCleared, fakeIgdTestTrap }
+    STATUS current
+    DESCRIPTION "The traps fake-igd sends."
+    ::= { fakeIgdGroups 3 }
+fakeIgdCompliance MODULE-COMPLIANCE
+    STATUS current
+    DESCRIPTION "A fake-igd server."
+    MODULE MANDATORY-GROUPS { fakeIgdObjectsGroup, fakeIgdTrapObjectsGroup, fakeIgdNotificationsGroup }
+    ::= { fakeIgdCompliances 1 }
+
+END

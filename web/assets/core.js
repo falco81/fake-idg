@@ -215,6 +215,9 @@ function apiLatest(key, what, body) {
 function apiLatestOut(key) { return !!LATEST_OUT[key]; }
 function oops(e) {
   if (e && e.stopped) return;           /* somebody stopped it: not a fault */
+  /* An upgrade going on (fake-igd 1.7.2): the API and these pages restart with it - said once,
+     by the band at the top, not in a red toast for every question that met them away. */
+  if (e && (e.upgrading || (e.unreachable && typeof upgradeExpected === 'function' && upgradeExpected()))) return;
   /* An account that must set its own password first: every page answers
      "change your password first" - said once, by its own form (1.0.103). */
   if (typeof ME === 'object' && ME && ME.must_change && e && e.status === 403) return;
@@ -1264,6 +1267,13 @@ function api(what, body, wait, ctl) {
         err.status = r.status;
         err.detail = data.detail || '';
         err.data = data;             /* the rest of the answer (1.0.259): when the next code may go */
+        /* The API restarting in an upgrade (fake-igd 1.7.2): the pages' PHP says how far it is -
+           not a fault, whatever asks every few seconds asks again; the band at the top says it. */
+        if (r.status === 503 && data.upgrading) {
+          err.upgrading = data.upgrading;
+          err.unreachable = true;
+          if (typeof upgradeHeard === 'function') upgradeHeard(data.upgrading, true);
+        }
         throw err;
       }
       return data;

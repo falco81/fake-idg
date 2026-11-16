@@ -328,7 +328,7 @@ def siem_get(ctx):
     return {"on": bool(c.get("siem")), "targets": ts, "format": c.get("siem_format"),
             "host": str(c.get("siem_hostname") or "").strip() or socket.gethostname().split(".")[0],
             "sent": st["sent"], "sent_run": SENT_RUN, "dropped": 0, "trouble": st["trouble"],
-            "last_sent": st.get("last_sent"), "at": st.get("at"),
+            "last_sent": st.get("last_sent"), "at": time.time(),
             "waiting": waiting, "test": st.get("test")}
 
 

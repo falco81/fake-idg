@@ -926,9 +926,39 @@ if [[ -n "$DO_UPGRADE" ]]; then
     [[ -n "$OLD_VERSION" || -f "$OPT_DIR/$APP.py" ]] || fail "fake-igd is not installed here; run this without --upgrade"
     # A machine that has the pages is upgraded with them; one from before them (1.3) gets them now,
     # unless --no-web was given.
-    steps=8
+    # The steps after this one, each said by step() below (1.7.2: counted as they are).
+    steps=10
     [[ -n "$WITH_WEB" ]] && steps=$((steps + 3))
+    # How far it is, told to the pages (1.7.2) - what otp's maintenance is to its pages: the
+    # pages' PHP reads $WEB_DIR/.upgrade.json while fake-igd-api.service restarts, so they show
+    # the upgrade going on, not "the API is not answering". Root's, readable by all, nothing
+    # secret in it; nginx serves no name that starts with a dot. Also when run by hand.
+    UPGRADE_PART=0
+    UPGRADE_STARTED="$(date +%s)"
+    UPGRADE_TELL_ID="$(printf '%s' "${FAKE_IGD_UPGRADE_ID:-}" | tr -cd 'A-Za-z0-9-' | head -c 64 || true)"
+    UPGRADE_TELL_BY="$(printf '%s' "${FAKE_IGD_UPGRADE_BY:-${SUDO_USER:-root} on the command line}" | tr -d '"\\' | tr -d '\000-\037' | head -c 100 || true)"
+    upgrade_tell() {        # upgrade_tell STATE WORDS
+        [[ -d "$WEB_DIR" && ! -L "$WEB_DIR" ]] || return 0
+        local words tmp
+        words="$(printf '%s' "$2" | tr -d '"\\' | tr -d '\000-\037' | head -c 160 || true)"
+        tmp="$(mktemp "$WEB_DIR/.upgrade.XXXXXX" 2>/dev/null)" || return 0
+        if printf '{"state":"%s","id":"%s","version":"%s","from":"%s","by":"%s","part":%d,"parts":%d,"words":"%s","started":%d,"at":%d}\n' \
+                "$1" "$UPGRADE_TELL_ID" "$VERSION" "${OLD_VERSION:-}" "$UPGRADE_TELL_BY" "$UPGRADE_PART" "$steps" \
+                "$words" "$UPGRADE_STARTED" "$(date +%s)" > "$tmp" && chmod 0644 "$tmp" && mv -f "$tmp" "$WEB_DIR/.upgrade.json"; then
+            return 0
+        fi
+        rm -f "$tmp"
+        return 0
+    }
+    upgrade_told_end() {
+        local rc=$?
+        if [[ $rc -ne 0 ]]; then upgrade_tell failed "install.sh --upgrade stopped (exit $rc) - its output says why"; fi
+        return 0
+    }
+    trap upgrade_told_end EXIT
     step "Upgrading fake-igd to $VERSION ($steps steps)"
+    upgrade_tell running "Upgrading fake-igd to $VERSION"
+    step() { printf '\n%s==> %s%s\n' "$C_HEAD" "$1" "$C_OFF"; UPGRADE_PART=$((UPGRADE_PART + 1)); upgrade_tell running "$1"; }
     say "${OLD_VERSION:-an unknown version} → $VERSION, on ${OS_PRETTY:-?}"
     [[ -n "${FAKE_IGD_UPGRADE_BY:-}" ]] && say "asked by ${FAKE_IGD_UPGRADE_BY}"
     # The version before kept until the new one runs (otp 1.0.287): put back when it does not stay up.
@@ -969,6 +999,7 @@ if [[ -n "$DO_UPGRADE" ]]; then
     does_it_work
     step "Done"
     good "fake-igd ${OLD_VERSION:-?} → $VERSION"
+    upgrade_tell done "fake-igd $VERSION runs"
     if [[ -n "$WITH_WEB" ]]; then pages_say; fi
     exit 0
 fi

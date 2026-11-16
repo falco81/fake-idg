@@ -153,9 +153,85 @@ function igd_get(string $path, float $timeout = 30.0): ?array
     return is_array($data) ? $data : null;
 }
 
+/* An upgrade going on (1.7.2) - what otp's maintenance is to its pages: root's helper and
+   install.sh --upgrade write how far it is into .upgrade.json beside these pages (root's,
+   readable by all, never served by nginx: a name starting with a dot). Read here while
+   fake-igd-api.service restarts, so the pages say "being upgraded" and follow it, rather
+   than "the API is not answering". */
+define('IGD_UPGRADE_FILE', getenv('FAKE_IGD_UPGRADE_STATE') ?: __DIR__ . '/.upgrade.json');
+const IGD_UPGRADE_RUNS_S = 30 * 60;   /* a step longer than install.sh's own limit: not believed */
+const IGD_UPGRADE_ENDED_S = 10 * 60;  /* an end said for as long as a page may take to see it */
+
+/** The upgrade going on, or just ended, as root told the pages - or null. */
+function igd_upgrading(): ?array
+{
+    static $got = false;
+    if ($got !== false) {
+        return $got;
+    }
+    $got = null;
+    $f = IGD_UPGRADE_FILE;
+    if (!is_file($f) || is_link($f) || @filesize($f) > 16384) {
+        return null;
+    }
+    $d = json_decode((string) @file_get_contents($f), true);
+    if (!is_array($d)) {
+        return null;
+    }
+    $state = (string) ($d['state'] ?? '');
+    $at = (float) ($d['at'] ?? 0);
+    $age = time() - $at;
+    if (!in_array($state, ['running', 'done', 'failed'], true) || $age < -60
+        || $age > ($state === 'running' ? IGD_UPGRADE_RUNS_S : IGD_UPGRADE_ENDED_S)) {
+        return null;
+    }
+    $text = static function ($v, int $most): string {
+        $v = preg_replace('/[\x00-\x1f]/', '', (string) $v) ?? '';
+        return function_exists('mb_substr') ? mb_substr($v, 0, $most) : substr($v, 0, $most);
+    };
+    $ver = static function ($v): string {
+        return preg_match('/^\d+(\.\d+){1,3}\z/', (string) $v) ? (string) $v : '';
+    };
+    $got = [
+        'state' => $state, 'id' => $text($d['id'] ?? '', 64),
+        'version' => $ver($d['version'] ?? ''), 'from' => $ver($d['from'] ?? ''),
+        'by' => $text($d['by'] ?? '', 100), 'downgrade' => !empty($d['downgrade']),
+        'part' => max(0, (int) ($d['part'] ?? 0)), 'parts' => max(0, (int) ($d['parts'] ?? 0)),
+        'words' => $text($d['words'] ?? '', 160), 'said' => $text($d['said'] ?? '', 300),
+        'started' => (float) ($d['started'] ?? $at), 'at' => $at, 'now' => microtime(true),
+        'pages' => IGD_VERSION_PAGES,
+    ];
+    return $got;
+}
+
+/* The version of these pages as they are on disk now: install.sh puts the new ones in half way. */
+define('IGD_VERSION_PAGES', defined('IGD_VERSION') ? IGD_VERSION : '');
+
 function igd_down_words(): string
 {
+    $u = igd_upgrading();
+    if ($u && $u['state'] === 'running') {
+        return 'fake-igd is being ' . ($u['downgrade'] ? 'taken back to ' : 'upgraded to ') . ($u['version'] ?: 'a new version')
+            . ' - the API restarts with it and answers again in a moment';
+    }
     return 'the API is not answering — is fake-igd-api.service running?';
+}
+
+/** The answer of an API that does not answer: 503, and - while an upgrade goes on - what it is,
+    so that the page draws the upgrade rather than an error. */
+function igd_down_answer(?string $words = null): void
+{
+    http_response_code(503);
+    $u = igd_upgrading();
+    $out = ['ok' => false, 'error' => $words ?? igd_down_words()];
+    if ($u) {
+        if (igd_session() === '') {
+            unset($u['by'], $u['said'], $u['id']);      /* who asked: to a page signed in only */
+        }
+        $out['upgrading'] = $u;
+        $out['error'] = igd_down_words();
+    }
+    echo json_encode($out, JSON_INVALID_UTF8_SUBSTITUTE);
 }
 
 /** A reply of the API straight through to the browser. */
@@ -165,18 +241,25 @@ function igd_relay(string $path, string $method = 'GET', array|object|null $payl
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
     if (igd_token() === null) {
-        http_response_code(503);
-        echo json_encode(['ok' => false, 'error' => igd_local()
+        igd_down_answer(igd_local()
             ? 'the API token is unreadable — is fake-igd-api.service running, and is ' . IGD_TOKEN
               . ' readable by the web server (group fake-igd-web)?'
-            : igd_down_words()]);
+            : igd_down_words());
         return;
     }
     [$status, $body] = igd_call($path, $method, $payload, $timeout);
     if ($status === 0) {
-        http_response_code(503);
-        echo json_encode(['ok' => false, 'error' => igd_down_words()]);
+        igd_down_answer();
         return;
+    }
+    /* The status every page asks every few seconds carries the upgrade too (1.7.2): also one
+       the API does not know of - install.sh --upgrade run by hand. */
+    if ($status === 200 && $method === 'GET' && strpos($path, '/api/status') === 0 && igd_upgrading()) {
+        $d = json_decode($body, false);         /* objects kept objects, {} never [] */
+        if ($d instanceof stdClass) {
+            $d->upgrading = igd_upgrading();
+            $body = (string) json_encode($d, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        }
     }
     http_response_code($status);
     echo igd_squeeze($body);

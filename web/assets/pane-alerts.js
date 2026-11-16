@@ -123,7 +123,12 @@ function drawAlerts() {
                              days < 0 ? 'run out' : num(Math.floor(days)) + ' day(s) left'));
       cc.appendChild(row2);
     } else {
-      cc.appendChild(noI18n(el('p', 'muted small', (crt.file || '') + ' - ' + (crt.error || 'not read'))));
+      /* As the disk beside it: the file, and under it why it is not read (a Python tuple's words made plain). */
+      var lab3 = el('div', 'al-disk-l');
+      lab3.appendChild(noI18n(el('span', 'mono', crt.file || '–')));
+      var why = String(crt.error || 'not read').replace(/^\(\s*["']?|["']?\s*,?\s*\)$/g, '');
+      lab3.appendChild(noI18n(el('span', 'small bad', 'not read: ' + why.charAt(0).toLowerCase() + why.slice(1))));
+      cc.appendChild(lab3);
     }
     grid.appendChild(cc);
     host.appendChild(grid);

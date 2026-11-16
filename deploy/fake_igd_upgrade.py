@@ -31,6 +31,17 @@ on the command line, and what it said is written back for the pages.
                                       any user - the API and upnp ask this way
   fake_igd_upgrade.py --run FILE      check and put in a package by hand (root)
   fake_igd_upgrade.py --run FILE --downgrade   the same for an older one (root)
+  ... --run FILE [--downgrade] --by WHO         who asked (upnp upgrade says who runs it)
+
+While it runs, the pages are told how far it is (1.7.2) - the way otp's pages
+are told a node is in maintenance: /var/www/fake-igd/.upgrade.json (root's,
+readable by all, nothing secret in it; nginx never serves a name starting with
+a dot) says the version, the step of install.sh and its words. The pages' PHP
+reads it while fake-igd-api.service restarts, so the pages show the upgrade
+going on - not "the API is not answering". install.sh --upgrade writes the
+same file at each of its steps, also when it is run by hand. --run (upnp
+upgrade ... --downgrade) is announced as one asked from the pages is: plan.json,
+status.json and last.log beside the package, so the API's view says so too.
 """
 import hashlib
 import json
@@ -56,6 +67,8 @@ MOST_UNPACKED = 256 * 1024 * 1024
 MOST_FILES = 5000
 INSTALL_LIMIT_S = 20 * 60      # under TimeoutStartSec=25min and the daemon's 30 (otp 1.0.59)
 TOP = re.compile(r'^fake-igd-([0-9]+(?:\.[0-9]+){2,3})\Z')
+WEB_DIR = os.environ.get('FAKE_IGD_WEB', '/var/www/fake-igd')
+PAGES_FILE = os.path.join(WEB_DIR, '.upgrade.json')
 FLOOR_FILE = os.path.join(LIB_DIR, 'downgrade-floor')
 # The oldest version the pages may ask to go back to (1.6.1): the first with this helper, the
 # release keys and the path unit - one older could not be brought up again from the pages.
@@ -354,6 +367,45 @@ def status(**fields):
     write_safely(os.path.join(UPGRADE_DIR, 'status.json'), json.dumps(fields))
 
 
+# ---- the pages told (1.7.2): what otp's maintenance row is to its pages ----------------
+PAGES = {}
+STEP_LINE = re.compile(r'^==> (.*)$')
+STEPS_IN = re.compile(r'^==> Upgrading fake-igd to \S+ \((\d+) steps\)')
+
+
+def pages_say(**fields):
+    """How far the upgrade is, into PAGES_FILE for the pages' PHP: root's, 0644, written
+    beside it and renamed over it (a link put there is replaced, never followed). Never
+    raises: the upgrade does not stop over the pages not being told."""
+    PAGES.update(fields)
+    PAGES['at'] = time.time()
+    PAGES.setdefault('started', PAGES['at'])
+    try:
+        st = os.lstat(WEB_DIR)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0:
+            return                      # no pages here, or not root's folder: nothing said
+        data = json.dumps(PAGES).encode('utf-8')
+        tmp = os.path.join(WEB_DIR, '.upgrade.%d.tmp' % os.getpid())
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+        with os.fdopen(fd, 'wb') as out:
+            out.write(data)
+            os.fchmod(out.fileno(), 0o644)
+        os.replace(tmp, PAGES_FILE)
+    except OSError:
+        pass
+
+
+def pages_line(text):
+    """A line of install.sh: its steps ("==> ...") counted for the pages."""
+    m = STEPS_IN.match(text)
+    if m:
+        pages_say(parts=int(m.group(1)), part=0, words=text[4:].strip()[:160])
+        return
+    m = STEP_LINE.match(text)
+    if m:
+        pages_say(part=int(PAGES.get('part') or 0) + 1, words=m.group(1).strip()[:160])
+
+
 def root_floor():
     """The oldest version this machine may go back to, or None."""
     try:
@@ -426,7 +478,7 @@ def put_in(package, ident='', want_sha='', by='the command line', log_to=None,
         src = os.path.join(unpacked, info['top'])
         env = {'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                'LANG': 'C.UTF-8', 'FAKE_IGD_UPGRADE_FROM_PAGES': '1', 'TERM': 'dumb',
-               'FAKE_IGD_UPGRADE_BY': str(by)[:100]}
+               'FAKE_IGD_UPGRADE_BY': str(by)[:100], 'FAKE_IGD_UPGRADE_ID': str(ident)[:64]}
         say('running %s/install.sh --upgrade --yes' % info['top'])
         p = subprocess.Popen(['bash', os.path.join(src, 'install.sh'), '--upgrade', '--yes'],
                              cwd=src, env=env, stdin=subprocess.DEVNULL,
@@ -533,18 +585,6 @@ def serve_request():
                     pass
         return 1
     ident = ''
-    log_path = os.path.join(UPGRADE_DIR, 'last.log')
-    log_lines = []
-    last_flush = [0.0]
-
-    def log_to(text):
-        log_lines.append(text)
-        if time.time() - last_flush[0] > 2:
-            last_flush[0] = time.time()
-            try:
-                write_safely(log_path, '\n'.join(log_lines[-4000:]) + '\n')
-            except OSError:
-                pass
     try:
         try:
             r = json.loads(read_small(taken).decode('utf-8'))
@@ -554,32 +594,99 @@ def serve_request():
         name = os.path.basename(str(r.get('file') or ''))
         if not re.match(r'^fake-igd-[0-9.]+\.tar\.gz\Z', name):
             raise Refused('the request names no package')
-        down = r.get('downgrade') is True
-        status(id=ident, state='running', version=r.get('version'), pid=os.getpid(),
-               downgrade=down)
-        rc, info, _ = put_in(os.path.join(UPGRADE_DIR, name), ident,
-                             str(r.get('sha') or ''), r.get('by') or 'the pages', log_to,
-                             downgrade=down, least=PAGES_FLOOR if down else None)
+    except Refused as e:
+        status(id=ident, state='failed', rc=-1, said=str(e), tail=['refused: %s' % e])
+        pages_say(id=ident, state='failed', said=str(e), words='refused')
+        _drop_taken()
+        return 0
+    down = r.get('downgrade') is True
+    try:
+        announced_run(os.path.join(UPGRADE_DIR, name), ident, r.get('version'), str(r.get('sha') or ''),
+                      r.get('by') or 'the pages', down, PAGES_FLOOR if down else None)
+    finally:
+        _drop_taken()
+    return 0
+
+
+def _drop_taken():
+    try:
+        os.unlink('request.taken', dir_fd=up_fd())
+    except (OSError, Refused):
+        pass
+
+
+def announced_run(package, ident, version, sha='', by='the pages', down=False, least=None,
+                  echo=None):
+    """install.sh --upgrade of `package`, said as it goes: status.json and last.log for the API
+    and `upnp upgrade follow`, PAGES_FILE for the pages while the API restarts. Returns rc."""
+    log_path = os.path.join(UPGRADE_DIR, 'last.log')
+    log_lines = []
+    last_flush = [0.0]
+
+    def log_to(text):
+        log_lines.append(text)
+        if echo:
+            echo(text)
+        pages_line(text)
+        if time.time() - last_flush[0] > 2:
+            last_flush[0] = time.time()
+            try:
+                write_safely(log_path, '\n'.join(log_lines[-4000:]) + '\n')
+            except OSError:
+                pass
+    rc = -1
+    PAGES.clear()
+    pages_say(id=ident, state='running', version=version, by=str(by or '')[:100], downgrade=bool(down),
+              **{'from': installed_version()}, part=0, parts=0, words='root checks the package')
+    try:
+        status(id=ident, state='running', version=version, pid=os.getpid(), downgrade=down)
+        rc, info, _ = put_in(package, ident, sha, by, log_to, downgrade=down, least=least)
         status(id=ident, state='done' if rc == 0 else 'failed', rc=rc,
                version=info['version'], tail=log_lines[-40:], downgrade=down)
+        pages_say(state='done' if rc == 0 else 'failed', version=info['version'],
+                  part=PAGES.get('parts') if rc == 0 else PAGES.get('part'),
+                  said='' if rc == 0 else 'install.sh ended with %d' % rc,
+                  words='fake-igd %s runs' % info['version'] if rc == 0 else 'install.sh ended with %d' % rc)
     except Refused as e:
         log_to('refused: %s' % e)
         status(id=ident, state='failed', rc=-1, said=str(e), tail=log_lines[-40:])
+        pages_say(state='failed', said=str(e), words='refused')
     except Exception as e:                       # noqa: BLE001 - said, never lost
         log_to('broke: %s' % e)
         status(id=ident, state='failed', rc=-2, said='the upgrade broke: %s' % e,
                tail=log_lines[-40:])
+        pages_say(state='failed', said='the upgrade broke: %s' % e, words='broke')
     finally:
         last_flush[0] = 0
         try:
             write_safely(log_path, '\n'.join(log_lines[-4000:]) + '\n')
         except OSError:
             pass
-        try:
-            os.unlink('request.taken', dir_fd=up_fd())
-        except (OSError, Refused):
-            pass
-    return 0
+    return rc
+
+
+def run_by_hand(path, down, by):
+    """--run: as root on the command line (upnp upgrade file ... --downgrade). Announced as one
+    asked from the pages is (1.7.2): plan.json and status.json beside the packages - the API's
+    view, the overview, upnp upgrade status - and PAGES_FILE, the pages while the API restarts."""
+    if os.geteuid() != 0:
+        print('refused: putting a version in takes root')
+        return 1
+    try:
+        info = inspect(path)
+    except Refused as e:
+        print('refused: %s' % e)
+        return 1
+    ident = '%d-cli%04x' % (int(time.time()), os.getpid() & 0xffff)
+    try:
+        up_fd()
+        write_safely(os.path.join(UPGRADE_DIR, 'plan.json'), json.dumps({
+            'id': ident, 'version': info['version'], 'by': str(by)[:100], 'at': time.time(),
+            'downgrade': bool(down), 'from_version': info.get('installed') or '',
+            'signed_by': info.get('signed_by') or '', 'cli': True}))
+    except (OSError, Refused) as e:
+        print('note: the pages are not told (%s)' % e)
+    return announced_run(path, ident, info['version'], by=by, down=down, echo=print)
 
 
 def main(argv):
@@ -590,13 +697,12 @@ def main(argv):
             print(json.dumps({'ok': False, 'said': str(e)}))
         return 0
     if len(argv) >= 2 and argv[0] == '--run':
-        try:
-            rc, _info, _ = put_in(os.path.abspath(argv[1]), log_to=print,
-                                  downgrade='--downgrade' in argv[2:])
-        except Refused as e:
-            print('refused: %s' % e)
-            return 1
-        return rc
+        by = 'the command line'
+        if '--by' in argv[2:]:
+            i = argv.index('--by', 2)
+            by = argv[i + 1] if i + 1 < len(argv) else by
+        rc = run_by_hand(os.path.abspath(argv[1]), '--downgrade' in argv[2:], by)
+        return 1 if rc < 0 else rc
     if not argv:
         return serve_request()
     print(__doc__)

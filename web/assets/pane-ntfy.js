@@ -52,7 +52,7 @@
     $('nt-said').textContent = d.on ? 'to ' + d.server + ' · ' + (d.auth === 'none' ? 'no sign-in' : 'signed in with ' + d.auth) : 'switched off - no topic URL';
     /* What was sent. */
     var rows = d.sends || [];
-    $('nt-when').textContent = rows.length ? 'the last ' + ago(rows[0].at) : '';
+    $('nt-when').textContent = rows.length ? 'the last one ' + ago(rows[0].at) : '';
     var host = $('nt-sends');
     clear(host);
     host.appendChild(listTable(['When', 'What', 'Title', 'To', 'Sent', 'What the server said', 'By'], rows, function (r) {
@@ -104,6 +104,8 @@
       }
       if (text.indexOf('-----BEGIN CERTIFICATE-----') < 0) { toast('that file has no certificate in it', 'bad'); return; }
       box.value = text.trim();
+      box.dispatchEvent(new Event('input'));
+      toast('read ' + file.name + ' - Save the changes adds it', 'good');
     };
     reader.readAsArrayBuffer(file);
   }
@@ -116,6 +118,16 @@
       toast(r.message, 'good'); $('nca-pem').value = ''; load(); loadSettings(!Object.keys(DIRTY).length);
     }).catch(oops).then(function () { busy(b, false); });
   };
+  /* As otp's Mail: no Add it - what is pasted waits for the save bar at the bottom. */
+  $('nca-save').hidden = true;
+  $('nca-pem').addEventListener('input', function () {
+    if (!$('nca-pem').value.trim()) { delete PENDING.nca; markDirtyCount(); return; }
+    pendingSet('nca', {save: function () {
+      return api('upnp-ntfy', {action: 'ca', mode: 'add', ca: $('nca-pem').value.trim()}).then(function (r) {
+        toast(r.message, 'good'); $('nca-pem').value = ''; load(); return true;
+      });
+    }, reset: function () { $('nca-pem').value = ''; }});
+  });
   $('nca-file').onclick = function () { $('nca-input').click(); };
   $('nca-input').onchange = function () {
     var file = this.files && this.files[0];

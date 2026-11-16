@@ -270,7 +270,34 @@ function drawUpDown(d) {
   };
 }
 
+/* The upgrade as the pages were told it (fake-igd 1.7.2: .upgrade.json, which root's helper and
+   install.sh --upgrade write at each step): laid over what the API said last - the API restarting
+   does not answer, and install.sh run by hand is one the API never knew of. */
+function upFromPages(d, u) {
+  if (!d || !u || u.state !== 'running') return d;
+  var p = d.plan;
+  var same = p && (p.state === 'running' || (u.id && p.id === u.id));
+  if (same && !(p.steps || []).length) return d;
+  var step = same ? Object.assign({}, p.steps[0]) : {name: d.node || '', asked: u.started, tail: []};
+  if (u.parts || u.part) {
+    step.state = 'installing';
+    step.at = u.at;
+    step.part = u.part;
+    step.parts = u.parts;
+    step.part_words = u.words;
+    step.said = 'install.sh --upgrade runs (root)';
+  } else if (!same) {
+    step.state = 'installing';
+    step.at = u.at;
+    step.said = u.words || 'root checks the package';
+  }
+  var plan = same ? Object.assign({}, p) : {id: u.id || '', version: u.version, by: u.by || '', at: u.started,
+                                            downgrade: !!u.downgrade, state: 'running'};
+  plan.steps = [step];
+  return Object.assign({}, d, {plan: plan});
+}
 function drawUpgrade(d) {
+  if (typeof UPG === 'object' && UPG.u) d = upFromPages(d, UPG.u);
   UP.last = d;
   var plan = d.plan;
   var running = !!(plan && plan.state === 'running');
@@ -451,8 +478,10 @@ function loadUpgrade(live) {
     if (live) liveRun(function () { drawUpgrade(d); }); else drawUpgrade(d);
   }).catch(function (e) {
     if (mine !== UP.ask) return;
-    /* The API may be the one being restarted: asked again, always (otp 1.0.73). */
+    /* The API may be the one being restarted: asked again, always (otp 1.0.73). How far the
+       upgrade is meanwhile, from the pages' PHP (fake-igd 1.7.2). */
     UP.misses = (UP.misses || 0) + 1;
+    if (e.upgrading && UP.last) liveRun(function () { drawUpgrade(upFromPages(UP.last, e.upgrading)); });
     if (running || e.unreachable || UP.misses <= 3) {
       $('up-retry').textContent = 'fake-igd and these pages are restarting with the new version - asking again…';
       upgradeAgain(Math.min(2000 * UP.misses, 6000));

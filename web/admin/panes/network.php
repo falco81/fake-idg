@@ -9,8 +9,9 @@
     <div id="un-host"></div>
     <div class="card full">
       <h2>The interfaces of this server <span class="right muted small" id="un-said"></span></h2>
-      <p class="note">Every interface the kernel has, and whether fake-igd listens on it - and why not. Chosen
-        interfaces are added in the settings below; none chosen means every one with IPv4 and multicast.</p>
+      <p class="note">Every interface the kernel has, whether fake-igd listens on it - and why not - and where the
+        PS5 finds the device description on the ones it listens on. Chosen interfaces are added in the settings
+        below; none chosen means every one with IPv4 and multicast.</p>
       <div id="un-ifaces"></div>
     </div>
     <div class="card full"><h2>Settings</h2><div id="sect-network"></div></div>

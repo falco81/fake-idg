@@ -22,8 +22,19 @@ the ask is trusted - every value is checked against the one shape it may have.
             /usr/local/share/ca-certificates + update-ca-certificates), fake-igd's files named
             fake-igd-<sha256 16>.pem; anything else there only shown.
   policy    {protocols, ciphers, prefer, dh, hsts}: ssl_protocols, ssl_ciphers,
-            ssl_prefer_server_ciphers, ssl_dhparam (an RFC 7919 group, or made here) and the
-            Strict-Transport-Security header in fake-igd.conf's server on 443.
+            ssl_prefer_server_ciphers, ssl_dhparam (an RFC 7919 group, or made here - made once:
+            the same choice again keeps the file) and the Strict-Transport-Security header in
+            fake-igd.conf's server on 443.
+  chain     {cert, chain, alt_chain?}: the chain beside the certificate in place replaced (otp's
+            Complete the chain, Upload the missing authority) - the certificate and its key stay;
+            cert must be the one in the file.
+  export    {kind: pfx | pemkey, password, legacy, which: rsa | ec}: the certificate with its
+            private key, locked with the password (otp's Download with the private key) - written
+            to web/export-tls.json (0640, group fake-igd), which the API reads once and takes away.
+
+While an ask is done, how far it is goes to web/progress-tls.json (otp's progress.json, 1.0.50):
+the step, how many there are, what is being done, and - making DH parameters - when it began and
+about how long it takes; the pages draw it as a bar. Taken away when the ask is answered.
 
 Every change: the files written beside their place and renamed, a copy of each kept, nginx -t
 asked - and everything put back as it was when it says no; then nginx is reloaded.
@@ -52,7 +63,9 @@ RELOAD = os.environ.get("FAKE_IGD_NGINX_RELOAD", "systemctl reload nginx")
 OPENSSL = os.environ.get("FAKE_IGD_OPENSSL", "openssl")
 
 FILES = {"cert": "fake-igd.pem", "key": "fake-igd.key", "cert2": "fake-igd-ecdsa.pem", "key2": "fake-igd-ecdsa.key",
-         "dh": "fake-igd-dh.pem", "before": "fake-igd.pem.before-acme", "before_key": "fake-igd.key.before-acme"}
+         "dh": "fake-igd-dh.pem", "dh_choice": "fake-igd-dh.choice",
+         "before": "fake-igd.pem.before-acme", "before_key": "fake-igd.key.before-acme"}
+WEB_DIR = os.path.join(os.environ.get("FAKE_IGD_STATE", "/var/lib/fake-igd"), "web")
 CERT_RE = re.compile(r"^(\s*-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----)+\s*\Z")
 KEY_RE = re.compile(r"^\s*-----BEGIN (RSA |EC )?PRIVATE KEY-----[A-Za-z0-9+/=\s]+-----END (RSA |EC )?PRIVATE KEY-----\s*\Z")
 PROTOCOLS = ("TLSv1.2", "TLSv1.3")
@@ -68,6 +81,54 @@ class Refused(Exception):
 
 def path(k):
     return os.path.join(CERT_DIR, FILES[k])
+
+
+# ---- how far it is (otp's progress.json, 1.0.50) -------------------------------------------------
+PROGRESS = {"step": 0, "total": 4, "id": ""}
+DH_EXPECT_S = {"gen2048": 15, "gen3072": 120, "gen4096": 600}
+
+
+def _web_write(name, text, mode=0o640):
+    """A file of root's answers in web/ (the API's folder): beside, then renamed; group fake-igd."""
+    try:
+        dfd = os.open(WEB_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return
+    try:
+        tmp = ".%s.%d" % (name, os.getpid())
+        try:
+            os.unlink(tmp, dir_fd=dfd)
+        except OSError:
+            pass
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=dfd)
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        try:
+            import grp
+            os.chown(tmp, 0, grp.getgrnam("fake-igd").gr_gid, dir_fd=dfd)
+        except (KeyError, OSError):
+            pass
+        os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
+
+
+def progress(words, step=None, expect=None):
+    import json
+    if step is not None:
+        PROGRESS["step"] = step
+    _web_write("progress-tls.json", json.dumps({
+        "id": PROGRESS["id"], "step": PROGRESS["step"], "total": PROGRESS["total"],
+        "words": words, "at": time.time(), "expect_s": expect}))
+
+
+def progress_done():
+    try:
+        os.unlink(os.path.join(WEB_DIR, "progress-tls.json"))
+    except OSError:
+        pass
 
 
 def openssl(args, what, data=None):
@@ -285,6 +346,7 @@ def nginx_reload():
 def apply(writes, said):
     """writes: [(path, bytes-or-None, mode)] - None takes the file away. All of it, nginx -t,
     reload; everything as it was when nginx says no."""
+    progress("writing the certificate and the TLS settings", 3)
     snap = snapshot([w[0] for w in writes])
     try:
         for p, data, mode in writes:
@@ -295,6 +357,7 @@ def apply(writes, said):
                     pass
             else:
                 write_file(p, data, mode)
+        progress("asking nginx, and reloading it", 4)
         ok, words = nginx_test()
         if not ok:
             raise Refused("nginx -t did not take it (%s) - everything is as it was" % words)
@@ -454,7 +517,18 @@ def dh_pem(choice):
     if choice.startswith("ffdhe"):
         return openssl(["genpkey", "-genparam", "-algorithm", "DH", "-pkeyopt", "group:%s" % choice],
                        "the DH group %s" % choice)
+    progress("making DH parameters of %s bits" % choice[3:], 2, DH_EXPECT_S.get(choice))
     return openssl(["dhparam", choice[3:]], "making DH parameters of %s bits" % choice[3:])
+
+
+def dh_had():
+    """The choice the DH file in place was made for ("" when unknown or not there)."""
+    try:
+        with open(path("dh_choice"), encoding="ascii", errors="replace") as f:
+            had = f.read(40).strip()
+    except OSError:
+        return ""
+    return had if had in DH_CHOICES and os.path.isfile(path("dh")) else ""
 
 
 def do_policy(payload, said):
@@ -462,10 +536,15 @@ def do_policy(payload, said):
     writes = []
     dh = None
     if p["dh"] != "none":
-        began = time.time()
-        writes.append((path("dh"), dh_pem(p["dh"]), 0o644))
         dh = path("dh")
-        said.append("DH parameters %s in %s (%d s)" % (p["dh"], dh, time.time() - began))
+        if dh_had() == p["dh"]:
+            # Made once (otp's dh_file): the same choice again keeps the parameters there.
+            said.append("DH parameters %s: the ones in %s kept" % (p["dh"], dh))
+        else:
+            began = time.time()
+            writes.append((path("dh"), dh_pem(p["dh"]), 0o644))
+            writes.append((path("dh_choice"), p["dh"] + "\n", 0o644))
+            said.append("DH parameters %s in %s (%d s)" % (p["dh"], dh, time.time() - began))
 
     def lines(block):
         block = set_directive(block, "ssl_protocols", " ".join(p["protocols"]), after="ssl_certificate_key")
@@ -481,6 +560,113 @@ def do_policy(payload, said):
         " ".join(p["protocols"]), "ciphers as set" if p["ciphers"] else "the usual ciphers", p["dh"],
         "on" if p["prefer"] else "off", ("%d s" % p["hsts"]) if p["hsts"] else "off"))
     return ok
+
+
+def _first_cert(p):
+    try:
+        with open(p, encoding="utf-8", errors="replace") as f:
+            m = re.search(r"-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----", f.read(1 << 20))
+    except OSError:
+        return ""
+    return m.group(0) if m else ""
+
+
+def _same_cert(a, b):
+    return re.sub(r"\s+", "", a or "") == re.sub(r"\s+", "", b or "")
+
+
+def chain_checked(chain, what):
+    chain = str(chain or "").strip()
+    if len(chain) > 300000:
+        raise Refused("the chain of %s is far longer than chains are" % what)
+    if chain and not CERT_RE.match(chain):
+        raise Refused("the chain of %s is not PEM certificates" % what)
+    if chain:
+        with tempfile.TemporaryDirectory(prefix="fake-igd-tls-") as t:
+            cf = os.path.join(t, "c.pem")
+            with open(cf, "w") as f:
+                f.write(chain + "\n")
+            openssl(["crl2pkcs7", "-nocrl", "-certfile", cf], "the chain of %s" % what)
+    return (chain + "\n") if chain else ""
+
+
+def do_chain(payload, said):
+    """The chain beside the certificate in place replaced (otp's tls_chain, tls_chain_add, 1.0.269):
+    the certificate and its key stay as they are."""
+    progress("checking what was asked", 1)
+    leaf = str(payload.get("cert") or "").strip()
+    now = _first_cert(path("cert"))
+    if not now or not _same_cert(leaf, now):
+        raise Refused("the certificate in %s is not the one this chain is for - it changed meanwhile" % path("cert"))
+    writes = [(path("cert"), now.strip() + "\n" + chain_checked(payload.get("chain"), "the certificate"), 0o644)]
+    if payload.get("alt_chain") is not None:
+        now2 = _first_cert(path("cert2"))
+        if not now2:
+            raise Refused("there is no second certificate in %s" % path("cert2"))
+        writes.append((path("cert2"), now2.strip() + "\n" + chain_checked(payload.get("alt_chain"),
+                                                                              "the second certificate"), 0o644))
+    n = len(re.findall("BEGIN CERTIFICATE", writes[0][1])) - 1
+    ok = apply(writes, said)
+    said.insert(0, "the chain of the certificate: %d authorit%s beside it" % (n, "y" if n == 1 else "ies"))
+    return ok
+
+
+EXPORT_KINDS = ("pfx", "pemkey")
+
+
+def do_export(payload, said, ident=""):
+    """The certificate with its private key, locked with the password (otp's tls_export with a key,
+    1.0.191): into web/export-tls.json for the API, which reads it once and takes it away."""
+    import json
+    kind, which = payload.get("kind"), payload.get("which") or "rsa"
+    pw = payload.get("password")
+    if kind not in EXPORT_KINDS:
+        raise Refused("the kind is pfx or pemkey")
+    if which not in ("rsa", "ec"):
+        raise Refused("which is rsa or ec")
+    if not isinstance(pw, str) or not 10 <= len(pw) <= 200 or "\n" in pw:
+        raise Refused("the password is 10 to 200 characters on one line")
+    cp, kp = (path("cert"), path("key")) if which == "rsa" else (path("cert2"), path("key2"))
+    try:
+        with open(cp, encoding="utf-8", errors="replace") as f:
+            full = f.read(1 << 20)
+        with open(kp, encoding="utf-8", errors="replace") as f:
+            key = f.read(65536)
+    except OSError as e:
+        raise Refused("the certificate or its key cannot be read: %s" % e)
+    certs = re.findall(r"-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\s]+?-----END CERTIFICATE-----", full)
+    if not certs or not KEY_RE.match(key.strip()):
+        raise Refused("%s holds no certificate and key" % cp)
+    with tempfile.TemporaryDirectory(prefix="fake-igd-export-") as t:
+        os.chmod(t, 0o700)
+        kf, cf, chf, out = (os.path.join(t, n) for n in ("k.pem", "c.pem", "ch.pem", "out"))
+        fd = os.open(kf, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(key.strip() + "\n")
+        with open(cf, "w") as f:
+            f.write(certs[0] + "\n")
+        with open(chf, "w") as f:
+            f.write("".join(c + "\n" for c in certs[1:]))
+        if kind == "pfx":
+            args = ["pkcs12", "-export", "-in", cf, "-inkey", kf, "-out", out, "-passout", "stdin",
+                    "-name", "fake-igd"]
+            if certs[1:]:
+                args += ["-certfile", chf]
+            if payload.get("legacy") is True:
+                args += ["-certpbe", "PBE-SHA1-3DES", "-keypbe", "PBE-SHA1-3DES", "-macalg", "sha1"]
+            openssl(args, "the PFX file", pw + "\n")
+            with open(out, "rb") as f:
+                data = f.read()
+        else:
+            enc = openssl(["pkcs8", "-topk8", "-v2", "aes-256-cbc", "-in", kf, "-passout", "stdin"],
+                          "the key, locked", pw + "\n")
+            data = ("".join(c + "\n" for c in certs) + enc).encode("ascii")
+    _web_write("export-tls.json", json.dumps({"id": ident, "kind": kind, "which": which, "at": time.time(),
+                                               "data": base64.b64encode(data).decode("ascii")}))
+    said.append("%s of %s made for the pages, locked with the password" % (
+        "a PFX file" if kind == "pfx" else "PEM with the key", "the ECDSA certificate" if which == "ec" else
+        "the certificate"))
+    return True
 
 
 # ---- the system's trusted roots (otp's osroots, 1.0.265) ---------------------------------------
@@ -871,7 +1057,7 @@ def do_osroots(payload, said):
 def serve(payload, ask=None):
     said = []
     act = payload.get("action") if isinstance(payload, dict) else None
-    if act not in ("put", "put_back", "policy", "acme_http", "osroots"):
+    if act not in ("put", "put_back", "policy", "acme_http", "osroots", "chain", "export"):
         return {"ok": False, "action": str(act)[:20], "said": ["no such action"]}
     if act == "osroots":
         try:
@@ -884,17 +1070,30 @@ def serve(payload, ask=None):
                 facts = {}
             return dict(facts, ok=False, action=act, said=said + [str(e)], osroots=True)
         return dict(got, ok=True, action=act, said=said, osroots=True)
+    ident = str((ask or {}).get("id") or "")[:40] if isinstance(ask, dict) else ""
+    if act == "export":
+        try:
+            ok = do_export(payload, said, ident)
+        except Refused as e:
+            return {"ok": False, "action": act, "said": said + [str(e)]}
+        return {"ok": bool(ok), "action": act, "said": said}
+    PROGRESS.update(step=0, id=ident)
     try:
+        progress("checking what was asked", 1)
         if act == "put":
             ok = do_put(payload, said)
         elif act == "put_back":
             ok = do_put_back(said)
         elif act == "acme_http":
             ok = do_acme_http(payload, said)
+        elif act == "chain":
+            ok = do_chain(payload, said)
         else:
             ok = do_policy(payload, said)
     except Refused as e:
         return {"ok": False, "action": act, "said": said + [str(e)]}
+    finally:
+        progress_done()
     return {"ok": bool(ok), "action": act, "said": said}
 
 
