@@ -4,8 +4,8 @@
    what sshd has now on this server and the state of the last change. */
 (function () {
   var SD = {d: null, poll: null};
-  var SD_STATE = {done: ['as wished', 'good'], trial: ['on trial', 'warn'], waiting: ['being put in', 'info'],
-                  failed: ['refused', 'bad'], back: ['went back', 'warn']};
+  var SD_STATE = {done: ['as wished', 'ok'], trial: ['on trial', 'warn'], waiting: ['being put in', 'info'],
+                  failed: ['refused', 'crit'], back: ['went back', 'warn']};
   var NOTICE_KEYS = ['sshd_notice', 'sshd_notice_ssh', 'sshd_notice_console', 'sshd_notice_motd'];
 
   function netFacts(rows) {
@@ -90,8 +90,16 @@
         tc.appendChild(row);
         host.appendChild(tc);
       }
-      if (d.state === 'back' && now.back_why) host.appendChild(el('p', 'note warn', 'The last change went back (' + now.back_why + ')' + (now.back_at ? ', ' + ago(now.back_at) : '') + '. Saved again, it is put in again.'));
       if (d.state === 'failed') host.appendChild(el('p', 'note bad', 'Refused: ' + ((now.said || [])[0] || now.error || 'root said no') + ' - it is as it was.'));
+      if (d.state === 'back' || d.state === 'failed') {
+        if (d.state === 'back') host.appendChild(el('p', 'note warn', 'The last change went back (' + (now.back_why || 'not kept in time') + ')' + (now.back_at ? ', ' + ago(now.back_at) : '') + ' - sshd is as it was before it.'));
+        var ar = el('div', 'btnrow');
+        var again2 = cmdButton('Put it in again', 'refresh', 'small');
+        explain(again2, 'The settings below as they are saved, put in again by root - on trial again.');
+        again2.onclick = function () { act('apply', again2); };
+        ar.appendChild(again2);
+        host.appendChild(ar);
+      }
       /* This server, as sshd has it. */
       var grid = el('div', 'pw-grid');
       var cd = el('div', 'card pw-node');

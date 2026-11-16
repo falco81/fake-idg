@@ -91,6 +91,10 @@ def view(ctx):
         p = {}
     if p and p.get("how") != "cancel" and p.get("state") == "going" and up and up > float(p.get("at") or 0):
         p["state"] = "back"
+    elif p and p.get("state") == "going" and not p.get("in") and p.get("how") == "reboot" and \
+            time.time() - float(p.get("answered") or p.get("at") or 0) > 900:
+        p["state"] = "failed"            # as otp's: a node not back in 15 minutes is marked failed
+        p["said"] = (p.get("said") or []) + ["it has not restarted in 15 minutes"]
     try:
         import upnp as U
         version = U.VERSION

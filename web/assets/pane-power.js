@@ -63,7 +63,7 @@
     if (!real || !PW.d) return;
     liveFill(real, function (host) {
       var d = PW.d, n = d.node || {};
-      if (d.plan && d.plan.ask) host.appendChild(progress(d));
+      if (d.plan && d.plan.ask && !(d.plan.in && d.plan.state === 'going' && d.scheduled && d.scheduled.at)) host.appendChild(progress(d));
       if (d.scheduled && d.scheduled.at) host.appendChild(schedCard(d));
       var grid = el('div', 'pw-grid');
       var c = el('div', 'card pw-node');
@@ -159,7 +159,7 @@
     c.appendChild(el('h2', '', mode + ' is set for ' + new Date(s.at * 1000).toLocaleTimeString(numLang())));
     var p = el('p', 'note');
     p.appendChild(document.createTextNode('In '));
-    var left = noI18n(el('b', 'pw-left mono', ''));
+    var left = noI18n(el('span', 'pw-left mono', ''));
     left.dataset.until = s.at;
     p.appendChild(left);
     p.appendChild(document.createTextNode(' - set with shutdown, here or at the machine. Until then it can be cancelled.'));

@@ -148,9 +148,9 @@
         box.appendChild(listTable(['Key', 'Fingerprint', 'Comment', ''], keys, function (k) {
           var tr = el('tr');
           var t = el('td');
-          t.appendChild(el('span', 'tag ' + (String(k.type).toUpperCase() === 'ED25519' ? 'good' : 'info'), kind(k)));
+          t.appendChild(el('span', 'tag ' + (String(k.type).toUpperCase() === 'ED25519' ? 'ok' : 'info'), kind(k)));
           if (k.options) t.appendChild(el('span', 'tag warn', 'with options'));
-          if (!k.readable) t.appendChild(el('span', 'tag bad', 'not read'));
+          if (!k.readable) t.appendChild(el('span', 'tag crit', 'not read'));
           tr.appendChild(t);
           tr.appendChild(noI18n(el('td', 'mono small', k.fp || '–')));
           tr.appendChild(noI18n(el('td', 'small', k.comment || '–')));

@@ -115,8 +115,8 @@
           else pw.appendChild(noI18n(el('span', 'muted', u.changed ? day(u.changed) : 'set')));
           tr.appendChild(pw);
           var c = el('td');
-          if (u.locked) c.appendChild(el('span', 'tag bad', 'locked'));
-          else c.appendChild(el('span', 'tag good', 'yes'));
+          if (u.locked) c.appendChild(el('span', 'tag crit', 'locked'));
+          else c.appendChild(el('span', 'tag ok', 'yes'));
           tr.appendChild(c);
           var a = el('td', 'right osu-act');
           if (u.root) {
@@ -149,7 +149,7 @@
           tr.appendChild(noI18n(el('td', 'small mono', s.name || '–')));
           tr.appendChild(noI18n(el('td', 'small', s.by || '–')));
           var w = el('td', 'small');
-          w.appendChild(el('span', 'tag ' + (s.ok ? 'good' : 'bad'), s.ok ? 'done' : 'refused'));
+          w.appendChild(el('span', 'tag ' + (s.ok ? 'ok' : 'crit'), s.ok ? 'done' : 'refused'));
           if (s.said) w.appendChild(noI18n(el('span', 'muted', ' ' + s.said)));
           tr.appendChild(w);
           return tr;
@@ -232,6 +232,7 @@
     var pn = d.policy_now || {};
     var chip = el('span', 'hs-light ' + (pn.error ? 'gone' : !d.policy_applied ? 'unknown' : (c.managed ? 'on' : 'off')));
     chip.appendChild(el('span', 'dot'));
+    chip.appendChild(noI18n(el('span', 'hs-light-n', d.node || 'this server')));
     chip.appendChild(el('span', 'hs-light-v', pn.error ? 'refused' : !d.policy_applied ? 'being put in…' : c.managed ? 'as set here' : 'the system\'s own'));
     if (pn.error) explain(chip, pn.error);
     st.appendChild(chip);
@@ -419,7 +420,7 @@
       kv('Password', !u.password ? 'none' : u.must_change ? 'to change at sign-in' : u.changed ? 'set on ' + day(u.changed) : 'set', true);
       if (u.expires) kv('Expires', day(u.expires));
       var stg = el('div', 'osu-fact-tags');
-      stg.appendChild(el('span', 'tag ' + (u.locked ? 'bad' : 'good'), u.locked ? 'locked' : 'may sign in'));
+      stg.appendChild(el('span', 'tag ' + (u.locked ? 'crit' : 'ok'), u.locked ? 'locked' : 'may sign in'));
       if (u.sudo && !u.root) stg.appendChild(el('span', 'tag warn', 'sudo'));
       f.appendChild(stg);
       facts.appendChild(f);

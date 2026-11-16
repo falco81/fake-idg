@@ -56,7 +56,7 @@ SETTINGS = [
     {"key": "sshd_trial_min", "name": "On trial for (min)", "kind": "int", "default": 5, "min": 0, "max": 60,
      "only_when": ("sshd_manage", True),
      "says": "Unless kept within this, root puts back what was there. 0: no trial - not advised."},
-    {"key": "sshd_notice", "name": "The notice", "kind": "textarea", "default": "", "root": True, "most": 4000,
+    {"key": "sshd_notice", "name": "Its words", "kind": "textarea", "default": "", "root": True, "most": 4000,
      "says": "Plain text, as many lines as needed - often what the security policy wants said. Shown where it "
              "is switched on below."},
     {"key": "sshd_notice_ssh", "name": "Before signing in over SSH", "kind": "bool", "default": False,
@@ -141,7 +141,7 @@ def view(ctx):
     trial = r.get("trial") if isinstance(r.get("trial"), dict) else {}
     if n:
         state = "waiting" if h and r.get("hash") != h else ("trial" if trial.get("until") else "done")
-    elif h and r.get("asked_hash") == h and r.get("ok") is False:
+    elif h and (r.get("failed") == h or (r.get("asked_hash") == h and r.get("ok") is False)):
         state = "failed"
     elif h and r.get("back_hash") == h:
         state = "back"

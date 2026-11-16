@@ -185,12 +185,12 @@ def iptables_lines():
     text = (_read(IPT_FILE, 4 * MOST) or b"").decode("utf-8", "replace")
     lines, inside = [], False
     for ln in text.splitlines():
-        if ln.startswith(MARK):
-            inside = not inside if ln.strip() in (MARK + " begin", MARK + " end") else inside
+        if ln.startswith(MARK + " begin"):
+            inside = True
+        if inside or ln.startswith(MARK) or CHAIN_RE.search(ln) or ln.startswith("*") or ln == "COMMIT":
             lines.append(ln)
-            continue
-        if inside or CHAIN_RE.search(ln):
-            lines.append(ln)
+        if ln.startswith(MARK + " end"):
+            inside = False
     return ("\n".join(lines) + "\n") if lines else ""
 
 

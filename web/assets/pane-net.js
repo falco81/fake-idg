@@ -306,11 +306,11 @@
     tc.appendChild(el('h2', '', 'On trial - keep it, or it goes back'));
     var p = el('p', 'note');
     p.appendChild(document.createTextNode('The new network of ' + (t.con || '?') + ' waits to be kept - '));
-    var left = noI18n(el('b', 'trial-left mono', ''));
+    var left = noI18n(el('span', 'trial-left mono', ''));
     left.dataset.until = t.until;
     p.appendChild(left);
-    p.appendChild(document.createTextNode('. Not kept, the connection goes back to exactly what it had by itself. Keep it once you have checked that the pages and fake-igd answer at the new address.'));
     tc.appendChild(p);
+    tc.appendChild(el('p', 'note', 'Not kept, the connection goes back to exactly what it had by itself. Keep it once you have checked that the pages and fake-igd answer at the new address.'));
     if (t.failed) tc.appendChild(el('p', 'note bad', t.failed));
     var row = el('div', 'btnrow');
     var kp = cmdButton('Keep it', 'check', 'primary');

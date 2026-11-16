@@ -172,10 +172,15 @@ def chain_state(leaf, chain):
                 f.write(chain)
             args += ["-untrusted", cf]
         try:
-            openssl(args + [lf], what="checked against the system's roots")
-        except ValueError as e:
+            got = subprocess.run([OPENSSL] + args + [lf], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 universal_newlines=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            return {"ok": None, "words": "not checked: %s" % e}
+        if got.returncode != 0:
+            m = re.search(r"error \d+ at \d+ depth lookup: ?(.+)", got.stdout)
             return {"ok": False, "words": "incomplete - it does not lead to a root of the system (%s): curl and "
-                                          "other clients that fetch nothing refuse it" % str(e).split(": ", 1)[-1]}
+                                          "other clients that fetch nothing refuse it"
+                                          % (m.group(1).strip() if m else "openssl verify said no")}
     n = len(PEM_CERT.findall(chain))
     return {"ok": True, "words": "complete - %d between it and the root" % n}
 
@@ -583,7 +588,8 @@ def view(ctx):
     try:
         on = ctx.store and json.loads(ctx.store.get_meta("settings") or "{}").get("acme")
         care = meta(ctx.store, "acme:care") or {}
-        acme = {"on": bool(on), "care": care.get("on", True), "state": meta(ctx.store, "acme:state") or {}}
+        st = meta(ctx.store, "acme:state") or {}
+        acme = {"on": bool(on), "care": care.get("on", True), "state": {"ok": st.get("ok"), "said": st.get("said")}}
     except ValueError:
         pass
     pend = bool(pending_key(ctx.cfg))

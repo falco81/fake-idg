@@ -184,6 +184,11 @@ def send_lines(c, target, lines):
                 raw = ln.encode("utf-8", "replace")
                 s.sendall(b"%d " % len(raw) + raw)
                 n += 1
+            if proto == "tls":
+                try:
+                    s.unwrap()          # close_notify: the server reads all before the connection goes
+                except (OSError, ssl.SSLError, ValueError):
+                    pass
         finally:
             try:
                 s.close()

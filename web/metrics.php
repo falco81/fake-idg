@@ -8,6 +8,13 @@ declare(strict_types=1);
 require_once __DIR__ . '/igd-api.php';
 header('Cache-Control: no-store');
 $auth = (string) ($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
+if ($auth === '' && function_exists('getallheaders')) {
+    foreach ((array) getallheaders() as $k => $v) {
+        if (strcasecmp((string) $k, 'Authorization') === 0) {
+            $auth = (string) $v;
+        }
+    }
+}
 $token = preg_match('/^Bearer ([A-Za-z0-9_.~+\/=-]{24,200})$/', trim($auth), $m) ? $m[1] : '';
 if ($token === '') {
     http_response_code(401);
