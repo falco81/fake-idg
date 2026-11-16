@@ -22,13 +22,13 @@ def _no(v):
 SETTINGS = [
     {"key": "proxy", "name": "Go out through a proxy", "kind": "bool", "default": False,
      "says": "An HTTP proxy for what is switched on below, and for nothing else; all of them off, it is used "
-             "nowhere. Mail, syslog, the PS5's UPnP and the pages themselves never use it."},
+             "nowhere. Mail, syslog, the backups, the PS5's UPnP and the pages themselves never use it."},
     {"key": "proxy_url", "name": "The proxy", "kind": "text", "default": "", "check": _url,
      "only_when": ("proxy", True), "says": "<code>http://proxy.example.cz:3128</code>"},
     {"key": "proxy_user", "name": "User name at the proxy", "kind": "text", "default": "", "most": 200,
      "only_when": ("proxy", True), "says": "Where the proxy asks for one. Empty: none."},
     {"key": "proxy_password", "name": "Password at the proxy", "kind": "secret", "default": "", "most": 500,
-     "only_when": ("proxy", True), "says": "Kept in the database, never sent back to these pages."},
+     "only_when": ("proxy", True), "says": "Kept sealed, like the other passwords."},
     {"key": "proxy_no", "name": "Straight, not through the proxy", "kind": "text",
      "default": "localhost, 127.0.0.1, ::1", "check": _no, "most": 2000, "only_when": ("proxy", True),
      "says": "Names and addresses reached without it, separated by commas: <code>.example.cz</code> is every "
@@ -41,8 +41,12 @@ SETTINGS = [
              "never on a command line."},
     {"key": "proxy_acme", "name": "ACME: the CA (Let’s Encrypt)", "kind": "bool", "default": False,
      "only_when": ("proxy", True),
-     "says": "Ordering and renewing the certificates (Automatic certificates). A proxy down then stops the "
+     "says": "Ordering and renewing the certificates, and the CA’s renewal window. A proxy down then stops the "
              "renewals - they are tried again, well before one runs out."},
+    {"key": "proxy_acme_dns", "name": "ACME: the DNS APIs (deSEC, Cloudflare, acme-dns)", "kind": "bool",
+     "default": False, "only_when": ("proxy", True),
+     "says": "The TXT record put in and taken away again (DNS-01) through the API of deSEC, Cloudflare or "
+             "acme-dns. RFC 2136 updates are DNS, never through it."},
     {"key": "proxy_ntfy", "name": "The notifications (ntfy)", "kind": "bool", "default": False,
      "only_when": ("proxy", True),
      "says": "fake-igd.service sends its notifications to the ntfy server through it. A proxy down then stops "

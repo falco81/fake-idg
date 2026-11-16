@@ -32,34 +32,35 @@ def _hhmm(v):
 
 SETTINGS = [
     {"key": "osup_check", "name": "Look for updates every day", "kind": "bool", "default": False,
-     "says": "This machine looks what dnf has waiting, every day at the time below - for the card here, the alerts "
-             "and the report. Nothing is put in."},
+     "says": "This machine looks what dnf has waiting, every day at the time below - for the card here, the "
+             "alerts and the report. Nothing is put in."},
     {"key": "osup_check_at", "name": "At", "kind": "text", "default": "06:15", "check": _hhmm,
      "only_when": ("osup_check", True), "says": "When, as <code>HH:MM</code> on this machine’s clock."},
     {"key": "osup_auto", "name": "Updates on a schedule", "kind": "bool", "default": False,
-     "says": "dnf updates the packages by itself, as often as below. fake-igd.service goes on answering meanwhile."},
+     "says": "The updates put in by themselves in the window below, as by hand - fake-igd.service goes on "
+             "answering meanwhile. Off until switched on."},
     {"key": "osup_auto_what", "name": "Which", "kind": "choice", "default": "security",
      "only_when": ("osup_auto", True),
      "choices": [("security", "only the security updates"), ("all", "every update")],
-     "says": "Every package, or only those of a security advisory (dnf upgrade --security)."},
+     "says": "Only the security updates (dnf --security), or every update."},
     {"key": "osup_auto_every", "name": "How often", "kind": "choice", "default": "weekly",
      "only_when": ("osup_auto", True),
      "choices": [("daily", "every day"), ("weekly", "every week, on the day below"),
-                 ("monthly", "every month, on the first")],
-     "says": "When the update is made."},
+                 ("monthly", "on the first of every month")],
+     "says": "A day, a week or a month."},
     {"key": "osup_auto_day", "name": "On the day", "kind": "choice", "default": "7",
      "only_when": ("osup_auto_every", "weekly"),
      "choices": [("1", "Monday"), ("2", "Tuesday"), ("3", "Wednesday"), ("4", "Thursday"), ("5", "Friday"),
                  ("6", "Saturday"), ("7", "Sunday")],
-     "says": "The day a weekly update is made."},
+     "says": "The day a weekly update goes."},
     {"key": "osup_auto_at", "name": "At", "kind": "text", "default": "04:45", "check": _hhmm,
-     "only_when": ("osup_auto", True), "says": "When, as <code>HH:MM</code> on this machine’s clock."},
+     "only_when": ("osup_auto", True), "says": "When, as <code>HH:MM</code> - a quiet hour, away from the backups."},
     {"key": "osup_auto_reboot", "name": "After the update", "kind": "choice", "default": "auto",
      "only_when": ("osup_auto", True),
-     "choices": [("auto", "restarted by itself where an update needs it"),
-                 ("ask", "a restart only offered here")],
-     "says": "A new kernel or libraries are brought into use only by a restart - for a minute the PS5 gets no "
-             "answer."},
+     "choices": [("ask", "a restart offered on the page"),
+                 ("auto", "restarted by itself where an update needs it")],
+     "says": "When the update needs a restart (a new kernel, libraries) - made by itself, or offered on the page. "
+             "For a minute the PS5 gets no answer."},
 ]
 
 

@@ -127,7 +127,7 @@ function drawOsup(live) {
       ['A restart', !ck.at ? '' : (ck.reboot_now ? 'needed now, before any update'
         : (ck.reboot_after && ck.count ? 'needed after the update - ' + (ck.reboot_why || []).join(', ') : 'not needed by these updates'))],
       ['Looked', ck.at ? ago(ck.at) : ''],
-      ['Updated by', 'dnf', true]
+      ['Updated by', ck.at ? (ck.tool || 'dnf') : '', true]
     ]));
     if (ck.error) c.appendChild(noI18n(el('p', 'note bad', ck.error)));
     if ((ck.packages || []).length) {
@@ -153,7 +153,7 @@ function drawOsup(live) {
     if (!running) {
       var uc = el('div', 'card full');
       uc.appendChild(el('h2', '', 'Update this server'));
-      uc.appendChild(el('p', 'note', 'dnf updates every package (or only the security ones), as root, in a job of its own. fake-igd.service goes on answering meanwhile; a restart it needs is offered at the end.'));
+      uc.appendChild(el('p', 'note', 'dnf updates every package. fake-igd.service goes on answering meanwhile; a restart it needs is offered at the end.'));
       if (ck.reboot_after && ck.count) uc.appendChild(el('p', 'note warn', 'This server needs a restart after this update: ' + (ck.reboot_why || []).join(', ') + '.'));
       var seg2 = el('div', 'seg');
       [['all', 'Every update'], ['security', 'Only the security updates']].forEach(function (o) {

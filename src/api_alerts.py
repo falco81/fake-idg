@@ -56,7 +56,8 @@ ON = ("alerts", True)
 SETTINGS = [
     {"key": "alerts", "name": "Alerts by mail", "kind": "bool", "default": False,
      "says": "A mail when something is wrong - fake-igd.service, the pages' API, avahi-daemon, another UPnP "
-             "router, a disk, the certificate, an upgrade - and when it is over. Off until switched on."},
+             "router, a backup, a disk, the certificate, the syslog servers, an upgrade - and when it is over. "
+             "Off until switched on."},
     {"key": "alerts_to", "name": "Send them to", "kind": "text", "default": "", "check": _addrs, "most": 1000,
      "only_when": ON, "says": "Addresses, separated by commas. The mail goes the way Settings → Mail says."},
     {"key": "alerts_delay_min", "name": "Only once it has lasted (min)", "kind": "int", "default": 5, "min": 0,
@@ -78,6 +79,11 @@ SETTINGS = [
      "only_when": ON, "says": "Something else answers as a UPnP router - the PS5 may ask it instead."},
     {"key": "alerts_new_port", "name": "A new port asked for", "kind": "bool", "default": False, "only_when": ON,
      "says": "A device asked for a port (AddPortMapping) it never asked for before - said as it happens."},
+    {"key": "alerts_backup", "name": "A backup that failed or did not come", "kind": "bool", "default": True,
+     "only_when": ON, "says": "A nightly copy older than 36 hours; a backup to the destinations that failed, or "
+                              "none that went in time."},
+    {"key": "alerts_logs", "name": "Logs not reaching the syslog servers", "kind": "bool", "default": True,
+     "only_when": ON, "says": "Sending to the syslog servers (SIEM) failing - not reached, refused."},
     {"key": "alerts_newer", "name": "A new version is out", "kind": "bool", "default": True, "only_when": ON,
      "says": "A newer fake-igd at the address of Upgrades (looked for every day, when that is on)."},
     {"key": "alerts_disk_pct", "name": "A disk fuller than (%)", "kind": "int", "default": 85, "min": 0, "max": 99,
@@ -230,6 +236,20 @@ def problems(ctx, c=None):
                                 "said": "Refused for good or given up in the last day - Settings → Outgoing mail says why."}
         except Exception:                               # noqa: BLE001
             pass
+    if c.get("alerts_backup"):
+        try:
+            out.update(backup_problems(ctx))
+        except Exception:                               # noqa: BLE001
+            pass
+    if c.get("alerts_logs"):
+        try:
+            si = __import__("api_siem")
+            if si._settings(ctx).get("siem"):
+                for k, why in (si.state(ctx.store).get("trouble") or {}).items():
+                    out["siem:%s" % k] = {"level": "warn", "title": "Logs not reaching %s" % k, "pane": "siem",
+                                          "said": str(why)[:300]}
+        except Exception:                               # noqa: BLE001
+            pass
     if c.get("alerts_updates"):
         osup = ctx.store.meta_json("osup:check") or {}
         if osup.get("reboot_now") or osup.get("reboot"):
@@ -238,6 +258,43 @@ def problems(ctx, c=None):
         if osup.get("security"):
             out["updates"] = {"level": "warn", "title": "%d security update(s) waiting" % osup["security"],
                               "pane": "osup", "said": "As System updates found them %s." % _ago(osup.get("at"))}
+    return out
+
+
+def backup_problems(ctx):
+    """otp's: the nightly copy older than 36 h; the last backup to the destinations failed, or none in time."""
+    import igd_panes as PN
+    out = {}
+    now = time.time()
+    if PN.value(ctx.store, "db_copy_daily"):
+        last = float(ctx.store.get_meta("db:copy:at") or 0)
+        made = float(ctx.store.get_meta("db:copy:first") or 0)
+        if not made:
+            ctx.store.set_meta("db:copy:first", str(now))
+            made = now
+        if now - max(last, made) > 36 * 3600:
+            out["dbcopy"] = {"level": "warn", "title": ("The last copy of the database was made %s" % _ago(last))
+                             if last else "No copy of the database in 36 hours", "pane": "db",
+                             "said": "The copy of every day did not come - Settings → The database."}
+    if PN.value(ctx.store, "rbackup"):
+        bk = __import__("api_backup")
+        rows = bk.runs(ctx)
+        on = [t for t in bk.targets(ctx) if t.get("enabled")]
+        if rows and not rows[0].get("ok"):
+            out["backup:%s" % int(rows[0].get("at") or 0)] = {
+                "level": "bad", "title": "The backup failed", "pane": "backup",
+                "said": str(rows[0].get("error") or "; ".join("%s: %s" % (x.get("name"), x.get("error"))
+                                                                for x in rows[0].get("targets") or []
+                                                                if not x.get("ok")))[:300]}
+        every = 8 * 86400 if PN.value(ctx.store, "rbackup_every") == "weekly" else 36 * 3600
+        ok = [r for r in rows if r.get("ok")]
+        since = ok[0]["at"] if ok else float(ctx.store.get_meta("backup:first") or 0)
+        if not since:
+            ctx.store.set_meta("backup:first", str(now))
+            since = now
+        if on and now - float(since) > every:
+            out["backup:late"] = {"level": "warn", "title": "No backup went in time", "pane": "backup",
+                                  "said": "The last good one %s." % (_ago(ok[0]["at"]) if ok else "- none yet")}
     return out
 
 

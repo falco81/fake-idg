@@ -36,9 +36,11 @@ DEFAULTS = {
     "proxy_update": False,
     "proxy_os": False,
     "proxy_acme": False,
+    "proxy_acme_dns": False,
     "proxy_ntfy": False,
 }
-PURPOSES = {"upgrade": "proxy_update", "os": "proxy_os", "acme": "proxy_acme", "ntfy": "proxy_ntfy"}
+PURPOSES = {"upgrade": "proxy_update", "os": "proxy_os", "acme": "proxy_acme", "acme_dns": "proxy_acme_dns",
+            "ntfy": "proxy_ntfy"}
 URL_RE = re.compile(r"^http://(?:\[[0-9A-Fa-f:]+\]|[A-Za-z0-9.-]{1,253})(?::\d{1,5})?/?\Z")
 DB_FILE = os.environ.get("FAKE_IGD_DB", "/var/lib/fake-igd/fake-igd.db")
 

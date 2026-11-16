@@ -379,7 +379,21 @@ def do_put(payload, said):
         writes += [(path("before"), old_c, 0o644), (path("before_key"), old_k, 0o600)]
     writes += [(path("cert"), main["cert"] + main["chain"], 0o644), (path("key"), main["key"], 0o600)]
 
+    add = payload.get("server_names_add") or []
+    if not isinstance(add, list) or len(add) > 50 or any(not isinstance(n, str) or not NAME_RE.match(n) for n in add):
+        raise Refused("the names to add to server_name are DNS names, 50 at most")
+    added = []
+
     def lines(block):
+        if add:
+            m = re.search(r"(?m)^[ \t]*server_name\s+([^;\n]*);", block)
+            have = m.group(1).split() if m else []
+            for n in add:
+                if n.lower() not in [h.lower() for h in have]:
+                    have.append(n.lower())
+                    added.append(n.lower())
+            if added:
+                block = set_directive(block, "server_name", " ".join(x for x in have if x != "_") or "_")
         if alt:
             block = set_directive(block, "ssl_certificate", [path("cert"), path("cert2")])
             block = set_directive(block, "ssl_certificate_key", [path("key"), path("key2")])
@@ -397,6 +411,8 @@ def do_put(payload, said):
     ok = apply(writes, said)
     if keep and any(w[0] == path("before") for w in writes):
         said.insert(0, "the certificate there before is kept as %s" % path("before"))
+    if added:
+        said.insert(0, "nginx's server_name: %s added" % ", ".join(added))
     said.insert(0, "certificate: %s%s" % (subj, " (and an ECDSA one beside it)" if alt else ""))
     return ok
 
