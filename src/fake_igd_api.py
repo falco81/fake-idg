@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import upnp as U             # noqa: E402 - the command line's own readers and checks
 import igd_online as ON      # noqa: E402
 import igd_store as ST       # noqa: E402
+import igd_panes as PN       # noqa: E402 - the panes of Settings, each a module of its own (1.6.0)
 
 VERSION = U.VERSION
 RUN_DIR = os.environ.get("FAKE_IGD_RUN", "/run/fake-igd-api")
@@ -178,8 +179,13 @@ def settings_view():
     panes = {}
     for group, keys in U.SETTING_GROUPS:
         panes[PANE_OF_GROUP.get(group, group)] = keys
+    more, more_panes = PN.view(STORE[0])
+    out += more
+    for pane, keys in more_panes.items():
+        panes.setdefault(pane, []).extend(keys)
+    only_when = {s["key"]: s["only_when"] for s in more if s.get("only_when")}
     return {"settings": out, "panes": panes, "pane_names": PANES, "config_file": CFG_PATH,
-            "error": cfg.get("_error")}
+            "error": cfg.get("_error"), "only_when": only_when}
 
 
 def settings_save(changes, who, addr):
@@ -187,6 +193,16 @@ def settings_save(changes, who, addr):
         raise ValueError("nothing to save")
     cfg = load_cfg()
     good = {}
+    theirs = {k: changes.pop(k) for k in list(changes) if k in PN.SETTINGS}
+    mod_changed = PN.save(STORE[0], theirs) if theirs else {}
+    for name, ch in mod_changed.items():
+        shown = ", ".join("%s=%s" % (k, "(hidden)" if PN.SETTINGS[k].get("kind") == "secret" else v)
+                          for k, v in ch.items())
+        STORE[0].add_event("setting", "%s changed %s" % (who, shown), "info", who, addr)
+        mod = PN.module(name)
+        if mod is not None and hasattr(mod, "on_saved"):
+            mod.on_saved(PN.Ctx(None, "POST", "", {}, {"name": who, "role": "fulladmin"}, STORE[0], CFG, mod,
+                                STORE[0].add_event), ch)
     for key, raw in changes.items():
         if key not in U.DEFAULTS:
             raise ValueError("%s is not a setting" % key)
@@ -208,8 +224,9 @@ def settings_save(changes, who, addr):
             raise ValueError(err)
         if v != cfg.get(key):
             good[key] = v
+    mod_saved = sorted(k for ch in mod_changed.values() for k in ch)
     if not good:
-        return {"saved": [], "restart": False}
+        return {"saved": mod_saved, "restart": False}
     save_cfg(good)
     restart = any(k in U.SERVICE_KEYS for k in good)
     root = any(k in U.ROOT_KEYS for k in good)
@@ -217,7 +234,7 @@ def settings_save(changes, who, addr):
     STORE[0].add_event("setting", "%s changed %s" % (who, shown), "info", who, addr)
     if restart or root:
         ask_root(restart=restart)
-    return {"saved": sorted(good), "restart": restart, "root": root}
+    return {"saved": sorted(good) + mod_saved, "restart": restart, "root": root}
 
 
 # ---- what fake-igd wrote -------------------------------------------------------------
@@ -544,7 +561,17 @@ def mdns_services(q):
         rows = M.services(resolve=(q.get("resolve") or ["1"])[0] != "0", timeout=12)
     except M.MdnsError as e:
         raise ValueError(str(e))
-    return {"services": rows, "at": time.time()}
+    hint = ""
+    if not rows:
+        try:
+            vals, _l = M.read_conf()
+            if str(vals.get("cache-entries-max", "")).strip() == "0":
+                hint = ("Nothing seen - cache-entries-max=0: avahi-daemon keeps no record, so avahi-browse is "
+                        "shown nothing (the reflector reflects all the same). Settings - mDNS reflector - Records "
+                        "in the cache, e.g. 4096, lets it be seen.")
+        except M.MdnsError:
+            pass
+    return {"services": rows, "at": time.time(), "hint": hint}
 
 
 def mdns_log(q):
@@ -644,6 +671,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def serve(self, method, path, q):
         S = STORE[0]
+        hit = PN.route(method, path)
+        if hit is not None:
+            mod, fn = hit
+            me = None
+            if not getattr(fn, "PUBLIC", False):
+                me = self.who()
+            ctx = PN.Ctx(self, method, path, q, me, S, CFG, mod, S.add_event)
+            try:
+                got = fn(ctx)
+            except PermissionError as e:
+                raise Refused(403, str(e), "read_only")
+            if isinstance(got, dict):
+                got.setdefault("ok", True)
+            return got
         if path == "/api/health":
             return {"ok": True, "version": VERSION, "users": S.count_users(), "database": {"ok": S.ok()},
                     "site": CFG.get("site_name") or "", "node": socket.gethostname().split(".")[0]}
@@ -923,6 +964,12 @@ def background():
                 url = CFG.get("upgrade_url") or ON.DEFAULT_URL
                 if last.get("url") != url or time.time() - float(last.get("at") or 0) > ON.EVERY_S:
                     look_now("")
+            for mod in PN.MODULES:
+                if hasattr(mod, "background"):
+                    try:
+                        mod.background(PN.Ctx(None, "BG", "", {}, None, STORE[0], CFG, mod, STORE[0].add_event))
+                    except Exception as e:              # noqa: BLE001 - one pane does not stop the rest
+                        sys.stderr.write("api: %s in the background: %s\n" % (getattr(mod, "NAME", "?"), e))
         except Exception as e:                          # noqa: BLE001
             sys.stderr.write("api: the background step: %s\n" % e)
         time.sleep(60)
@@ -949,6 +996,7 @@ def main():
         return 1
     httpd.daemon_threads = True
     write_run_files(port)
+    PN.load(log=lambda w: sys.stderr.write(w + "\n"))
     threading.Thread(target=background, daemon=True).start()
     STORE[0].add_event("service", "the pages' API %s started on 127.0.0.1:%d" % (VERSION, port), "info")
     sys.stderr.write("api: fake-igd %s - the pages' API on 127.0.0.1:%d, database %s\n" % (VERSION, port, db))

@@ -177,8 +177,14 @@ def services(resolve=True, timeout=15):
     except subprocess.TimeoutExpired as e:
         r = e
         r.stdout = (e.stdout or b"").decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
-    if getattr(r, "returncode", 0) and "Daemon not running" in (getattr(r, "stderr", "") or ""):
+    err = getattr(r, "stderr", "") or ""
+    if isinstance(err, bytes):
+        err = err.decode("utf-8", "replace")
+    if getattr(r, "returncode", 0) and "Daemon not running" in err:
         raise MdnsError("avahi-daemon is not running")
+    # Nothing came and avahi-browse said why (1.6.0): said, not shown as an empty network.
+    if not (r.stdout or "").strip() and getattr(r, "returncode", 0) and err.strip():
+        raise MdnsError("avahi-browse: %s" % err.strip().splitlines()[-1][:300])
     seen = {}
     for ln in (r.stdout or "").splitlines():
         d = parse_browse(ln)

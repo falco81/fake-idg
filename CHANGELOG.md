@@ -2,6 +2,13 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.5.1 (2026-11-16)
+
+- mDNS: when avahi-browse ends with an error, the error is said on the page - it was shown as a network
+  with nothing on it. With `cache-entries-max=0` (no records kept, so avahi-browse is shown nothing while
+  the reflector reflects all the same) the empty list says so, and how to see the services.
+- The API's base for the panes of Settings to come (igd_panes.py) - nothing changes on the pages yet.
+
 ## 1.5.0 (2026-11-16)
 
 - **The pages as otp's, one scroller everywhere**: every list tab (Ports, Requests, Clients, Log,

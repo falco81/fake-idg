@@ -958,7 +958,7 @@ function drawServices() {
       });
     };
     return tr;
-  }, 'plain|Nothing is shown on mDNS now - or avahi-daemon is not running'));
+  }, 'plain|' + (d.hint || 'Nothing is shown on mDNS now - or avahi-daemon is not running')));
   explainWhatWasDrawn(host);
 }
 $('ms-look').onclick = loadServices;
