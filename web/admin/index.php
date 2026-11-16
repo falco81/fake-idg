@@ -111,7 +111,7 @@ if (isset($_GET['api'])) {
             echo json_encode(['ok' => false, 'error' => 'unknown endpoint']);
             exit;
         }
-        igd_relay($writes[$what], 'POST', sent_json(), (in_array($what, ['upgrade', 'acme', 'osup', 'backup', 'carry'], true) || strpos($what, 'backup-') === 0 || strpos($what, 'carry-') === 0 || strpos($what, 'db-') === 0) ? 330.0 : 90.0);
+        igd_relay($writes[$what], 'POST', sent_json(), (in_array($what, ['upgrade', 'acme', 'osup', 'backup', 'carry', 'db'], true) || strpos($what, 'backup-') === 0 || strpos($what, 'carry-') === 0 || strpos($what, 'db-') === 0) ? 330.0 : 90.0);
         exit;
     }
     if (!isset($reads[$what])) {
@@ -497,7 +497,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     <button type="button" class="fulladmin-only" data-pane="carry" data-icon="download" title="Everything that makes this installation what it is, as one file to carry to another machine.">Export and import</button>
     <div class="ctl-group">Monitoring and updates</div>
     <button type="button" class="fulladmin-only" data-pane="mail" data-icon="mail" title="How fake-igd sends mail: a mail server, or straight to the recipient's.">Mail</button>
-    <button type="button" class="fulladmin-only" data-pane="mailq" data-icon="list" title="Every mail sent and what became of it: sent, waiting for another try, failed.">Outgoing mail</button>
+    <button type="button" class="fulladmin-only" data-pane="mailq" data-icon="list" title="Every mail sent and what became of it: sent, waiting for another try, failed.">Outgoing mail <span class="nav-badge" id="mq-badge" hidden></span></button>
     <button type="button" class="fulladmin-only" data-pane="alerts" data-icon="bell" title="A mail when something is wrong, and a report of the week by mail.">Alerts and reports</button>
     <button type="button" class="fulladmin-only" data-pane="monitor" data-icon="pulse" title="Prometheus asks this machine for its metrics; SNMPv3.">Monitoring</button>
     <button type="button" class="fulladmin-only" data-pane="siem" data-icon="log" title="Every event, every sign-in and every port asked for to a syslog server or a SIEM - UDP, TCP or TLS; JSON, CEF or RFC 5424.">Syslog and SIEM</button>

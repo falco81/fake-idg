@@ -242,9 +242,24 @@ def _drop(store, k):
     store.run("DELETE FROM meta WHERE k = ?", (k,))
 
 
+SECRET_KEYS = [s["key"] for s in SETTINGS if s.get("kind") == "secret"]
+
+
 def conf(ctx):
-    """The settings of an order, read once when it begins."""
-    return {s["key"]: ctx.setting(s["key"]) for s in SETTINGS}
+    """The settings of an order, read once when it begins - the secrets opened (sealed in the database)."""
+    import igd_seal as SEAL
+    return {s["key"]: (SEAL.setting(ctx.store, s["key"]) if s.get("kind") == "secret" else ctx.setting(s["key"]))
+            for s in SETTINGS}
+
+
+def seal_all(store):
+    """1.6.0's secrets kept as typed, sealed in place: the DNS APIs' tokens and keys, the account's key."""
+    import igd_seal as SEAL
+    SEAL.seal_settings(store, SECRET_KEYS)
+    row = _meta(store, "acme:account") or {}
+    if row.get("key") and not SEAL.is_sealed(row["key"]):
+        row["key"] = SEAL.seal(store, row["key"], bind="acme:account")
+        _set(store, "acme:account", row)
 
 
 def directory_url(c):
@@ -452,8 +467,10 @@ class Acme(object):
             raise AcmeError("the CA's answer is not JSON (%s)" % url)
 
     def _account(self, fresh=False):
+        import igd_seal as SEAL
         row = {} if fresh else (_meta(self.store, "acme:account") or {})
-        pem = row.get("key") or ""
+        # Sealed with this installation's key (bind acme:account); not openable here: a new account.
+        pem = SEAL.unseal(self.store, row.get("key") or "", bind="acme:account") or ""
         self.akind = str(self.c.get("acme_account_key") or "ec")
         if self.akind not in KEY_WORDS:
             self.akind = "ec"
@@ -480,7 +497,7 @@ class Acme(object):
         self.kid = headers.get("Location")
         if not self.kid:
             raise AcmeError("the CA made no account")
-        _set(self.store, "acme:account", {"key": pem, "kid": self.kid, "directory": self.dir_url, "email": mail,
+        _set(self.store, "acme:account", {"key": SEAL.seal(self.store, pem, bind="acme:account"), "kid": self.kid, "directory": self.dir_url, "email": mail,
                                           "at": time.time(), "kind": self.akind})
 
     def _poll(self, url, done, what, secs=90):
@@ -877,6 +894,10 @@ def ari_refresh(ctx):
 
 def background(ctx):
     """Once a minute: old answers for the CA dropped; once an hour what is due ordered."""
+    try:
+        seal_all(ctx.store)
+    except Exception:                                   # noqa: BLE001 - the next minute
+        pass
     for r in ctx.store.rows("SELECT k, v FROM meta WHERE k LIKE 'acme:chal:%'"):
         try:
             at = float(json.loads(r["v"]).get("at") or 0)
@@ -1023,12 +1044,13 @@ def _dns_rfc2136(ctx, c, rr, txt):
     return lambda: run("delete")
 
 
-def _open(req, timeout, ctx):
-    """To the CA and the DNS APIs: through Settings → Proxy when it is on for ACME (1.6.0, otp's proxy_acme)."""
+def _open(req, timeout, ctx, purpose="acme"):
+    """Through Settings → Proxy when it is on for it: the CA ("acme", otp's proxy_acme), the DNS APIs -
+    deSEC, Cloudflare, acme-dns ("acme_dns", otp's proxy_acme_dns)."""
     try:
         import igd_proxy
-        if igd_proxy.url_for(None, "acme"):
-            return igd_proxy.open_url(None, "acme", req, timeout=timeout, context=ctx)
+        if igd_proxy.url_for(None, purpose):
+            return igd_proxy.open_url(None, purpose, req, timeout=timeout, context=ctx)
     except ImportError:
         pass
     return urllib.request.urlopen(req, timeout=timeout, context=ctx)
@@ -1038,7 +1060,7 @@ def _http_json(url, method="GET", body=None, headers=None, what="the API"):
     req = urllib.request.Request(url, method=method, data=json.dumps(body).encode() if body is not None else None,
                                  headers=dict({"Content-Type": "application/json", "User-Agent": UA}, **(headers or {})))
     try:
-        with _open(req, 30, ssl.create_default_context() if url.startswith("https") else None) as r:
+        with _open(req, 30, ssl.create_default_context() if url.startswith("https") else None, "acme_dns") as r:
             raw = r.read(1 << 20)
             return r.status, (json.loads(raw.decode()) if raw.strip() else None), r.headers
     except urllib.error.HTTPError as e:
@@ -1591,6 +1613,7 @@ ROUTES = {("GET", "/api/acme"): get_acme, ("POST", "/api/acme"): post_acme,
 
 def on_saved(ctx, changed):
     """Switched on, or the names or the CA changed: looked at within the minute."""
+    seal_all(ctx.store)
     # The firewall's port 80 from anywhere follows HTTP-01 (1.6.0): root puts FAKE-IGD-IN in place again.
     if any(k in changed for k in ("acme", "acme_challenge")):
         try:
