@@ -46,7 +46,7 @@ SETTINGS = [
              "mail, the alerts. Asked with the token below."},
     {"key": "metrics_token", "name": "Its token (Bearer)", "kind": "secret", "default": "", "most": 200,
      "only_when": ("metrics", True),
-     "says": "What Prometheus sends as <code>Authorization: Bearer ...</code>. Kept in the database; <i>Make a "
+     "says": "What Prometheus sends as <code>Authorization: Bearer ...</code>. Kept sealed; <i>Make a "
              "token</i> below makes one and shows it once."},
     {"key": "metrics_from", "name": "Only from", "kind": "list", "default": [], "check": _net,
      "only_when": ("metrics", True),

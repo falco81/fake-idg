@@ -243,7 +243,7 @@ def view(row, here):
         n = row.get("newest") or {}
         row["newer"] = bool(n and ver_tuple(n.get("version")) > ver_tuple(here))
         row["here"] = here
-        row["newer_list"] = sorted((p for p in row.get("packages") or []
+        row["newer_list"] = sorted((dict(p) for p in row.get("packages") or []
                                     if ver_tuple(p.get("version")) > ver_tuple(here)),
                                    key=lambda p: ver_tuple(p.get("version")), reverse=True)
         notes = row.get("changelog") or {}

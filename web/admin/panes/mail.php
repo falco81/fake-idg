@@ -7,10 +7,12 @@
     <div class="card full"><div id="sect-mail"></div></div>
     <div class="card full">
       <h2>Try it <span class="right muted small" id="mail-said"></span></h2>
-      <p class="note">Sends a short message the way the alerts would go, and shows every step: the server
-        reached, TLS, signing in, the message handed over and what the server said. Save the changes first.</p>
+      <p class="note">Sends a short message - or a sample of an alert or of the report - the way the alerts would
+        go, and shows every step: the server reached, TLS, signing in, the message handed over and what the server
+        said. Save the changes first.</p>
       <div class="btnrow admin-only filters">
         <input type="email" id="mail-to" placeholder="somebody@example.cz" style="flex:1;min-width:240px">
+        <select id="mail-test-kind"><option value="short">a short message</option><option value="alert">a sample alert</option><option value="report">a sample report (the period so far)</option></select>
         <select id="mail-test-via" title="With mail sent straight to the recipient's server: this once, every step shown here - or through the outgoing mail, as the alerts go: tried now, and tried again by itself while the other side does not take it yet (greylisting)." hidden><option value="queue">through the outgoing mail</option><option value="straight">straight, this once (to see every step)</option></select>
         <button class="btn cmd primary" id="mail-test" data-icon="mail">Send a test</button>
       </div>

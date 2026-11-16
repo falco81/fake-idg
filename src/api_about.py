@@ -588,6 +588,13 @@ def software_now():
              ("systemd", ["systemctl", "--version"]), ("iptables", ["iptables", "--version"]),
              ("firewalld", ["firewall-cmd", "--version"]))
     for name, cmd in progs:
+        if name == "systemd":
+            # "systemd 252 (252-46.el9_5.2.alma.1)": the package's own version - the first number of the
+            # line with a dot was 5.2.alma.1
+            m = re.search(r"^systemd\s+(\d+)(?:\s+\(([^)\s]+)\))?", first_line(["systemctl", "--version"]))
+            if m:
+                out["programs"][name] = m.group(2) or m.group(1)
+            continue
         if name == "php-fpm":
             exe = php_fpm()
             line = first_line([exe, "-v"]) if exe else ""
@@ -597,10 +604,6 @@ def software_now():
         m = re.search(r"(\d+\.\d+(?:\.\d+)?[^\s,()]*)", line or "")
         if m and not re.search(r"(?i)denied|not found|error", line):
             out["programs"][name] = m.group(1)
-        elif name == "systemd":
-            m = re.search(r"^systemd\s+(\d+)", line or "")
-            if m:
-                out["programs"][name] = m.group(1)
     out["php_cli"] = out["programs"].pop("php", "")
     SOFTWARE.update(at=time.time(), state=dict(out))
     return out

@@ -67,11 +67,6 @@ function drawMonitor() {
   var cpy = cmdButton('Copy', 'copy', 'small');
   cpy.onclick = function () { copyText(y, cpy); };
   card.appendChild(cpy);
-  card.appendChild(el('h3', 'peek-h', 'Alerts, for example'));
-  var rules = 'groups:\n  - name: fake-igd\n    rules:\n      - alert: FakeIgdDown\n        expr: up{job="fake-igd"} == 0 or fake_igd_service_up == 0\n        for: 2m\n'
-    + '      - alert: FakeIgdOtherRouter\n        expr: fake_igd_other_igd > 0\n      - alert: FakeIgdCertificate\n        expr: fake_igd_certificate_expiry_timestamp_seconds - time() < 14 * 86400\n'
-    + '      - alert: FakeIgdDisk\n        expr: fake_igd_disk_bytes{kind="free"} / ignoring(kind) fake_igd_disk_bytes{kind="total"} < 0.1\n';
-  card.appendChild(preBox(rules));
   host.appendChild(card);
 
   var sn = $('snmp-host');

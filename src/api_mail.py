@@ -59,14 +59,17 @@ SETTINGS = [
      "only_when": ("mail_mode", "smtp"),
      "choices": [("none", "none - the server lets this machine send"),
                  ("auto", "whatever the server offers best (PLAIN, LOGIN, CRAM-MD5)"),
-                 ("plain", "PLAIN"), ("login", "LOGIN"), ("cram-md5", "CRAM-MD5")],
-     "says": "How this machine signs in to the server. None where the relay lets this address send by itself."},
+                 ("plain", "PLAIN"), ("login", "LOGIN"), ("cram-md5", "CRAM-MD5"),
+                 ("xoauth2", "XOAUTH2 - an OAuth access token as the password")],
+     "says": "How this machine signs in to the server. None where the relay lets this address send by itself. "
+             "XOAUTH2 (Microsoft 365, Google): the password is an access token."},
     {"key": "smtp_user", "name": "Account", "kind": "text", "default": "", "most": 200,
      "only_when": ("mail_mode", "smtp"),
      "says": "The account it signs in with - often the whole address."},
     {"key": "smtp_password", "name": "Password", "kind": "secret", "default": "", "most": 500,
      "only_when": ("mail_mode", "smtp"),
-     "says": "Its password. Kept in the database, never sent back to these pages."},
+     "says": "Its password (or the OAuth access token for XOAUTH2). Kept in the database sealed with the "
+             "key beside it (secrets.key)."},
     {"key": "smtp_verify", "name": "Check the server’s certificate", "kind": "bool", "default": True,
      "says": "Off is for a test: a server whose certificate is not checked is one anybody on the path can "
              "pretend to be. A certificate signed by your own authority is trusted once that authority is added "
@@ -142,7 +145,19 @@ def mail_post(ctx):
         c = M.settings(S)
         if (c.get("mail_mode") or "off") == "off":
             raise ValueError("sending mail is switched off - choose how it goes above and save it first")
-        subject, text, html = test_words(ctx)
+        kind = str(b.get("kind") or "short")
+        if kind == "alert":                              # otp's "a sample token mail": what an alert looks like
+            import api_alerts as AL
+            cur = list(AL.problems(ctx, AL.cfg_of(S)).values())
+            subject, text, html = AL.alert_mail(ctx, [], cur, [], [], test=True)
+        elif kind == "report":                           # the report of the period so far
+            import api_alerts as AL
+            since, until = AL.period_now(AL.cfg_of(S))
+            subject, text, html = AL.report_build(ctx, since, until)
+        elif kind == "short":
+            subject, text, html = test_words(ctx)
+        else:
+            raise ValueError("no such kind of test")
         began = time.time()
         if b.get("via") == "straight":
             msg = M.message(S, to, subject, text, html, c)

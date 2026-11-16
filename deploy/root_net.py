@@ -43,6 +43,7 @@ SNAP_FILE = "before.json"
 PROFILE_DIRS = tuple(x for x in os.environ.get(
     "FAKE_IGD_NM_PROFILE_DIRS", "/etc/NetworkManager/system-connections/:"
     "/etc/sysconfig/network-scripts/:/run/NetworkManager/system-connections/").split(":") if x)
+V6_MODES = ("keep", "auto", "dhcp", "manual", "link-local", "ignore", "disabled")
 SYSCTL6 = os.environ.get("FAKE_IGD_SYSCTL6", "/etc/sysctl.d/90-fake-igd-ipv6.conf")
 # Tests: the timer is written down here instead of being started by systemd.
 TIMER_FILE = os.environ.get("FAKE_IGD_NET_TIMER_FILE", "")
@@ -219,9 +220,11 @@ def checked(r):
             raise Refused("%r is not a domain" % str(s_)[:60])
         search.append(str(s_))
     out["search"] = search
-    mode = str(v6.get("mode") or "off")
-    if mode not in ("off", "auto", "manual"):
-        raise Refused("IPv6 is off, auto or manual")
+    mode = str(v6.get("mode") or "keep")
+    if mode == "off":                      # an ask of an older page
+        mode = "disabled"
+    if mode not in V6_MODES:
+        raise Refused("IPv6 is one of %s" % ", ".join(V6_MODES))
     out["mode6"] = mode
     out["addr6"], out["gw6"] = "", ""
     if mode == "manual":
@@ -408,11 +411,15 @@ def apply(n):
         args += ["ipv4.method", "auto", "ipv4.addresses", "", "ipv4.gateway", ""]
     args += ["ipv4.dns", ",".join(n["dns4"]), "ipv4.dns-search", ",".join(n["search"]),
              "ipv4.ignore-auto-dns", "yes" if (n["dns4"] or n["method4"] == "manual") else "no"]
-    if n["mode6"] == "off":
+    # IPv6 not changed on the page: not one ipv6.* property is touched.
+    if n["mode6"] == "disabled":
         args += ["ipv6.method", "disabled", "ipv6.addresses", "", "ipv6.gateway", "", "ipv6.dns", ""]
-    elif n["mode6"] == "auto":
-        args += ["ipv6.method", "auto", "ipv6.addresses", "", "ipv6.gateway", "", "ipv6.dns", ",".join(n["dns6"])]
-    else:
+    elif n["mode6"] == "ignore":
+        args += ["ipv6.method", "ignore"]
+    elif n["mode6"] in ("auto", "dhcp", "link-local"):
+        args += ["ipv6.method", n["mode6"], "ipv6.addresses", "", "ipv6.gateway", "",
+                 "ipv6.dns", ",".join(n["dns6"]) if n["mode6"] != "link-local" else ""]
+    elif n["mode6"] == "manual":
         args += ["ipv6.method", "manual",
                  "ipv6.addresses", ",".join(addrs_after(before, "ipv6.addresses", "ipv6.method", n["addr6"])),
                  "ipv6.gateway", n["gw6"], "ipv6.dns", ",".join(n["dns6"])]
@@ -421,8 +428,10 @@ def apply(n):
         said.append("NetworkManager: %s - %s, DNS %s%s" % (
             n["con"], ("%s via %s" % (n["addr4"], n["gw4"] or "no gateway")) if n["method4"] == "manual"
             else "IPv4 by DHCP", ", ".join(n["dns4"]) or ("none" if n["method4"] == "manual" else "from DHCP"),
-            {"off": ", IPv6 off", "auto": ", IPv6 automatic", "manual": ", IPv6 %s" % n["addr6"]}[n["mode6"]]))
-        if n["mode6"] in ("auto", "manual"):
+            {"keep": ", IPv6 left as it was", "disabled": ", IPv6 off", "ignore": ", IPv6 left to the system (ignore)",
+             "auto": ", IPv6 automatic", "dhcp": ", IPv6 by DHCPv6", "link-local": ", IPv6 link-local only",
+             "manual": ", IPv6 %s" % n["addr6"]}[n["mode6"]]))
+        if n["mode6"] in ("auto", "dhcp", "link-local", "manual"):
             write_root(SYSCTL6, "%s IPv6 on (Settings - Network)\nnet.ipv6.conf.all.disable_ipv6 = 0\n"
                        "net.ipv6.conf.default.disable_ipv6 = 0\n" % MARK, 0o644)
             run([SYSCTL, "-q", "-p", SYSCTL6], "sysctl", ok=(0, 1, 255))

@@ -150,7 +150,7 @@ $('mail-test').onclick = function () {
   if (!to) { toast('the address to send the test to', 'bad'); $('mail-to').focus(); return; }
   busy(b, true);
   var via = !$('mail-test-via').hidden ? $('mail-test-via').value : 'queue';
-  api('mail', {action: 'test', to: to, via: via}).then(function (d) {
+  api('mail', {action: 'test', to: to, via: via, kind: $('mail-test-kind').value}).then(function (d) {
     mailSteps($('mail-steps'), d);
   }).catch(oops).then(function () { busy(b, false); });
 };
@@ -192,6 +192,16 @@ function mailqWatch(on) {
     if (!document.querySelector('.modal:not([hidden])')) loadMailq(true);
   }, 10000);
 }
+/* The count on the rail (otp's mq-badge): what waits or failed - where the rail has the badge. */
+function mailqBadge(c) {
+  var b = $('mq-badge');
+  if (!b || !c) return;
+  var n = (c.waiting || 0) + (c.failed || 0) + (c.sending || 0);
+  b.hidden = !n;
+  b.textContent = num(n);
+  b.className = 'nav-badge' + (c.failed ? ' bad' : '');
+  b.title = (c.waiting || 0) + ' waiting · ' + (c.failed || 0) + ' failed';
+}
 function mailqStateTag(st) {
   var w = MQ_STATE_WORDS[st] || [st || '?', 'dim'];
   return el('span', 'tag ' + w[1], w[0]);
@@ -201,6 +211,7 @@ function loadMailq(quiet) {
   apiLatest('mailq', 'mailq&q=' + encodeURIComponent($('mq-q').value) + '&state=' + $('mq-state').value
       + '&limit=' + MQ.per + '&offset=' + MQ.page * MQ.per).then(function (d) {
     var c = d.counts || {};
+    mailqBadge(c);
     var chips = $('mq-chips');
     clear(chips);
     [['waiting', 'waiting for another try'], ['sending', 'being sent'], ['failed', 'failed'],
@@ -263,7 +274,7 @@ function loadMailq(quiet) {
         tr.onclick = function () { mailqPeek(r.qid); };
         tr.classList.add('tappable');
         return tr;
-      }, 'rows|Nothing has been sent yet', {own: true}));
+      }, 'rows', {own: true}));
     }, !!quiet);
     pager('mq-pager', MQ.page, MQ.per, d.total, function (p) { MQ.page = p; loadMailq(); });
     explainWhatWasDrawn($('pane-mailq'));

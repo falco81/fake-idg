@@ -3,9 +3,9 @@
 Every event, every sign-in to these pages and every port asked for (AddPortMapping) to a
 syslog server or a SIEM (Graylog, Splunk, Elastic, Wazuh, QRadar, Sentinel): RFC 5424
 syslog over UDP, TCP or TLS (octet counting, RFC 5425 / 6587), the message JSON, CEF or
-RFC 5424 structured data. Sent by the API's background once a minute, never on the way
-of anything else; what was sent last is remembered for each server (meta "siem:state"),
-so a server that was away gets what it missed - up to 2000 lines a minute.
+RFC 5424 structured data. Sent as it happens by a thread of its own in the API (it looks
+every 3 s), never on the way of anything else; what was sent last is remembered for each
+server (meta "siem:state"), so a server that was away gets what it missed.
 """
 import json
 import os
@@ -68,8 +68,8 @@ def _ca_check(v):
 SETTINGS = [
     {"key": "siem", "name": "Send to a syslog server or a SIEM", "kind": "bool", "default": False,
      "says": "Every event, every sign-in and every port asked for, as syslog (RFC 5424), to the servers below - "
-             "sent by the API's background once a minute; what was sent last is remembered for each server. "
-             "Off until switched on."},
+             "as it happens. Sent by a thread of its own: a sign-in never waits for it, and a server that was "
+             "away gets what it missed. Off until switched on."},
     {"key": "siem_targets", "name": "Where to send them", "kind": "text", "default": "", "check": _targets_check,
      "most": 2000, "only_when": ("siem", True),
      "says": "<code>tls://siem.example.cz:6514</code>, <code>tcp://host:514</code> or <code>udp://host:514</code>, "
@@ -303,6 +303,7 @@ def run(ctx, c=None):
             cur = dict(cur, **cu)
         st["cursors"][k] = cur
         st["sent"][k] = int(st["sent"].get(k) or 0) + n
+        SENT_RUN[k] = SENT_RUN.get(k, 0) + n
         if n:
             st["last_sent"] = time.time()
         if err:
@@ -326,7 +327,8 @@ def siem_get(ctx):
                 waiting[k] = ctx.store.one("SELECT COUNT(*) AS n FROM events WHERE id > ?", (int(cur.get("event") or 0),))["n"]
     return {"on": bool(c.get("siem")), "targets": ts, "format": c.get("siem_format"),
             "host": str(c.get("siem_hostname") or "").strip() or socket.gethostname().split(".")[0],
-            "sent": st["sent"], "trouble": st["trouble"], "last_sent": st.get("last_sent"), "at": st.get("at"),
+            "sent": st["sent"], "sent_run": SENT_RUN, "dropped": 0, "trouble": st["trouble"],
+            "last_sent": st.get("last_sent"), "at": st.get("at"),
             "waiting": waiting, "test": st.get("test")}
 
 
@@ -372,5 +374,45 @@ def on_saved(ctx, changed):
         ctx.store.set_meta(STATE_KEY, json.dumps(st))
 
 
+# ---- sent as it happens, from a thread of its own (otp's siem thread) ------------------------
+SENT_RUN = {}                       # lines sent since the API started, by server
+SENDER = {"thread": None, "seen": None}
+TICK_S = 3.0
+
+
+def _mark(ctx):
+    """What would make another run worth it: the newest event, the request log's size and time."""
+    got = ctx.store.one("SELECT MAX(id) AS n FROM events") or {}
+    try:
+        st = os.stat(ctx.cfg.get("request_log") or "/var/log/fake-igd/requests.jsonl")
+        log = (st.st_size, st.st_mtime)
+    except OSError:
+        log = None
+    return (got.get("n"), log)
+
+
+def _loop(ctx):
+    while True:
+        time.sleep(TICK_S)
+        try:
+            c = _settings(ctx)
+            if not c.get("siem"):
+                continue
+            mark = _mark(ctx)
+            st = state(ctx.store)
+            if mark == SENDER["seen"] and not st.get("trouble") and time.time() - float(st.get("at") or 0) < 60:
+                continue                                    # nothing new, nothing to try again yet
+            SENDER["seen"] = mark
+            run(ctx, c)
+        except Exception:                                   # noqa: BLE001 - the thread goes on
+            time.sleep(10)
+
+
 def background(ctx):
-    run(ctx)
+    """The thread that sends as it happens - started once (and again, were it to die)."""
+    import threading
+    th = SENDER["thread"]
+    if th is None or not th.is_alive():
+        th = threading.Thread(target=_loop, args=(ctx,), name="siem", daemon=True)
+        SENDER["thread"] = th
+        th.start()

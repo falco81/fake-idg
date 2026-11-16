@@ -64,13 +64,15 @@ function drawSiem() {
       !on ? 'dim' : (trouble.length ? 'warn' : 'ok'));
     var total = 0;
     Object.keys(d.sent || {}).forEach(function (k) { total += d.sent[k]; });
-    nodeBig(c, num(total), 'line(s) sent');
+    var totalRun = 0;
+    Object.keys(d.sent_run || {}).forEach(function (k) { totalRun += d.sent_run[k]; });
+    nodeBig(c, num(totalRun), 'line(s) sent since it started');
     var waiting = 0;
     Object.keys(d.waiting || {}).forEach(function (k) { waiting = Math.max(waiting, d.waiting[k] || 0); });
     c.appendChild(netFacts([
       ['Written as', d.host || '', true], ['In the shape of', (d.format || '').toUpperCase(), true],
       ['Last sent', d.last_sent ? ago(d.last_sent) : 'never'], ['Waiting to go', num(waiting)],
-      ['Looked', d.at ? ago(d.at) : 'not yet']
+      ['Dropped, the queue full', num(d.dropped || 0)], ['Read', d.at ? ago(d.at) : '']
     ]));
     ts.forEach(function (t) {
       var row = el('div', 'si-row');
@@ -96,15 +98,7 @@ function drawSiem() {
       api('siem', {action: 'test'}).then(function (x) { toast(x.message, x.test && x.test.ok ? 'good' : 'bad'); loadSiem(); })
         .catch(oops).then(function () { busy(test, false); });
     };
-    var now = cmdButton('Send what waits now', 'next', 'small');
-    explain(now, 'What is waiting goes now, not at the next minute.');
-    now.disabled = !ADMIN || !on;
-    now.onclick = function () {
-      busy(now, true);
-      api('siem', {action: 'now'}).then(function (x) { toast(x.message, 'good'); loadSiem(); })
-        .catch(oops).then(function () { busy(now, false); });
-    };
-    row2.appendChild(look); row2.appendChild(test); row2.appendChild(now);
+    row2.appendChild(look); row2.appendChild(test);
     c.appendChild(row2);
     grid.appendChild(c);
     host.appendChild(grid);

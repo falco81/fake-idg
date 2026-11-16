@@ -31,6 +31,11 @@ ADDR_RE = re.compile(r"^[0-9A-Fa-f:.]+\Z")
 FIELDS = ["ipv4.method", "ipv4.addresses", "ipv4.gateway", "ipv4.dns", "ipv4.dns-search",
           "ipv6.method", "ipv6.addresses", "ipv6.gateway", "ipv6.dns"]
 JOB_KEEP_S = 6 * 3600
+# NetworkManager's ipv6.method, every one, in otp's words where otp has them.
+V6_METHODS = ("auto", "dhcp", "manual", "link-local", "ignore", "disabled")
+V6_WORDS = {"auto": "automatic (SLAAC / DHCPv6)", "dhcp": "DHCPv6 only", "manual": "set by hand",
+            "link-local": "link-local only", "ignore": "ignore (NetworkManager leaves IPv6 alone)", "disabled": "off",
+            "shared": "shared to other machines"}
 
 SETTINGS = [
     {"key": "net_confirm_min", "name": "A new network goes back unless kept within (min)", "kind": "int",
@@ -95,10 +100,13 @@ def live():
                 continue
             if ifc.ip.is_loopback:
                 continue
-            a = out["addrs"].setdefault(dev, {"addrs4": [], "addrs6": []})
+            a = out["addrs"].setdefault(dev, {"addrs4": [], "addrs6": [], "addrs6_ll": []})
             if ifc.version == 4:
                 a["addrs4"].append(str(ifc))
-            elif not ifc.ip.is_link_local:
+            elif ifc.ip.is_link_local:
+                # IPv6 link-local (fe80::/64, scope link) - every interface with IPv6 has one: listed, marked
+                a["addrs6_ll"].append(str(ifc))
+            else:
                 a["addrs6"].append(str(ifc))
         for line in run([IP, "-o", "link", "show"]).splitlines():
             m = re.match(r"^\d+:\s+([^:@\s]+)[^<]*<([^>]*)>", line)
@@ -193,7 +201,7 @@ def read(cfg, host="", client=""):
     macs = {l["dev"]: l["mac"] for l in lv["links"]}
     for dev in sorted(seen):
         d = seen[dev]
-        a = lv["addrs"].get(dev) or {"addrs4": [], "addrs6": []}
+        a = lv["addrs"].get(dev) or {"addrs4": [], "addrs6": [], "addrs6_ll": []}
         d.update(a)
         d["mac"] = macs.get(dev, "")
         d["conf"] = {}
@@ -270,46 +278,53 @@ def check(ctx, now, want, trial_min):
     for x in search:
         if not DOMAIN_RE.match(x):
             raise ValueError("%r is not a search domain: a DNS name such as example.com, with no dot at its end" % x)
+    conf = d.get("conf") or {}
     v6 = want.get("ipv6") if isinstance(want.get("ipv6"), dict) else {}
-    on6 = bool(v6.get("on"))
-    mode6, a6, g6 = "off", None, ""
-    if on6:
-        mode6 = "manual" if str(v6.get("mode") or "manual") == "manual" else "auto"
-        if mode6 == "manual":
-            try:
-                a6 = ipaddress.ip_interface(str(v6.get("addr") or "").strip())
-            except ValueError:
-                raise ValueError("the IPv6 address is an address with its prefix: 2001:db8::10/64")
-            if a6.version != 6 or a6.ip.is_link_local or "/" not in str(v6.get("addr")):
-                raise ValueError("the IPv6 address is a global one with its prefix: 2001:db8::10/64")
-            g6 = str(v6.get("gw") or "").strip()
-            if g6:
-                p = _plain(g6)
-                if p is None or p.version != 6:
-                    raise ValueError("the IPv6 gateway is one IPv6 address")
+    # Every ipv6.method NetworkManager has; the switch off is "disabled" (or "ignore", as found).
+    mode6 = str(v6.get("method") or conf.get("ipv6_method") or "auto")
+    if mode6 not in V6_METHODS:
+        raise ValueError("IPv6 is one of: %s" % ", ".join(V6_METHODS))
+    a6, g6 = None, ""
+    if mode6 == "manual":
+        try:
+            a6 = ipaddress.ip_interface(str(v6.get("addr") or "").strip())
+        except ValueError:
+            raise ValueError("the IPv6 address is an address with its prefix: 2001:db8::10/64")
+        if a6.version != 6 or a6.ip.is_link_local or "/" not in str(v6.get("addr")):
+            raise ValueError("the IPv6 address is a global one with its prefix: 2001:db8::10/64")
+        g6 = str(v6.get("gw") or "").strip()
+        if g6:
+            p = _plain(g6)
+            if p is None or p.version != 6:
+                raise ValueError("the IPv6 gateway is one IPv6 address")
+    on6 = mode6 not in ("disabled", "ignore")
     dns6 = _list(v6.get("dns")) if on6 else []
     for x in dns6:
-        if _plain(x) is None:
-            raise ValueError("%r is not the address of a DNS server" % x)
+        p = _plain(x)
+        if p is None or p.version != 6:
+            raise ValueError("%r is not the IPv6 address of a DNS server" % x)
+    # Nothing of IPv6 changed: ipv6.* left exactly as it is - root does not touch it at all.
+    was_m = conf.get("ipv6_method") or ""
+    keep6 = mode6 == was_m and (not on6 or dns6 == (conf.get("ipv6_dns") or [])) and (
+        mode6 != "manual" or (str(a6) == ((conf.get("ipv6_addresses") or [""])[0]) and g6 == (conf.get("ipv6_gateway") or "")))
     host = str(want.get("hostname") or "").strip().rstrip(".").lower()
     host_old = str(now.get("hostname") or "").strip().rstrip(".").lower()
     same = host == host_old
     if host and not re.match(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
                              r"(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)%s$" % ("*" if same else "+"), host):
         raise ValueError("the host name is the whole name: igd.example.com")
-    conf = d.get("conf") or {}
     old_ip = ((conf.get("ipv4_addresses") or d["addrs4"] or [""])[0]).split("/")[0]
     new_ip = str(a4.ip) if a4 else ""
-    was6 = conf.get("ipv6_method") not in (None, "", "disabled", "ignore")
     plan = []
     if host and host != host_old:
         plan.append("the host name %s → %s (hostnamectl, and this machine's lines in /etc/hosts)" % (host_old or "?", host))
-    if on6 != was6:
-        plan.append("IPv6 %s on %s" % ("on" if on6 else "off", dev))
+    if not keep6:
+        plan.append("IPv6 on %s: %s → %s%s" % (dev, V6_WORDS.get(was_m, was_m or "?"), V6_WORDS[mode6],
+                                               " %s via %s" % (a6, g6 or "no gateway") if a6 else ""))
     plan.append("NetworkManager (%s): %s, DNS %s%s" % (
         con if con == dev else "%s on %s" % (con, dev), ("%s via %s" % (a4, gw or "no gateway")) if a4 else "IPv4 by DHCP",
         ", ".join(dns) or ("none" if a4 else "from DHCP"),
-        "" if not on6 else ", IPv6 %s" % (a6 if a6 else "automatic")))
+        ", IPv6 left as it is (%s)" % V6_WORDS.get(was_m, was_m or "?") if keep6 else ""))
     plan.append("the connection %s is brought up again with it - %s is cut off for a moment" % (con, dev))
     changed_ip = (method == "auto" and conf.get("ipv4_method") != "auto") or (bool(new_ip) and new_ip != old_ip)
     if d["answers"] and changed_ip:
@@ -326,7 +341,7 @@ def check(ctx, now, want, trial_min):
         plan.append("kept at once: there is no going back by itself (net_confirm_min is 0)")
     return {"dev": dev, "con": con, "hostname": host,
             "ipv4": {"method": method, "addr": str(a4) if a4 else "", "gw": gw, "dns": dns, "search": search},
-            "ipv6": {"mode": mode6, "addr": str(a6) if a6 else "", "gw": g6, "dns": dns6},
+            "ipv6": {"mode": "keep" if keep6 else mode6, "addr": str(a6) if a6 else "", "gw": g6, "dns": dns6},
             "old_ip": old_ip, "new_ip": new_ip, "old_hostname": host_old, "page": page,
             "changed_ip": changed_ip, "plan": plan}
 
@@ -455,4 +470,17 @@ def background(ctx):
               "root is asked to" % t.get("con"), "warn")
 
 
-ROUTES = {("GET", "/api/net"): get_net, ("POST", "/api/net"): post_net}
+def get_trial(ctx):
+    """What waits to be kept - for the banner on every page (otp's trials in /api/status): anybody
+    signed in sees it; Keep it and Put the old back are a full administrator's (POST /api/net)."""
+    ctx.need("readonly")
+    t = trial(ctx)
+    out = []
+    if t.get("state") == "trial":
+        j = ctx.store.meta_json("net:job") or {}
+        out.append({"kind": "net", "con": t.get("con"), "dev": j.get("dev") if j.get("con") == t.get("con") else t.get("con"),
+                    "until": float(t.get("until") or 0), "failed": t.get("failed") or ""})
+    return {"trials": out, "now": time.time()}
+
+
+ROUTES = {("GET", "/api/net"): get_net, ("POST", "/api/net"): post_net, ("GET", "/api/net/trial"): get_trial}

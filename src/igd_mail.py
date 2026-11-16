@@ -489,6 +489,9 @@ def smtp_talk(store, c, host, port, security, auth, msg, to, steps, verify=True,
             try:
                 if auth == "auto":
                     conn.login(user, pw)
+                elif auth == "xoauth2":                         # otp's: an OAuth access token as the password
+                    conn.auth("XOAUTH2", lambda challenge=None: "user=%s\x01auth=Bearer %s\x01\x01" % (user, pw),
+                              initial_response_ok=True)
                 else:
                     conn.user, conn.password = user, pw
                     mech = {"plain": "PLAIN", "login": "LOGIN", "cram-md5": "CRAM-MD5"}[auth]

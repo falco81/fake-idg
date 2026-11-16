@@ -5,6 +5,6 @@
         the requests and the ports asked for, the devices, the mappings, the mDNS services, the services' states,
         the disks, the memory and the load, the mail, the alerts open now.</p></div>
     <div class="card full"><h2>Settings</h2><div id="sect-monitor"></div></div>
-    <div id="mon-host"></div>
     <div id="snmp-host"></div>
+    <div id="mon-host"></div>
   </div>
