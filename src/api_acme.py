@@ -333,7 +333,7 @@ class Acme(object):
         if data is not None:
             req.add_header("Content-Type", "application/jose+json")
         try:
-            with urllib.request.urlopen(req, timeout=30, context=self.sslctx) as r:
+            with _open(req, 30, self.sslctx) as r:
                 body, headers, status = r.read(1 << 20), r.headers, r.status
         except urllib.error.HTTPError as e:
             body, headers, status = e.read(1 << 20), e.headers, e.code
@@ -977,12 +977,22 @@ def _dns_rfc2136(ctx, c, rr, txt):
     return lambda: run("delete")
 
 
+def _open(req, timeout, ctx):
+    """To the CA and the DNS APIs: through Settings → Proxy when it is on for ACME (1.6.0, otp's proxy_acme)."""
+    try:
+        import igd_proxy
+        if igd_proxy.url_for(None, "acme"):
+            return igd_proxy.open_url(None, "acme", req, timeout=timeout, context=ctx)
+    except ImportError:
+        pass
+    return urllib.request.urlopen(req, timeout=timeout, context=ctx)
+
+
 def _http_json(url, method="GET", body=None, headers=None, what="the API"):
     req = urllib.request.Request(url, method=method, data=json.dumps(body).encode() if body is not None else None,
                                  headers=dict({"Content-Type": "application/json", "User-Agent": UA}, **(headers or {})))
     try:
-        with urllib.request.urlopen(req, timeout=30, context=ssl.create_default_context()
-                                    if url.startswith("https") else None) as r:
+        with _open(req, 30, ssl.create_default_context() if url.startswith("https") else None) as r:
             raw = r.read(1 << 20)
             return r.status, (json.loads(raw.decode()) if raw.strip() else None), r.headers
     except urllib.error.HTTPError as e:

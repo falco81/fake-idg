@@ -668,6 +668,18 @@ install_pages() {
     if [[ -f "$NGINX_CONF" && -z "$REWRITE_NGINX" ]]; then
         good "$NGINX_CONF is already there and kept (--rewrite-nginx writes it afresh)"
         note "the one this version ships is $OPT_DIR/nginx-fake-igd.conf, for comparing"
+        # What later versions need of it, put in where it is missing (as otp's): a copy kept, nginx
+        # asked, the copy put back when it says no (1.6.0: /metrics, ACME's port-80 location).
+        local nbak="$NGINX_CONF.before-$VERSION" said
+        cp -a "$NGINX_CONF" "$nbak"
+        said="$("$VENV/bin/python" -I "$SOURCE_DIR/deploy/nginx_additions.py" "$NGINX_CONF" "$SOURCE_DIR/deploy/nginx-fake-igd.conf" || true)"
+        if nginx -t >/dev/null 2>&1; then
+            if [[ -n "$said" ]]; then good "$NGINX_CONF brought up to this version: $said (its copy: $nbak)"
+            else rm -f "$nbak"; fi
+        else
+            cp -a "$nbak" "$NGINX_CONF"
+            warn "nginx did not take the additions ($said), so $NGINX_CONF is as it was"
+        fi
     else
         [[ -f "$NGINX_CONF" ]] && cp -a "$NGINX_CONF" "$NGINX_CONF.before-$VERSION"
         local allow="$ADMIN_ALLOW"
@@ -818,8 +830,12 @@ pages_there() { [[ -f "$NGINX_CONF" || -d "$WEB_DIR" ]]; }
 
 base_packages() {
     step "Packages"
+    # 1.6.0, the panes of Settings: the network and the time (NetworkManager, chrony), SSH and the local
+    # users (openssh, libpwquality), backups (openssh-clients, samba-client), DNS-01 by RFC 2136 (bind-utils),
+    # the system's updates and whether a restart is needed (dnf-plugins-core)
     local need=(logrotate tar xz curl ca-certificates shadow-utils iproute bash-completion policycoreutils
-                openssl util-linux python3)
+                openssl util-linux python3 NetworkManager chrony openssh-server openssh-clients samba-client
+                bind-utils dnf-plugins-core libpwquality)
     command -v semanage >/dev/null || need+=(policycoreutils-python-utils)
     command -v iptables >/dev/null || systemctl is-active --quiet firewalld || need+=(iptables-nft)
     [[ -n "$WITH_WEB" ]] && need+=(nginx)

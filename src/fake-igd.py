@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
-__version__ = '1.5.3'
+__version__ = '1.6.0'
 VERSION = __version__
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
 DEFAULTS = {
@@ -336,7 +336,16 @@ def ntfy_send(cfg, title, message, priority=None, tags=None, timeout=10):
         ctx = ssl.create_default_context(cafile=cfg.get("ntfy_ca_file") or None)
     req = urllib.request.Request(url, data=str(message).encode("utf-8"), headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+        proxy = ""
+        try:                                   # Settings → Proxy, switched on for ntfy (1.6.0)
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import igd_proxy
+            proxy = igd_proxy.url_for(None, "ntfy")
+        except Exception:                      # noqa: BLE001 - straight
+            proxy = ""
+        opener = (lambda: igd_proxy.open_url(None, "ntfy", req, timeout=timeout, context=ctx)) if proxy else \
+            (lambda: urllib.request.urlopen(req, timeout=timeout, context=ctx))
+        with opener() as r:
             r.read()
             return True, "HTTP %d" % r.status
     except urllib.error.HTTPError as e:

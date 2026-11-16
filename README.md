@@ -1,4 +1,4 @@
-# fake-igd 1.5.3
+# fake-igd 1.6.0
 
 A fake UPnP router (IGD) for reconnaissance: it finds out **which ports a PS5 (or any other device) wants to open**, without enabling UPnP on your real router. Everything is logged to `/var/log/fake-igd/` and controlled with the **`upnp`** command - or by its menus with **`upnp --console`**. It also shows and controls the **mDNS reflector (avahi-daemon)** running on the same server, and sends notifications to **ntfy** (ntfy.sh or your private server).
 
@@ -20,8 +20,8 @@ packages only, checked and put in by root, exactly as otp does it.
 ## Installation (AlmaLinux 9)
 
 ```bash
-tar xzf fake-igd-1.5.3.tar.gz
-cd fake-igd-1.5.3
+tar xzf fake-igd-1.6.0.tar.gz
+cd fake-igd-1.6.0
 sudo ./install.sh
 ```
 
@@ -84,7 +84,7 @@ Or on the pages: *Settings → Upgrades* - *Look now*, *Upgrade to X now*, or dr
 console: menu **14 Upgrades**. Or by hand, as before:
 
 ```bash
-tar xzf fake-igd-1.5.3.tar.gz && cd fake-igd-1.5.3
+tar xzf fake-igd-1.6.0.tar.gz && cd fake-igd-1.6.0
 sudo ./install.sh --upgrade
 ```
 
@@ -143,6 +143,18 @@ unchanged).
 A setting the service uses restarts `fake-igd.service` when it is saved (the pages are a service of
 their own and stay); `web_allow` and the firewall's settings are put in place by root
 (`fake-igd-web.path`). Every request is relayed by PHP to the API, which decides everything - as otp's.
+
+### Every setting (1.6.0)
+
+*Settings* holds otp's panes that fit fake-igd, each as otp draws it: **How it answers**, **UPnP network**,
+**Notifications (ntfy)**, **Logs and state**, **mDNS reflector (avahi)** · **Accounts**, **Certificates and
+TLS**, **Automatic certificates (ACME)**, **Firewall and access**, **SSH server and notices**, **SSH keys**,
+**Local users** · **Network**, **Proxy**, **Time**, **The service**, **Restart and power off**, **Disks and
+logs** · **The database**, **Backups**, **Export and import** · **Mail**, **Outgoing mail**, **Alerts and
+reports**, **Monitoring** (Prometheus `/metrics`), **Syslog and SIEM**, **System updates**, **Upgrades**,
+**About**. Whatever changes the system is done by root (`/opt/fake-igd/root_*.py`, asked through
+`/var/lib/fake-igd/web/ask/`), checked again there; the network, the firewall and SSH go **on trial** and
+come back by themselves unless kept.
 
 ### Accounts (local, SQLite)
 

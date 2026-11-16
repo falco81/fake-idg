@@ -56,7 +56,17 @@ def _get(url, limit=4 * 1024 * 1024, accept="*/*", timeout=30, version=""):
     req = urllib.request.Request(url, headers={
         "User-Agent": "fake-igd/%s (+upgrade check)" % (version or "?"), "Accept": accept})
     ctx = ssl.create_default_context()
-    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
+    # Settings → Proxy, when it is switched on for the new versions (1.6.0, as otp's); else straight
+    # (and the service's own https_proxy, as before).
+    proxy = ""
+    try:
+        import igd_proxy
+        proxy = igd_proxy.url_for(None, "upgrade")
+    except Exception:                                   # noqa: BLE001 - no proxy known: straight
+        proxy = ""
+    opener = (lambda: igd_proxy.open_url(None, "upgrade", req, timeout=timeout, context=ctx)) if proxy else \
+        (lambda: urllib.request.urlopen(req, timeout=timeout, context=ctx))
+    with opener() as r:
         final = r.geturl()
         if not str(final).startswith("https://"):
             raise ValueError("it was sent on to an address that is not https: %s" % final)

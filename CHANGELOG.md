@@ -2,6 +2,42 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.6.0 (2026-11-16)
+
+**Every setting of otp's that fits fake-igd, on the pages, as otp's** - each pane copied from otp's markup
+and drawing, one server (no cluster), each change of the system done by root through a queue of asks
+(`/var/lib/fake-igd/web/ask/`, `fake-igd-web.path`), every value checked again by root, a copy kept and
+put back when a check fails, every change in the events.
+
+- **Certificates and TLS**: the certificate as it is (chain checked, fingerprint), put in as PEM or PFX,
+  a request (CSR), self-signed again (names and addresses), TLS settings as otp's (presets, protocols,
+  ciphers, DH, HSTS); root writes nginx's files, asks `nginx -t`, puts the old back when it says no.
+- **Automatic certificates (ACME)**: Let's Encrypt or any ACME CA, HTTP-01 (port 80 - opened to anybody
+  in FAKE-IGD-IN while it is used) and DNS-01 (by hand, RFC 2136, Cloudflare, deSEC, acme-dns), RSA and
+  ECDSA, ARI, renewed by itself, every order step by step.
+- **Firewall and access**: who may reach the pages, the firewall on/off, your own rules (IPv4 and IPv6)
+  before what fake-igd needs, each built-in rule switchable, the whole firewall as iptables-save shows it,
+  **every change on trial** - put back by itself unless kept, a banner on every page.
+- **SSH server and notices** (on trial, `sshd -t`; FAKE-IGD-IN follows SSH's port), **SSH keys**
+  (users' keys added, made, taken away; root's shown and exported, as otp's), **Local users** (made,
+  password, sudo, locked, aging, the password policy, the console at login).
+- **Network** (each interface by NetworkManager, the host name - on trial), **Time** (chrony: sources,
+  servers, a step, the time zone), **Restart and power off** (now, later, on a schedule).
+- **Disks and logs** (the journal's cap, fake-igd's log rotation), **The database** (copies, how long
+  events are kept, vacuum, download, put back), **Backups** (FTP, FTPS, SFTP, SCP, SMB or a folder,
+  locked with a password, on a schedule, put back), **Export and import**.
+- **Mail** and **Outgoing mail** (STARTTLS/SMTPS, PLAIN/LOGIN/CRAM-MD5, straight to MX, retried),
+  **Alerts and reports** (service, API, avahi down, another UPnP router, a new version, a disk filling,
+  the certificate running out, a failed upgrade, updates waiting; the report of the week),
+  **Monitoring** (Prometheus `/metrics` with a token; SNMPv3 left out - it needs AES the standard library
+  does not have), **Syslog and SIEM** (UDP/TCP/TLS; JSON, CEF, RFC 5424), **Proxy** (for the upgrades,
+  the system updates, ACME and ntfy), **System updates** (dnf, a restart offered when needed).
+- install.sh: the packages these need (NetworkManager, chrony, openssh, samba-client, bind-utils,
+  dnf-plugins-core, libpwquality); /metrics and ACME's port-80 location put into an existing
+  `fake-igd.conf` (a copy kept, `nginx -t` asked, put back if it says no).
+- Checked: every pane and tab in a browser at 1920×960 and 1280×720 - one scroller each, no page errors;
+  each pane's root part run against temp files and stand-in tools. Not run on AlmaLinux itself yet.
+
 ## 1.5.3 (2026-11-16)
 
 - **No double scrollbar on a long list**: a table of more than 50 rows (156 mDNS services) was paged

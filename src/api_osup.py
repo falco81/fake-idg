@@ -107,6 +107,9 @@ def follow(ctx):
         plan.update(state="failed", ended=res.get("at"), said="; ".join(res.get("said") or []) or "root said no")
         ctx.store.set_meta(PLAN_KEY, json.dumps(plan))
         ctx.event("the system update did not start: %s" % plan["said"], "warn", kind="osup")
+    if st.get("state") == "running" and time.time() - float(st.get("at") or 0) > 1800:
+        # A job that has said nothing for half an hour (the machine restarted under it): ended.
+        st = dict(st, state="failed", said="dnf never said that it ended")
     if not st or st.get("state") == "running":
         return st, plan
     done_id = st.get("id")

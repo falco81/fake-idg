@@ -79,7 +79,7 @@ if (isset($_GET['api'])) {
             echo json_encode(['ok' => false, 'error' => 'unknown endpoint']);
             exit;
         }
-        igd_relay($writes[$what], 'POST', sent_json(), in_array($what, ['upgrade', 'acme', 'osup', 'backup', 'carry'], true) ? 330.0 : 90.0);
+        igd_relay($writes[$what], 'POST', sent_json(), (in_array($what, ['upgrade', 'acme', 'osup', 'backup', 'carry'], true) || strpos($what, 'backup-') === 0 || strpos($what, 'carry-') === 0 || strpos($what, 'db-') === 0) ? 330.0 : 90.0);
         exit;
     }
     if (!isset($reads[$what])) {
