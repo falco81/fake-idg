@@ -4118,3 +4118,34 @@ table.if-t td{vertical-align:middle}
 table.if-t td.cert-crl-url{max-width:none}
 table.if-t td.cert-crl-url .cert-crl-url-in{max-width:420px}
 table.if-t td.cert-crl-url .mono{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Outgoing mail on a low screen: the list flows in the scrolling settings area - one scroller, never
+   the settings area and the list both (its held card's 320px floor made the area scroll beside it). */
+@media (max-height: 820px) {
+  body.app-shell #pane-mailq:not([hidden]){display:block;height:auto}
+  body.app-shell #pane-mailq > .card.held{min-height:0;max-height:none}
+  #pane-mailq #mq-table.scroll{flex:none;min-height:0;max-height:none;overflow-y:visible;overflow-x:auto}
+}
+
+/* 1.7.2 r3: server */
+/* ---- Settings → Network (r3, server): IPv4 and IPv6 in one grid of five columns, each field
+   under its fellow of the other family and in its column while others are hidden; the warning
+   as wide as the sections above it, 14 px from them (as otp's #net-host .msect). ---- */
+#net-host .net-grid{grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}
+@media (min-width:1500px){
+  #net-host .net-grid{grid-template-columns:repeat(5,minmax(0,1fr))}
+  #net-host .net-grid > .nc1{grid-column:1}
+  #net-host .net-grid > .nc2{grid-column:2}
+  #net-host .net-grid > .nc3{grid-column:3}
+  #net-host .net-grid > .nc4{grid-column:4}
+  #net-host .net-grid > .nc5{grid-column:5}
+}
+#net-host .card > .note.net-warn{max-width:none;margin:14px 0 0}
+/* ---- Settings → The service (r3, server): since when and the numbers on one line each; the
+   buttons of a row in columns by their kind (pane-service.js puts each in a cell of its own). ---- */
+#sv-units td.sv-nw, #sv-units td.num{white-space:nowrap}
+/* A change on trial (the network's, the firewall's): the banner in line with the banners above it
+   (.offline: no side margin, 16 px under) - .trials' own 16 px at the sides put it 16 px in. */
+#trials{margin:0 0 16px}
+/* The picker of accounts (About → the console at login; SSH server): its list is laid out only while
+   it is open - shut, Chrome kept its scroller laid out under the page's (a second scrollbar). */
+.acct-pick:not([open]) > .acct-panel{display:none}
