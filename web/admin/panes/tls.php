@@ -12,4 +12,17 @@
         nginx before reloading it.</p>
       <div id="tls-certs" class="cert-grid"></div>
     </div>
+    <!-- The system's trusted roots (otp 1.0.265): certificate authorities of one's own put into the
+         trust of the operating system, beside the distribution's list. -->
+    <div class="card full" id="osr-card">
+      <h2>Trusted roots of the system</h2>
+      <p class="note">Certificate authorities of your own - your company's root, an intermediate -
+        trusted by the operating system of this server as a whole: curl, dnf, LDAPS, SMTP, syslog over
+        TLS, fake-igd's own connections - every program that uses the system's trust. The
+        distribution's own list stays as it is and keeps coming with the system's updates; these are
+        added beside it, the way the system itself takes local additions (update-ca-trust on RHEL,
+        AlmaLinux and Rocky, update-ca-certificates on Debian and Ubuntu), and stay there through
+        those updates.</p>
+      <div id="osr-host"></div>
+    </div>
   </div>

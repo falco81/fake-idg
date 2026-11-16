@@ -52,9 +52,10 @@
     TLS.out = true;
     api('tls').then(drawTls).catch(oops).then(function () { TLS.out = false; });
   }
-  PANE_LOAD.tls = loadTls;
+  PANE_LOAD.tls = function () { loadTls(); osrLoad(); };
   PANE_TICK.tls = function () {
     if ($('modal') && !$('modal').hidden) return;
+    osrTick();
     if (TLS.out) return;
     TLS.out = true;
     api('tls').then(function (d) { drawTls(d); }).catch(function () {}).then(function () { TLS.out = false; });
@@ -488,5 +489,233 @@
             toast(x.message, 'good'); closeModal(); drawTls(x);
           }).catch(oops).then(function () { busy(b, false); });
         }}], 'medium');
+  }
+
+  /* ---- Trusted roots of the system (otp's osrLoad, drawOsRoots, osrAdd, osrRemove) ---------- */
+  var OSR = {d: null, n: 0, until: 0, out: false};
+  function osrLoad(live) {
+    if (!$('osr-host') || OSR.out) return;
+    OSR.out = true;
+    api('osroots').then(function (d) {
+      OSR.d = d;
+      if (live) liveRun(drawOsRoots); else drawOsRoots();
+    }).catch(function (e) { if (!live) oops(e); }).then(function () { OSR.out = false; });
+  }
+  /* Asked every 5 s while root is at it (and for a while after a change), else every 30 s. */
+  function osrTick() {
+    OSR.n += 1;
+    var busy = OSR.d && OSR.d.node && OSR.d.node.status === 'waiting';
+    if (busy || Date.now() < OSR.until || OSR.n % 6 === 0) osrLoad(true);
+  }
+  function osrStatusTag(n) {
+    var w = {applied: ['good', 'as wanted'], waiting: ['warn', 'waiting'], failed: ['bad', 'failed'],
+             none: ['dim', 'nothing added by fake-igd']}[n.status] || ['dim', n.status || '?'];
+    return el('span', 'tag ' + w[0], w[1]);
+  }
+  function osrDay(ts) { return ts ? new Date(ts * 1000).toLocaleDateString(numLang()) : '?'; }
+  function netFacts(rows) {
+    var dl = el('div', 'net-facts');
+    rows.forEach(function (r) {
+      var one = el('div', 'net-fact');
+      one.appendChild(el('span', 'k', r[0]));
+      var v = el('span', 'v' + (r[2] ? ' mono' : ''));
+      v.textContent = r[1] === '' || r[1] === null || r[1] === undefined ? '–' : String(r[1]);
+      if (r[2]) noI18n(v);
+      one.appendChild(v);
+      dl.appendChild(one);
+    });
+    return dl;
+  }
+  function drawOsRoots() {
+    var real = $('osr-host');
+    if (!real || !OSR.d) return;
+    liveFill(real, function (host) {
+      var d = OSR.d, n = d.node || {}, certs = d.certs || [];
+      var tools = el('div', 'btnrow');
+      tools.style.margin = '0 0 12px';
+      if (d.may) {
+        var add = cmdButton('Add an authority', 'upload', 'primary small');
+        explain(add, 'A root or an intermediate certificate authority of your own - pasted as PEM, or a .pem, .crt or .cer file; a file with a chain adds each authority in it.');
+        add.onclick = osrAdd;
+        add.disabled = certs.length >= (d.max || 50);
+        tools.appendChild(add);
+        var again = cmdButton('Read it again', 'refresh', 'small');
+        again.onclick = function () {
+          busy(again, true);
+          api('osroots', {action: 'refresh'}).then(function (x) { toast(x.message, 'good'); OSR.d = x; OSR.until = Date.now() + 90000; drawOsRoots(); })
+            .catch(oops).then(function () { busy(again, false); });
+        };
+        tools.appendChild(again);
+      }
+      if (tools.firstChild) host.appendChild(tools);
+      if (!certs.length) {
+        host.appendChild(el('p', 'note', 'fake-igd has added none - this server trusts its system\'s own list alone.'));
+      } else {
+        host.appendChild(listTable(['Authority', 'Issued by', 'Valid', 'Key', 'SHA-256', ''], certs, function (c) {
+          var tr = el('tr');
+          var t = el('td');
+          t.appendChild(noI18n(el('b', '', c.cn || '?')));
+          t.appendChild(document.createTextNode(' '));
+          t.appendChild(el('span', 'tag ' + (c.kind === 'root' ? 'info' : 'dim'), c.kind === 'root' ? 'root' : 'intermediate'));
+          var days = daysLeft(c.not_after);
+          if (days !== null && days < 0) t.appendChild(el('span', 'tag bad', 'ran out'));
+          else if (days !== null && days < 60) t.appendChild(el('span', 'tag warn', days + ' days left'));
+          (c.warn || []).forEach(function (w) { t.appendChild(el('div', 'small warn', w)); });
+          tr.appendChild(t);
+          tr.appendChild(noI18n(el('td', 'small', c.kind === 'root' ? '' : String(c.issuer || '').replace(/^.*?CN=/, '').split(',')[0])));
+          tr.appendChild(el('td', 'small', osrDay(c.not_before) + ' – ' + osrDay(c.not_after)));
+          tr.appendChild(noI18n(el('td', 'small', c.key || '?')));
+          var fp = noI18n(el('td', 'mono small', String(c.fp || '').slice(0, 16) + '…'));
+          copyOnClick(fp, c.fp, 'the SHA-256 fingerprint is copied');
+          tr.appendChild(fp);
+          var act = el('td', 'right sk-act');
+          var dl = iconButton('download', 'Download it (PEM)');
+          dl.onclick = function () { saveText(String(c.cn || 'ca').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 60) + '.pem', c.pem); };
+          act.appendChild(dl);
+          if (d.may) {
+            var rm = iconButton('trash', 'Take it out of the system\'s trust');
+            rm.onclick = function () { osrRemove(c); };
+            act.appendChild(rm);
+          }
+          tr.appendChild(act);
+          return tr;
+        }, 'plain'));
+      }
+      var py = d.python || {};
+      if (py.cafile) host.appendChild(el('p', 'muted small', 'fake-igd\'s own connections (mail, syslog, ntfy, ACME, upgrades) use the system\'s list too (' + py.cafile + ') - what is added here reaches them at their next connection.'));
+      var grid = el('div', 'pw-grid');
+      grid.style.marginTop = '16px';
+      var c = el('div', 'card pw-node');
+      var hd = el('div', 'pw-head');
+      hd.appendChild(el('span', 'dot ' + (n.at ? 'ok' : 'bad')));
+      hd.appendChild(noI18n(el('b', '', n.name || 'this server')));
+      hd.appendChild(el('span', 'tag info', 'this page'));
+      hd.appendChild(osrStatusTag(n));
+      c.appendChild(hd);
+      if (n.why) c.appendChild(el('p', 'note ' + (n.status === 'failed' ? 'bad' : 'warn'), n.why));
+      var s = n.system || {};
+      c.appendChild(netFacts([
+        ['The system\'s own list', s.count ? s.count + ' authorities' : (s.missing ? 'not there' : '?')],
+        ['Its package', s.package || '–', true],
+        ['Made last', s.at ? ago(s.at) : '–'],
+        ['Local additions in', n.dir || '–', true],
+        ['Made by', n.tool ? n.tool + (n.tool_there === false ? ' (not on this machine)' : '') : '–', true],
+        ['fake-igd\'s additions there', String((n.ours || []).length)],
+        ['Read', n.at ? ago(n.at) : 'not yet']
+      ]));
+      var others = n.others || [];
+      if (others.length) {
+        c.appendChild(el('div', 'k small muted', 'Added by somebody else - fake-igd leaves them as they are:'));
+        var ul = el('ul', 'small');
+        ul.style.margin = '4px 0 0 18px';
+        others.slice(0, 40).forEach(function (o) {
+          var li = el('li');
+          li.appendChild(noI18n(el('span', 'mono', o.file || '?')));
+          var cs = o.certs || [];
+          if (cs.length) {
+            li.appendChild(noI18n(el('span', '', ' - ' + cs.map(function (x) { return (x.cn || '?'); }).join(', '))));
+            cs.forEach(function (x) {
+              li.appendChild(document.createTextNode(' '));
+              li.appendChild(el('span', 'tag dim', x.kind === 'root' ? 'root' : (x.ca ? 'intermediate' : 'not an authority')));
+            });
+          } else if (o.link) li.appendChild(el('span', 'muted', ' - a link'));
+          else li.appendChild(el('span', 'muted', ' - no certificate read'));
+          ul.appendChild(li);
+        });
+        c.appendChild(ul);
+      }
+      grid.appendChild(c);
+      host.appendChild(grid);
+    }, undefined, function () { explainWhatWasDrawn($('osr-card')); });
+  }
+  /* A file as it comes: PEM as it is; DER (.cer) made PEM here. */
+  function osrFileText(buf) {
+    var bytes = new Uint8Array(buf);
+    var head = '';
+    for (var i = 0; i < Math.min(bytes.length, 4096); i++) head += String.fromCharCode(bytes[i]);
+    if (head.indexOf('-----BEGIN') >= 0) return new TextDecoder('ascii').decode(bytes);
+    var bin = '';
+    for (var j = 0; j < bytes.length; j++) bin += String.fromCharCode(bytes[j]);
+    var b64 = btoa(bin).replace(/(.{64})/g, '$1\n').replace(/\n$/, '');
+    return '-----BEGIN CERTIFICATE-----\n' + b64 + '\n-----END CERTIFICATE-----\n';
+  }
+  function osrAdd() {
+    var area, seen, timer = null, checked = '';
+    modal('Add to the system\'s trust', function (body) {
+      var p = el('p', 'note');
+      p.innerHTML = 'A certificate authority of your own - a root, or an intermediate - as PEM (<code>-----BEGIN CERTIFICATE-----</code>), or a <code>.pem</code>, <code>.crt</code> or <code>.cer</code> file. A chain adds every authority in it. Only authorities are taken (CA:TRUE), never a private key.';
+      body.appendChild(p);
+      body.appendChild(el('p', 'note', 'Every program of this server trusts what they sign from then on.'));
+      area = noI18n(el('textarea', 'mono'));
+      area.rows = 8; area.spellcheck = false; area.placeholder = '-----BEGIN CERTIFICATE-----';
+      body.appendChild(area);
+      var fr = el('div', 'btnrow');
+      fr.style.margin = '8px 0 4px';
+      var pickB = cmdButton('Read a file…', 'upload', 'small');
+      var input = el('input'); input.type = 'file'; input.hidden = true;
+      input.accept = '.pem,.crt,.cer,.der,.cert,.ca-bundle';
+      pickB.onclick = function () { input.click(); };
+      input.onchange = function () {
+        var f = input.files && input.files[0];
+        if (!f) return;
+        if (f.size > 1048576) { toast('that file is far bigger than certificates are', 'warn'); return; }
+        var r = new FileReader();
+        r.onload = function () { area.value = osrFileText(r.result); look(); };
+        r.readAsArrayBuffer(f);
+      };
+      fr.appendChild(pickB); fr.appendChild(input);
+      body.appendChild(fr);
+      seen = el('div', 'osr-seen');
+      body.appendChild(seen);
+      var look = function () {
+        var text = area.value.trim();
+        if (text === checked) return;
+        checked = text;
+        clear(seen);
+        if (!text) return;
+        api('osroots', {action: 'check', text: text}).then(function (x) {
+          if (area.value.trim() !== text) return;
+          clear(seen);
+          (x.certs || []).forEach(function (c) {
+            var box = el('div', 'note');
+            box.style.margin = '8px 0 0';
+            box.appendChild(noI18n(el('b', '', c.cn || '?')));
+            box.appendChild(document.createTextNode(' '));
+            box.appendChild(el('span', 'tag ' + (c.refused.length ? 'bad' : (c.already ? 'dim' : 'good')),
+              c.refused.length ? 'not taken' : (c.already ? 'there already' : (c.kind === 'root' ? 'root' : 'intermediate'))));
+            box.appendChild(noI18n(el('div', 'muted small', 'SHA-256 ' + c.fp)));
+            box.appendChild(el('div', 'small', 'valid ' + osrDay(c.not_before) + ' – ' + osrDay(c.not_after) + ' · ' + (c.key || '?')));
+            c.refused.forEach(function (w) { box.appendChild(el('div', 'small bad', w)); });
+            c.warn.forEach(function (w) { box.appendChild(el('div', 'small warn', w)); });
+            seen.appendChild(box);
+          });
+        }).catch(function (e) {
+          if (area.value.trim() !== text) return;
+          clear(seen);
+          seen.appendChild(el('p', 'note bad', (e && e.message) || String(e)));
+        });
+      };
+      area.oninput = function () { clearTimeout(timer); timer = setTimeout(look, 400); };
+      setTimeout(function () { area.focus(); }, 60);
+    }, [{words: 'Cancel', close: true}, {words: 'Add them', cls: 'primary', icon: 'add', go: function (b) {
+      busy(b, true);
+      api('osroots', {action: 'add', text: area.value.trim()}).then(function (x) {
+        closeModal();
+        toast(x.message, 'good');
+        OSR.d = x; OSR.until = Date.now() + 90000;
+        drawOsRoots();
+      }).catch(function (e) { busy(b, false); oops(e); });
+    }}], 'medium');
+  }
+  function osrRemove(c) {
+    confirmThen('Take it out of the system\'s trust',
+      'What <b>' + htmlText(c.cn || '?') + '</b> (SHA-256 <code>' + htmlText(String(c.fp).slice(0, 16)) + '…</code>) signs is no longer trusted by this server - unless the system\'s own list has it. Connections that rely on it (LDAPS, mail, syslog…) fail from their next start.',
+      'Take it away', function () {
+        api('osroots', {action: 'remove', fp: c.fp}).then(function (x) {
+          toast(x.message, 'good');
+          OSR.d = x; OSR.until = Date.now() + 90000;
+          drawOsRoots();
+        }).catch(oops);
+      }, true);
   }
 }());
