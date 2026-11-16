@@ -2,6 +2,45 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.7.0 (2026-11-16)
+
+**Everything gone through again, against otp, element by element** - every tab and every pane of
+Settings, side by side with otp's running pages: the same cards in the same order, the same headings,
+notes, controls, popups and behaviour; what otp has and fits one fake-igd server added.
+
+- **The shell**: otp's sign-in page (with its picture, and the second step), header (the load meter,
+  the account popup: what you may do, Edit the columns, your settings in a file, a new password), bars
+  (php2shell, problems, trials on every page), Overview (cards that say why they have their colour, the
+  chart opening the hour pressed, facets with when last seen), Ports / Requests / Clients / Mappings as
+  otp's Tokens and Log (filters, otp's search language `field:value` NOT/OR, pager, a popup for every
+  row), Events with the daemon's own log, the settings drawn by otp's own code (the (i) panel with the
+  command line, only_when chained), a password that must be changed is asked for first.
+- **Accounts**: otp's pane - the role in the row, switched off/on, a password set or made (shown once),
+  must change at the next sign-in, sign-in history, Signed in now, Locked out (counted by name and by
+  address, cleared by hand), the policy; **a second step by an app (TOTP)** for these accounts.
+- **Upgrades**: otp's pane - To be done by hand (checked by itself, Done, a count beside Upgrades),
+  this server, From the web (choose among the newer versions, what is new in each), a new version sent
+  from the browser, going back to an older one (off unless switched on; never below 1.4.0), the upgrade's
+  bars live, what root said. `upnp upgrade after`, `--downgrade`.
+- **About** (what runs where, PHP as php-fpm runs it, the README and what is new, the console at login,
+  debug and the performance meter) and **The service** (every unit: state, restarts, memory, its journal;
+  restarted, stopped, started - asked twice where it hurts).
+- **fake-igd's own panes**: what listens where now and a *Try it* that asks fake-igd as a PS5 does, step
+  by step; the ntfy test with its steps and the server's own CA; interfaces picked from a list; **mDNS**:
+  the daemon as it runs now, copies of avahi-daemon.conf put back, a live view of services coming and going.
+- The panes of 1.6.0 reviewed: TLS (the system's trusted roots; the name the browser used vs the
+  certificate's and nginx's names; the dialogs filled from it), ACME (where the names come from; the
+  exact record missing when DNS-01 fails), Firewall and access (the health check's own list; behind a load
+  balancer - real IP), SSH, **Network (every IPv6 method NetworkManager has - link-local included -, the
+  form started from what nmcli has now, an IPv4 change leaves IPv6 alone)**, Time, Power, Disks, The
+  database (dumps, the key beside each copy, erasing collected data), Backups, Mail (XOAUTH2), Alerts
+  (failed backups, logs not reaching syslog), Syslog (sent as it happens), Proxy (ACME's DNS APIs).
+- **Secrets sealed** as otp seals them (a key beside the database, `secrets.key`): mail, proxy, backup
+  destinations, the metrics token, the ACME account key and DNS API tokens; 1.6.0's are sealed in place.
+- `upnp user`: `must-change`, `off`/`on`, `reset-2fa`, `lockouts`, `clear`.
+- Sign-ins last 12 hours at most; 5 wrong passwords for a name or 50 from an address in 15 minutes hold
+  them back (Settings → Accounts).
+
 ## 1.6.0 (2026-11-16)
 
 **Every setting of otp's that fits fake-igd, on the pages, as otp's** - each pane copied from otp's markup

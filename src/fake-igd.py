@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
-__version__ = '1.6.0'
+__version__ = '1.7.0'
 VERSION = __version__
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
 DEFAULTS = {
@@ -106,7 +106,9 @@ def load_config(path):
     except json.JSONDecodeError as e:
         print("JSON error in config %s: %s" % (path, e), file=sys.stderr)
         sys.exit(2)
-    unknown = set(user) - set(DEFAULTS)
+    # Keys of the pages' that have no default on purpose (1.7.0): health_allow - never set, the health
+    # check follows web_allow.
+    unknown = set(user) - set(DEFAULTS) - {"health_allow"}
     cfg.update(user)
     cfg["_unknown_keys"] = sorted(k for k in unknown if not k.startswith("_"))
     cfg["mode"] = str(cfg["mode"]).lower()

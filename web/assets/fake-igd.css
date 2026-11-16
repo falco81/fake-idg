@@ -4088,3 +4088,18 @@ td.cert-crl-url .tag{flex:none;margin:0 6px 0 0}
 #lg-scroll > pre.lines{max-height:none;overflow:visible;margin:0}
 /* one scroller (1.6.0): a table inside a held box never scrolls by itself - the box does */
 .card.held > .scroll.rowsonly .scroll{max-height:none !important;overflow:visible !important}
+/* one scroller on a low screen too (1.7.0): the held list gives way before the panel would scroll
+   beside it, and a table on a pane of Settings never scrolls inside the scrolling settings area */
+@media (max-height: 820px) {
+  .card.held > .scroll.rowsonly{min-height:72px}
+}
+.ctl-main .scroll.lt-held{max-height:none}
+/* a held list with a card beside it (Events and its own log): the panel scrolls, never the list too;
+   and on a very low screen every list simply flows in its panel - one scroller, always */
+body.framed > .wrap > .panel.holds-one.has-aside > .card.held{max-height:none}
+body.framed > .wrap > .panel.holds-one.has-aside > .card.held > .scroll.rowsonly{flex:none;min-height:0;overflow-y:visible;overflow-x:auto}
+@media (max-height: 680px) {
+  body.framed > .wrap > .panel.holds-one{overflow:auto}
+  body.framed > .wrap > .panel.holds-one > .card.held{flex:none}
+  .card.held > .scroll.rowsonly{flex:none !important;min-height:0;overflow-y:visible;overflow-x:auto}
+}

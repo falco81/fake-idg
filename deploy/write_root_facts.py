@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""root_facts.py PATH - install.sh writes what root found (otp 1.0.258's root-facts.json): which install.sh
+"""write_root_facts.py PATH - install.sh writes what root found (otp 1.0.258's root-facts.json): which install.sh
 put root's parts in, what nginx and the firewall made of it. A value this run did not look at is kept
 from the run before. Root's, readable by all, no secret in it. Read by Settings -> Upgrades."""
 import json

@@ -76,20 +76,16 @@
         ['State', n.alive ? 'answering' : 'not answering'],
         ['Address', n.address || '', true],
         ['Running for', n.started ? span(d.now - n.started) : ''],
-        ['Version', n.version || '', true],
-        ['Restart on a schedule', d.auto && d.auto.on ? (d.auto.next ? 'next ' + new Date(d.auto.next * 1000).toLocaleString(numLang()) : 'on') : 'off']
+        ['Version', n.version || '', true]
       ]));
       var row = el('div', 'btnrow');
-      var when = selectBox([['0', 'now'], ['1', 'in 1 min'], ['5', 'in 5 min'], ['10', 'in 10 min'], ['15', 'in 15 min'],
-                            ['30', 'in 30 min'], ['60', 'in an hour'], ['120', 'in 2 hours']], '0');
-      explain(when, 'Now: in a few seconds. Later: shutdown +N - whoever is signed in at the machine is told, and it can be cancelled until then.');
       var rb = cmdButton('Restart', 'refresh', '');
       var off = cmdButton('Power off', 'power', 'danger');
       var busyNow = d.plan && d.plan.state === 'asked';
-      rb.disabled = off.disabled = when.disabled = !ADMIN || !!busyNow;
-      rb.onclick = function () { pwAsk('reboot', parseInt(when.value, 10) || 0, n); };
-      off.onclick = function () { pwAsk('poweroff', parseInt(when.value, 10) || 0, n); };
-      row.appendChild(when); row.appendChild(rb); row.appendChild(off);
+      rb.disabled = off.disabled = !ADMIN || !!busyNow;
+      rb.onclick = function () { pwAsk('reboot', 0, n); };
+      off.onclick = function () { pwAsk('poweroff', 0, n); };
+      row.appendChild(rb); row.appendChild(off);
       c.appendChild(row);
       grid.appendChild(c);
       host.appendChild(grid);
@@ -200,4 +196,20 @@
   }
 
   PANE_LOAD.power = loadPower;
+}());
+/* The schedule's settings in one row, as otp's grid draws them (no item twice as wide). */
+(function () {
+  var theirs = drawSettings;
+  drawSettings = function () {
+    var r = theirs.apply(this, arguments);
+    document.querySelectorAll('#sect-power .set-item.wide').forEach(function (x) { x.classList.remove('wide'); });
+    return r;
+  };
+}());
+(function () {
+  var load = PANE_LOAD.power;
+  PANE_LOAD.power = function () {
+    document.querySelectorAll('#sect-power .set-item.wide').forEach(function (x) { x.classList.remove('wide'); });
+    return load.apply(this, arguments);
+  };
 }());

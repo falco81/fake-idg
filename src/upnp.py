@@ -17,7 +17,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from xml.etree import ElementTree as ET
 
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 APP = "fake-igd"
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
@@ -101,7 +101,8 @@ SETTING_GROUPS = [
     ("Notifications (ntfy)", ["ntfy_url", "ntfy_token", "ntfy_user", "ntfy_password", "ntfy_priority",
                               "ntfy_tags", "ntfy_ca_file", "notify_on_renew", "notify_other_router"]),
     ("Logs and state", ["log_level", "log_file", "request_log", "state_dir"]),
-    ("Web pages and firewall", ["site_name", "web_allow", "api_port",
+    ("About", ["site_name", "api_port"]),
+    ("Web pages and firewall", ["web_allow",
                                 "firewall", "firewall_ssh", "firewall_icmp"]),
     ("Upgrades", ["upgrade_url", "upgrade_check"]),
 ]

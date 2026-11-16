@@ -840,7 +840,7 @@ does_it_work() {
 root_facts_write() {
     [[ -d "$OPT_DIR" && ! -L "$OPT_DIR" ]] || return 0
     FACT_VERSION="$VERSION" FACT_KIND="${DO_UPGRADE:+upgrade}" FACT_NGINX_ADD="$FACT_NGINX_ADD" \
-        FACT_FIREWALL="$FACT_FIREWALL" "$VENV/bin/python" -I "$SOURCE_DIR/deploy/root_facts.py" "$OPT_DIR/root-facts.json" \
+        FACT_FIREWALL="$FACT_FIREWALL" "$VENV/bin/python" -I "$SOURCE_DIR/deploy/write_root_facts.py" "$OPT_DIR/root-facts.json" \
         || warn "$OPT_DIR/root-facts.json could not be written"
     chown root:root "$OPT_DIR/root-facts.json" 2>/dev/null || true
     local floor=1.4.0 was=""

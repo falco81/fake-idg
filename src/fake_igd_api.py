@@ -78,7 +78,7 @@ CHOICE_WORDS = {
     "mapping_response": {"accept": "accept - confirm it (nothing is opened)", "reject": "reject - error 501"},
 }
 PANES = {"answer": "How it answers", "network": "Network", "ntfy": "Notifications (ntfy)",
-         "logs": "Logs and state", "web": "Web pages and firewall", "upgrade": "Upgrades"}
+         "logs": "Logs and state", "web": "Web pages and firewall", "upgrade": "Upgrades", "about": "About"}
 PANE_OF_GROUP = {g: p for p, g in PANES.items()}
 
 
