@@ -48,6 +48,9 @@ IPT_FILE = os.environ.get("FAKE_IGD_IPTABLES_FILE", "/etc/sysconfig/iptables")
 CHAIN = "FAKE-IGD-IN"
 MARK = "# fake-igd:"
 IFACE_RE = re.compile(r"^[A-Za-z0-9_.:@-]{1,15}\Z")
+# The rules `upnp firewall | sh` of 1.3 put straight into INPUT, by hand (1.4.1): with the
+# chain in place they say nothing more, and they are taken out when it is put in place.
+OLD_RE = re.compile(r'^-A INPUT (?:.* )?-m comment --comment "?fake-igd"? -j ACCEPT$')
 DEFAULT_ALLOW = ["192.168.0.0/16", "172.16.0.0/12", "10.0.0.0/8"]
 
 
@@ -195,6 +198,20 @@ def fw_live(cfg):
             run(["iptables", "-I", "INPUT", "1", "-j", CHAIN])
 
 
+def old_live_off():
+    """The rules of 1.3 in INPUT taken away; how many."""
+    import shlex
+    n = 0
+    for ln in run(["iptables", "-S", "INPUT"]).stdout.splitlines():
+        if OLD_RE.match(ln):
+            args = shlex.split(ln)
+            args[0] = "-D"
+            if subprocess.run(["iptables"] + args, stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL).returncode == 0:
+                n += 1
+    return n
+
+
 def fw_live_off():
     while subprocess.run(["iptables", "-D", "INPUT", "-j", CHAIN], stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL).returncode == 0:
@@ -222,6 +239,8 @@ def file_strip(text):
 def file_with(text, cfg):
     """/etc/sysconfig/iptables with the chain's lines in its filter table - or without them (cfg None)."""
     lines = file_strip(text)
+    if cfg is not None:
+        lines = [x for x in lines if not OLD_RE.match(x)]
     if cfg is None:
         return "\n".join(lines) + "\n"
     ours = ["%s begin - fake-igd keeps these lines (upnp firewall, the pages); do not change them" % MARK,
@@ -277,7 +296,12 @@ def firewall(cfg):
         said = fw_file(None) if os.path.isfile(IPT_FILE) else ""
         return ["firewall: off - %s and its jump taken away" % CHAIN] + ([said] if said else [])
     fw_live(cfg)
-    return ["firewall: %s in place, first in INPUT (%d rules)" % (CHAIN, len(chain_rules(cfg))), fw_file(cfg)]
+    said = ["firewall: %s in place, first in INPUT (%d rules)" % (CHAIN, len(chain_rules(cfg)))]
+    old = old_live_off()
+    if old:
+        said.append("firewall: %d rule(s) of fake-igd 1.3 taken out of INPUT (--comment fake-igd) - "
+                    "%s does what they did" % (old, CHAIN))
+    return said + [fw_file(cfg)]
 
 
 def fw_status():

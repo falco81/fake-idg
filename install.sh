@@ -534,6 +534,37 @@ ensure_php() {
     php_guard
 }
 
+# The machine's own IPv4 addresses (1.4.1): the pages are reached by them as often as by the name.
+host_ips() { hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+(\.[0-9]+){3}$' | grep -v '^127\.' || true; }
+# The names nginx answers with, as its file says (an upgrade keeps the file, and its name).
+nginx_names() { [[ -f "$NGINX_CONF" ]] && sed -n 's/^[[:space:]]*server_name[[:space:]]\{1,\}\([^;]*\);.*/\1/p' "$NGINX_CONF" | head -n 1 || true; }
+make_cert() {           # make_cert "name1 name2" - self-signed, for the names and every address here
+    local names="$1" san="" n
+    for n in $names; do san+="DNS:$n,"; done
+    for n in $(host_ips); do san+="IP:$n,"; done
+    openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
+        -keyout "$CERT_DIR/fake-igd.key" -out "$CERT_DIR/fake-igd.pem" \
+        -subj "/CN=${names%% *}" -addext "subjectAltName=${san%,}" 2>/dev/null
+    chmod 0600 "$CERT_DIR/fake-igd.key"
+}
+cert_selfmade() {       # the certificate there is one of ours: signed by itself, made by this installer
+    local c="$CERT_DIR/fake-igd.pem"
+    [[ -f "$c" ]] || return 1
+    [[ "$(openssl x509 -in "$c" -noout -subject 2>/dev/null | sed 's/^subject=//')" == \
+       "$(openssl x509 -in "$c" -noout -issuer 2>/dev/null | sed 's/^issuer=//')" ]]
+}
+cert_lacks() {          # what of the names and addresses here the certificate does not name
+    local c="$CERT_DIR/fake-igd.pem" have n out=""
+    have="$(openssl x509 -in "$c" -noout -ext subjectAltName 2>/dev/null || true)"
+    for n in $1; do grep -q "DNS:$n\b" <<< "$have" || out+="$n "; done
+    for n in $(host_ips); do grep -q "IP Address:$n\b" <<< "$have" || out+="$n "; done
+    echo "${out% }"
+}
+pages_say() {           # where the pages are: by name and by every address
+    local n first="The pages:     "
+    for n in $(nginx_names) $(host_ips); do say "$first https://$n/admin/"; first="               "; done
+}
+
 allow_lines() {         # allow_lines "a,b" -> nginx allow lines, or the defaults
     local list="$1" out="" one
     if [[ -z "$list" ]]; then
@@ -586,15 +617,27 @@ install_pages() {
         install -m 0600 "$KEY_FILE" "$CERT_DIR/fake-igd.key"
         good "your certificate is in $CERT_DIR"
     elif [[ -f "$CERT_DIR/fake-igd.pem" && -f "$CERT_DIR/fake-igd.key" ]]; then
-        good "$CERT_DIR/fake-igd.pem is already there"
+        local lacks names
+        names="$(nginx_names)"; names="${names:-$SERVER_NAME}"
+        lacks="$(cert_lacks "$names")"
+        if [[ -n "$lacks" ]] && cert_selfmade; then
+            # One this installer made, without the addresses (1.4.0) or a name: made again (1.4.1).
+            cp -p "$CERT_DIR/fake-igd.pem" "$CERT_DIR/fake-igd.pem.before-$VERSION"
+            cp -p "$CERT_DIR/fake-igd.key" "$CERT_DIR/fake-igd.key.before-$VERSION"
+            make_cert "$names"
+            good "the self-signed certificate made again, for $names and $(host_ips | paste -sd' ' -) (it lacked: $lacks)"
+            note "the browser asks once more to accept it; the one before is fake-igd.pem.before-$VERSION"
+        elif [[ -n "$lacks" ]]; then
+            good "$CERT_DIR/fake-igd.pem is already there (yours - kept; it does not name: $lacks)"
+        else
+            good "$CERT_DIR/fake-igd.pem is already there"
+        fi
     else
         warn "no certificate given - making one this machine signs itself"
         note "Browsers will complain about it. Replace $CERT_DIR/fake-igd.pem and fake-igd.key with a"
         note "real pair and reload nginx (or ./install.sh --upgrade --cert FILE --key FILE)."
-        openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
-            -keyout "$CERT_DIR/fake-igd.key" -out "$CERT_DIR/fake-igd.pem" \
-            -subj "/CN=$SERVER_NAME" -addext "subjectAltName=DNS:$SERVER_NAME" 2>/dev/null
-        chmod 0600 "$CERT_DIR/fake-igd.key"
+        make_cert "$SERVER_NAME"
+        good "made for $SERVER_NAME and $(host_ips | paste -sd' ' -)"
     fi
 
     # ---- nginx ---------------------------------------------------------------------
@@ -859,7 +902,7 @@ if [[ -n "$DO_UPGRADE" ]]; then
     does_it_work
     step "Done"
     good "fake-igd ${OLD_VERSION:-?} → $VERSION"
-    [[ -n "$WITH_WEB" ]] && say "The pages: https://$SERVER_NAME/admin/"
+    if [[ -n "$WITH_WEB" ]]; then pages_say; fi
     exit 0
 fi
 
@@ -913,7 +956,7 @@ open_firewall
 does_it_work
 
 step "Done"
-[[ -n "$WITH_WEB" ]] && say "The pages:      https://$SERVER_NAME/admin/"
+if [[ -n "$WITH_WEB" ]]; then pages_say; fi
 say "The console:    upnp --console         (menus, opens on the live log; q leaves it)"
 say "The command:    upnp --help            (status | test | ports | log -f | dnat | upgrade | user ...)"
 say "Configuration:  $CONFIG_FILE  (the pages, or sudo upnp config set ...)"

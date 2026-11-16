@@ -2,6 +2,17 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.4.1 (2026-11-16)
+
+- install.sh says where the pages are by name **and by every IPv4 address** of the machine
+  (`https://192.168.40.27/admin/`), at the end of an install and of an upgrade.
+- The self-signed certificate names the machine's addresses too, and every name nginx answers with.
+  One made by 1.4.0 (signed by itself, without them) is made again by the upgrade - the one before
+  is kept as `fake-igd.pem.before-1.4.1`; a certificate of your own is never touched.
+- The firewall: the rules of 1.3 put straight into INPUT by hand (`upnp firewall | sh`,
+  `--comment fake-igd`) are taken out - live and from `/etc/sysconfig/iptables` - when FAKE-IGD-IN
+  is put in place; the chain does what they did. Every other rule of INPUT stays as it is.
+
 ## 1.4.0 (2026-11-16)
 
 - **Upgrades from the web**, copied from otp step for step: `upnp upgrade check | online [VERSION] |
