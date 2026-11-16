@@ -602,7 +602,11 @@ install_pages() {
     install -m 0644 "$SOURCE_DIR"/web/*.php "$SOURCE_DIR/web/.user.ini" "$WEB_DIR/"
     install -m 0644 "$SOURCE_DIR/web/admin/index.php" "$WEB_DIR/admin/"
     # the panes of Settings (1.6.0): exactly the package's
-    rm -rf "$WEB_DIR/admin/panes"
+    rm -rf "$WEB_DIR/admin/panes" "$WEB_DIR/admin/tabs"
+    if compgen -G "$SOURCE_DIR/web/admin/tabs/*.php" >/dev/null; then
+        install -d -m 0755 "$WEB_DIR/admin/tabs"
+        install -m 0644 "$SOURCE_DIR"/web/admin/tabs/*.php "$WEB_DIR/admin/tabs/"
+    fi
     if compgen -G "$SOURCE_DIR/web/admin/panes/*.php" >/dev/null; then
         install -d -m 0755 "$WEB_DIR/admin/panes"
         install -m 0644 "$SOURCE_DIR"/web/admin/panes/*.php "$WEB_DIR/admin/panes/"

@@ -346,23 +346,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
   </div>
 </section>
 
-<!-- ===================== mDNS ===================== -->
-<section class="panel" id="tab-mdns" hidden>
-  <div class="card full" data-hold>
-    <h2>Services on the network <span class="right" id="ms-said"></span></h2>
-    <p class="note">What mDNS shows now on every interface avahi uses - AirPlay, Chromecast, printers,
-      the PS5 - asked of avahi-daemon (<span class="mono">avahi-browse -a -r</span>, as
-      <span class="mono">upnp mdns services</span>). Click a row for all it says.</p>
-    <div class="facts" id="ms-tiles"></div>
-    <div class="btnrow filters">
-      <input type="search" id="ms-q" placeholder="a name, a type (_airplay), an address, an interface…" style="flex:1;min-width:200px">
-      <select id="ms-iface"><option value="">every interface</option></select>
-      <select id="ms-proto"><option value="">IPv4 and IPv6</option><option value="IPv4">IPv4</option><option value="IPv6">IPv6</option></select>
-      <button class="btn cmd" id="ms-look" data-icon="refresh" title="Ask avahi again now - it takes a few seconds.">Look again</button>
-    </div>
-    <div id="ms-table" class="scroll rowsonly"></div>
-  </div>
-</section>
+<?php include __DIR__ . '/tabs/mdns.php'; ?>
 
 <!-- ===================== Log ===================== -->
 <section class="panel" id="tab-log" hidden>
@@ -448,134 +432,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     <p class="note" style="margin:0">This account is read only. A full administrator can change that under <i>Accounts</i>.</p>
   </div>
 
-  <div class="ctl-pane" id="pane-answer">
-    <div class="ctl-head"><h2 class="ctl-title">How it answers</h2>
-      <p class="ctl-lede">fake-igd answers like a UPnP router and opens nothing. A change here restarts
-        fake-igd.service; the PS5 notices nothing but a moment of silence.</p></div>
-    <div class="card full"><div id="sect-answer"></div></div>
-  </div>
-
-  <div class="ctl-pane" id="pane-network" hidden>
-    <div class="ctl-head"><h2 class="ctl-title">Network</h2>
-      <p class="ctl-lede">Where it listens. SSDP is always 1900/udp; the description and SOAP port is
-        yours to choose. fake-igd is IPv4 only.</p></div>
-    <div class="card full"><div id="sect-network"></div></div>
-  </div>
-
-  <div class="ctl-pane" id="pane-ntfy" hidden>
-    <div class="ctl-head"><h2 class="ctl-title">Notifications (ntfy)</h2>
-      <p class="ctl-lede">Every new port a client asks for - and another UPnP router seen on the network -
-        to your phone, through ntfy.sh or your own ntfy server.</p></div>
-    <div class="card full"><div id="sect-ntfy"></div>
-      <div class="btnrow admin-only" style="margin-top:14px">
-        <button class="btn cmd" id="nt-test" data-icon="bell" title="One test message with the saved settings; the server's answer is said here.">Send a test</button>
-        <span class="muted small" id="nt-said"></span>
-      </div></div>
-  </div>
-
-  <div class="ctl-pane" id="pane-logs" hidden>
-    <div class="ctl-head"><h2 class="ctl-title">Logs and state</h2>
-      <p class="ctl-lede">The files are moved on the server only (<span class="mono">sudo upnp config set</span>):
-        the service's sandbox needs to know the new place too.</p></div>
-    <div class="card full"><div id="sect-logs"></div></div>
-  </div>
-
-  <div class="ctl-pane" id="pane-mdns" hidden>
-    <div class="ctl-head"><h2 class="ctl-title">mDNS reflector (avahi)</h2>
-      <p class="ctl-lede">avahi-daemon with <span class="mono">enable-reflector=yes</span> repeats mDNS
-        (Bonjour, AirPlay, Chromecast, printers…) between the server's networks. Saved, the change goes into
-        <span class="mono">/etc/avahi/avahi-daemon.conf</span> line by line - its comments stay, a copy is
-        kept beside it - and avahi-daemon is restarted; when it does not come up with the change, the copy is
-        put back. The same as <span class="mono">sudo upnp mdns ...</span>.</p></div>
-    <div class="card full" id="av-missing" hidden><div class="offline" id="av-missing-words"></div></div>
-    <div class="card full"><div id="sect-mdns"></div></div>
-    <div class="card full">
-      <h2>avahi-daemon <span class="right" id="av-tools"></span></h2>
-      <div id="av-state"><p class="muted">…</p></div>
-    </div>
-  </div>
-
-  <div class="ctl-pane" id="pane-people" hidden>
-    <div class="ctl-head"><h2 class="ctl-title">Accounts</h2>
-      <p class="ctl-lede">Who may open these pages - local accounts, kept in fake-igd's own database.
-        <b>full admin</b> may change everything; <b>read only</b> may look and change nothing.
-        On the server: <span class="mono">upnp user list</span>.</p></div>
-    <div class="card full">
-      <h2>Accounts <span class="right"><button class="btn cmd small primary admin-only" id="us-add" data-icon="add">Make an account</button></span></h2>
-      <div id="us-table"></div>
-    </div>
-    <div class="card full fulladmin-only"><h2>Signed in now</h2><div id="se-table"></div></div>
-  </div>
-
-  <div class="ctl-pane" id="pane-service" hidden>
-    <div class="ctl-head"><h2 class="ctl-title">The service</h2>
-      <p class="ctl-lede">fake-igd.service, which answers the network. These pages and their API are
-        a service of their own (fake-igd-api) and stay while it restarts.</p></div>
-    <div class="card full"><div id="sv-state"></div>
-      <div class="btnrow admin-only" style="margin-top:14px">
-        <button class="btn cmd" id="sv-restart" data-icon="undo">Restart fake-igd.service</button>
-        <button class="btn cmd" id="sv-apply" data-icon="wall">Put the allow list and the firewall in place again</button>
-      </div></div>
-  </div>
-
-  <div class="ctl-pane" id="pane-upgrade" hidden>
-    <div class="ctl-head"><h2 class="ctl-title">Upgrades</h2>
-      <p class="ctl-lede">A new version put in from here: from the web, or a package sent from this
-        computer. It is checked before anything else - signed by a release key this server trusts,
-        every file the one signed, not older than what runs here - and root checks it all again
-        before it runs its install.sh --upgrade. The command line works as it always has.</p></div>
-    <div class="card full admin-only" id="up-web-card">
-      <h2>From the web</h2>
-      <p class="note">Where new versions are published - the address below - is looked at once a
-        day. A newer fake-igd found there is offered here and put in with one click: fetched, its
-        signature checked like a package sent by hand, then put in by root. Nothing is put in by itself.</p>
-      <div id="up-web"></div>
-      <div id="sect-upgrade"></div>
-    </div>
-    <div class="card full admin-only">
-      <h2>A new version</h2>
-      <p class="note">The .tar.gz of a new fake-igd, as it was released.</p>
-      <div class="drop" id="up-drop">
-        <input type="file" id="up-file" accept=".gz,.tgz,application/gzip,application/octet-stream" hidden>
-        <span id="up-drop-says">Drop the fake-igd-X.Y.Z.tar.gz here, or press to choose it</span>
-      </div>
-      <div id="up-pkg"></div>
-      <div class="btnrow" style="margin-top:10px">
-        <button class="btn cmd primary" id="up-start" data-icon="play" disabled>Upgrade</button>
-        <button class="btn cmd" id="up-forget" data-icon="trash" hidden>Forget the package</button>
-      </div>
-    </div>
-    <div class="card full" id="up-plan-card" hidden>
-      <h2>The upgrade</h2>
-      <div id="up-plan"></div>
-    </div>
-    <div class="card full">
-      <h2>What root said last</h2>
-      <p class="note"><span>The output of install.sh, the last time this server was upgraded from these pages or with upnp upgrade.</span>
-        <span class="mono" data-no-i18n>/var/lib/fake-igd/upgrade/last.log</span></p>
-      <details class="fold" id="up-log-fold">
-        <summary>the output</summary>
-        <pre class="lines" id="up-log">–</pre>
-      </details>
-    </div>
-    <div class="card full">
-      <h2>On the command line</h2>
-      <p class="note">The same, as root:</p>
-      <pre class="lines">upnp upgrade check                 # what is at upgrade_url, and whether it is newer
-upnp upgrade online                # the newest: fetched, checked, put in - followed with a bar
-upnp upgrade online 1.4.2 --yes
-upnp upgrade file fake-igd-X.Y.Z.tar.gz
-upnp upgrade follow                # one going on
-tar xzf fake-igd-X.Y.Z.tar.gz && cd fake-igd-X.Y.Z && ./install.sh --upgrade</pre>
-    </div>
-  </div>
-
 <?php foreach (glob(__DIR__ . '/panes/*.php') ?: [] as $igd_pane) { include $igd_pane; } ?>
-
-  <div class="ctl-pane" id="pane-about" hidden>
-    <div class="ctl-head"><h2 class="ctl-title">About</h2></div>
-    <div class="card full"><div id="about-state"></div></div>
-  </div>
 
   <div class="save-bar admin-only" id="save-bar">
     <button class="btn cmd primary" id="set-save" data-icon="save"
