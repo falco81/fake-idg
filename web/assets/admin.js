@@ -3,6 +3,13 @@
    and panels (core.js), over fake-igd-api. The page works nothing out for itself. */
 'use strict';
 
+/* The time pickers (otp's), in place of the <select>s they replace. */
+timePicker('ov-hours', {start: {k: 'rel', s: 86400}});
+timePicker('rq-hours', {start: {k: 'rel', s: 86400}});
+timePicker('pt-hours', {start: {k: 'all'}, all: true});
+timePicker('cl-hours', {start: {k: 'all'}, all: true});
+timePicker('ev-time', {start: {k: 'all'}, all: true});
+
 ADMIN = !!(ME && ME.role === 'fulladmin');
 var LIVE = true, SERIAL = STATUS ? STATUS.serial : '', PANE = 'answer';
 var SETTINGS = null, DIRTY = {}, PENDING = {};
@@ -20,7 +27,7 @@ function roleTone(role) { return role === 'fulladmin' ? 'violet' : 'dim'; }
 dressButtons(document);
 
 /* ---- tabs ------------------------------------------------------------------ */
-var TABS = ['overview', 'ports', 'requests', 'clients', 'mappings', 'log', 'events', 'settings'];
+var TABS = ['overview', 'ports', 'requests', 'clients', 'mappings', 'mdns', 'log', 'events', 'settings'];
 window.optShowTab = function (name) {
   if (TABS.indexOf(name) < 0) name = 'overview';
   TAB = name;
@@ -46,6 +53,7 @@ function onTab(name) {
   if (name === 'requests') loadRequests();
   if (name === 'clients') loadClients();
   if (name === 'mappings') loadMappings();
+  if (name === 'mdns') loadMdnsTab();
   if (name === 'log') loadLog(true);
   if (name === 'events') loadEvents();
   if (name === 'settings') loadSettings(!Object.keys(DIRTY).length);
@@ -197,11 +205,12 @@ cardGo('clients', function () { showTab('clients'); });
 cardGo('maps', function () { showTab('mappings'); });
 cardGo('ifaces', function () { PANE = 'network'; showTab('settings'); });
 cardGo('upgrade', function () { PANE = 'upgrade'; showTab('settings'); });
+cardGo('mdns', function () { showTab('mdns'); });
 
 function loadOverview() {
   paintCards();
-  var hours = Number($('ov-hours').value || 24);
-  apiLatest('overview', 'overview&hours=' + hours).then(function (d) {
+  apiLatest('overview', 'overview' + tpQuery('ov-hours', 'since', 'until')).then(function (d) {
+    var hours = d.hours;
     drawChart(d, hours);
     facet('ov-ports', d.ports.map(function (r) { return {said: r.port, n: r.n}; }), 'good',
           function (r) { $('pt-q').value = r.said.split('/')[0]; showTab('ports'); });
@@ -337,7 +346,7 @@ function protoTag(p) { return noI18n(el('span', 'tag ' + (String(p).toUpperCase(
 function matches(row, q) { return !q || JSON.stringify(row).toLowerCase().indexOf(q.toLowerCase()) >= 0; }
 
 function loadPorts() {
-  apiLatest('ports', 'ports&hours=' + $('pt-hours').value + '&proto=' + $('pt-proto').value).then(function (d) {
+  apiLatest('ports', 'ports&proto=' + $('pt-proto').value + tpQuery('pt-hours', 'since', 'until')).then(function (d) {
     var q = $('pt-q').value.trim();
     var rows = d.ports.filter(function (r) { return matches(r, q); });
     $('pt-said').textContent = num(rows.length) + ' port(s)';
@@ -367,18 +376,32 @@ function loadPorts() {
 }
 ['pt-hours', 'pt-proto'].forEach(function (id) { $(id).onchange = loadPorts; });
 $('pt-q').addEventListener('input', debounce(loadPorts, 250));
-$('dn-go').onclick = function () {
-  var b = $('dn-go');
-  busy(b, true);
-  api('dnat&format=' + $('dn-format').value + '&wan=' + encodeURIComponent($('dn-wan').value.trim())).then(function (d) {
-    $('dn-out').textContent = d.text || '(nothing)';
-  }).catch(oops).then(function () { busy(b, false); });
+$('dn-open').onclick = function () {
+  modal('Rules for the router (DNAT)', function (body) {
+    body.appendChild(el('p', 'note', 'Port forwarding rules made from the requested ports - the same as upnp dnat.'));
+    var row = el('div', 'btnrow filters');
+    var fmt = selectBox([['iptables', 'iptables'], ['nft', 'nftables'], ['mikrotik', 'MikroTik'], ['firewalld', 'firewalld']], 'iptables');
+    fmt.id = 'dn-format';
+    var wan = textBox('', 'the WAN interface (eth0, ether1…)'); wan.id = 'dn-wan'; wan.style.maxWidth = '260px';
+    row.appendChild(fmt); row.appendChild(wan);
+    body.appendChild(row);
+    var out = noI18n(el('pre', 'lines', '…')); out.id = 'dn-out'; out.style.marginTop = '12px';
+    body.appendChild(out);
+    var make = function () {
+      api('dnat&format=' + fmt.value + '&wan=' + encodeURIComponent(wan.value.trim())).then(function (d) {
+        out.textContent = d.text || '(nothing)';
+      }).catch(function (e) { out.textContent = e.message; });
+    };
+    fmt.onchange = make;
+    wan.addEventListener('input', debounce(make, 400));
+    make();
+  }, [{words: 'Copy', icon: 'copy', go: function (b) { copyText($('dn-out').textContent, b, 'copied'); }},
+      {words: 'Close', close: true}], 'large');
 };
-$('dn-copy').onclick = function () { copyText($('dn-out').textContent, $('dn-copy'), 'copied'); };
 
 function loadRequests() {
   var per = Number($('rq-per').value);
-  apiLatest('requests', 'requests&hours=' + $('rq-hours').value + '&q=' + encodeURIComponent($('rq-q').value.trim())
+  apiLatest('requests', 'requests' + tpQuery('rq-hours', 'since', 'until') + '&q=' + encodeURIComponent($('rq-q').value.trim())
             + '&action=' + encodeURIComponent($('rq-action').value) + '&page=' + PAGE.requests + '&per=' + per).then(function (d) {
     var sel = $('rq-action'), keep = sel.value;
     if (sel.options.length - 1 !== d.actions.length) {
@@ -423,7 +446,7 @@ function loadRequests() {
 $('rq-q').addEventListener('input', debounce(function () { PAGE.requests = 0; loadRequests(); }, 300));
 
 function loadClients() {
-  apiLatest('clients', 'clients&hours=' + $('cl-hours').value).then(function (d) {
+  apiLatest('clients', 'clients' + tpQuery('cl-hours', 'since', 'until')).then(function (d) {
     var q = $('cl-q').value.trim();
     var rows = d.clients.filter(function (r) { return matches(r, q); });
     $('cl-said').textContent = num(rows.length) + ' client(s)';
@@ -496,8 +519,8 @@ function logWords(host, text, tone, hit) {
   put(text.slice(at), tone);
 }
 function drawLog(lines, q) {
-  var out = $('lg-out');
-  var atEnd = out.scrollTop + out.clientHeight >= out.scrollHeight - 30;
+  var out = $('lg-out'), box = $('lg-scroll');
+  var atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
   clear(out);
   var hit = null;
   if (q) { try { hit = new RegExp('(' + q + ')', 'i'); } catch (e) { hit = null; } }
@@ -514,17 +537,17 @@ function drawLog(lines, q) {
     out.appendChild(document.createTextNode('\n'));
   });
   if (!lines.length) out.appendChild(el('span', 'muted', q ? 'no line has that' : 'the log is empty'));
-  if (atEnd) out.scrollTop = out.scrollHeight;
+  if (atEnd) box.scrollTop = box.scrollHeight;
 }
 function loadLog(first) {
   if (LOGV.paused && !first) return;
   var q = $('lg-q').value.trim();
   apiLatest('log', 'log&lines=' + $('lg-lines').value + '&q=' + encodeURIComponent(q)).then(function (d) {
     $('lg-file').textContent = d.file || '';
-    var out = $('lg-out');
-    if (first) out.scrollTop = 1e9;
+    var box = $('lg-scroll');
+    if (first) box.scrollTop = 1e9;
     drawLog(d.lines, q);
-    if (first) out.scrollTop = out.scrollHeight;
+    if (first) box.scrollTop = box.scrollHeight;
   }).catch(oops);
 }
 $('lg-q').addEventListener('input', debounce(function () { loadLog(true); }, 300));
@@ -537,12 +560,52 @@ $('lg-pause').onclick = function () {
 setButtonIcon($('lg-pause'), 'clock', 'Pause');
 setInterval(function () { if (TAB === 'log' && LIVE && !document.hidden) loadLog(false); }, 3000);
 
+/* Search and Clear beside a search box (otp's searchButtons, as it is). */
+function searchButtons(input, go, selects, times) {
+  if (!input || input._sb) return;
+  input._sb = true;
+  var find = cmdButton('Search', 'search', 'sb-go');
+  var clearB = cmdButton('Clear', 'close', 'sb-clear');
+  find.type = clearB.type = 'button';
+  find.title = 'Look for what is typed and chosen (Enter does the same)';
+  clearB.title = 'Empty the search and put every filter here back';
+  find.onclick = function () { go(); };
+  clearB.onclick = function () {
+    input.value = '';
+    (selects || []).forEach(function (id) {
+      var sel = typeof id === 'string' ? $(id) : id;
+      if (sel && sel.options && sel.options.length) sel.value = sel.options[0].value;
+    });
+    (times || []).forEach(function (id) {
+      var tp = $(id);
+      if (tp && tp._set) { tp._quiet = true; tp._set(tp._start || {k: 'rel', s: 86400}); tp._quiet = false; }
+    });
+    go();
+  };
+  var paint = function () {
+    var busy = !!input.value.trim() || (selects || []).some(function (id) {
+      var sel = typeof id === 'string' ? $(id) : id;
+      return sel && sel.options && sel.options.length && sel.value !== sel.options[0].value;
+    });
+    clearB.classList.toggle('on', busy);
+  };
+  input.addEventListener('input', paint);
+  (selects || []).forEach(function (id) { var sel = typeof id === 'string' ? $(id) : id; if (sel) sel.addEventListener('change', paint); });
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.defaultPrevented) go(); });
+  var at = input.parentNode && input.parentNode.classList.contains('qs-wrap') ? input.parentNode : input;
+  var after = at.nextSibling;
+  at.parentNode.insertBefore(find, after);
+  at.parentNode.insertBefore(clearB, after);
+  input._sbPaint = paint;
+  paint();
+}
+
 /* ==========================================================================
    Events
    ========================================================================== */
 function loadEvents() {
   apiLatest('events', 'events&q=' + encodeURIComponent($('ev-q').value.trim()) + '&kind=' + encodeURIComponent($('ev-kind').value)
-            + '&page=' + PAGE.events + '&per=100').then(function (d) {
+            + tpQuery('ev-time', 'since', 'until') + '&page=' + PAGE.events + '&per=100').then(function (d) {
     var sel = $('ev-kind'), keep = sel.value;
     if (sel.options.length - 1 !== d.kinds.length) {
       clear(sel);
@@ -565,6 +628,7 @@ function loadEvents() {
   }).catch(oops);
 }
 $('ev-kind').onchange = function () { PAGE.events = 0; loadEvents(); };
+$('ev-time').onchange = function () { PAGE.events = 0; loadEvents(); };
 $('ev-q').addEventListener('input', debounce(function () { PAGE.events = 0; loadEvents(); }, 300));
 
 /* ==========================================================================
@@ -583,6 +647,7 @@ function showPane(name) {
   if (name === 'service') drawService();
   if (name === 'upgrade') loadUpgrade();
   if (name === 'about') drawAbout();
+  if (name === 'mdns') loadAvahiPane();
   markDirtyCount();
 }
 document.querySelectorAll('#ctl-nav button[data-pane]').forEach(function (b) {
@@ -613,8 +678,8 @@ function pinRail(on) {
       nav.classList.remove('open');
     }, 260);
   });
-  var was = '1';
-  try { was = localStorage.getItem('fake-igd-rail-pinned') || '1'; } catch (e) { }
+  var was = '0';
+  try { was = localStorage.getItem('fake-igd-rail-pinned') || '0'; } catch (e) { }
   pinRail(was === '1');
 }());
 $('ctl-find').addEventListener('input', function () {
@@ -651,6 +716,7 @@ $('ctl-find').addEventListener('input', function () {
 });
 
 function settingByKey(k) {
+  if (k.indexOf('avahi:') === 0) return AV.d ? (AV.d.keys || []).map(avahiSetting).filter(function (s) { return s.key === k; })[0] : null;
   return SETTINGS ? SETTINGS.settings.filter(function (s) { return s.key === k; })[0] : null;
 }
 function loadSettings(redraw) {
@@ -770,15 +836,27 @@ function markDirtyCount() {
 $('set-save').onclick = function () {
   var b = $('set-save');
   if (!Object.keys(DIRTY).length) { toast('nothing has been changed'); return; }
-  var restarts = Object.keys(DIRTY).some(function (k) { var s = settingByKey(k); return s && s.restarts; });
+  var own = {}, av = {};
+  Object.keys(DIRTY).forEach(function (k) {
+    if (k.indexOf('avahi:') === 0) av[k.slice(6)] = DIRTY[k]; else own[k] = DIRTY[k];
+  });
+  var restarts = Object.keys(own).some(function (k) { var s = settingByKey(k); return s && s.restarts; });
   var go = function () {
     busy(b, true);
-    api('settings', {changes: DIRTY}).then(function (d) {
-      toast(d.message, 'good');
-      DIRTY = {};
-      loadSettings(true);
-      if (d.root || d.restart) setTimeout(loadRoot, 4000);
-    }).catch(oops).then(function () { busy(b, false); });
+    var chain = Promise.resolve();
+    if (Object.keys(own).length) chain = chain.then(function () {
+      return api('settings', {changes: own}).then(function (d) {
+        toast(d.message, 'good');
+        if (d.root || d.restart) setTimeout(loadRoot, 4000);
+      });
+    });
+    if (Object.keys(av).length) chain = chain.then(function () {
+      return api('mdns', {changes: av}).then(function (d) {
+        toast(d.message, 'good');
+        avahiWait(d.id);
+      });
+    });
+    chain.then(function () { DIRTY = {}; loadSettings(true); }).catch(oops).then(function () { busy(b, false); });
   };
   if (restarts && STATUS && STATUS.service && STATUS.service.state === 'active') {
     confirmThen('Save and restart?', 'A setting fake-igd.service uses is changed: it is restarted with it. '
@@ -797,6 +875,180 @@ $('nt-test').onclick = function () {
     .catch(function (e) { $('nt-said').className = 'small bad'; $('nt-said').textContent = e.message; })
     .then(function () { busy(b, false); });
 };
+
+/* ==========================================================================
+   mDNS - the reflector (avahi-daemon): the tab, and its settings pane
+   ========================================================================== */
+var AV = {d: null, svc: null, busy: false};
+function avahiSetting(k) {
+  return {key: 'avahi:' + k.key, name: k.name, says: k.says, value: k.value, default: k.default,
+          bool: k.bool, source: k.source, source_says: k.source_says, secret: false,
+          list: k.kind === 'ifaces' || k.kind === 'list', restarts: false, root: true};
+}
+function paintMdnsCards(d) {
+  if (!d.installed) {
+    setCard('avahi', 'none', d.error || 'avahi is not installed: dnf install avahi avahi-tools', 'info');
+    ['refl', 'mifs', 'msvc'].forEach(function (c) { setCard(c, '–', '\u00a0', 'info'); });
+    return;
+  }
+  var on = d.service.state === 'active';
+  setCard('avahi', on ? 'running' : d.service.state, (d.version ? 'avahi ' + d.version + ' · ' : '') + 'since ' + (d.service.since || '?'),
+          on ? 'ok' : 'crit');
+  setCard('refl', d.reflector ? 'on' : 'off', d.reflect_filters.length ? 'only ' + d.reflect_filters.join(', ') : 'every service type'
+          + (d.reflect_ipv ? ' · between IPv4 and IPv6' : ''), d.reflector ? 'ok' : 'warn');
+  setCard('mifs', num(d.interfaces.length), d.interfaces.map(function (i) { return i.name + (i.ipv4[0] ? ' ' + i.ipv4[0] : ''); }).join(' · ')
+          + (d.missing_interfaces.length ? ' · missing: ' + d.missing_interfaces.join(', ') : ''), d.missing_interfaces.length ? 'warn' : 'info');
+}
+function loadMdnsTab() {
+  apiLatest('mdns', 'mdns').then(function (d) {
+    AV.d = d;
+    paintMdnsCards(d);
+    var sel = $('ms-iface'), keep = sel.value;
+    clear(sel);
+    sel.appendChild(el('option', '', 'every interface')).value = '';
+    (d.interfaces || []).forEach(function (i) { var o = el('option', '', i.name); o.value = i.name; sel.appendChild(o); });
+    sel.value = keep;
+    if (!AV.svc) loadServices();
+  }).catch(oops);
+}
+function loadServices() {
+  if (AV.busy) return;
+  AV.busy = true;
+  busy($('ms-look'), true);
+  $('ms-said').textContent = 'asking avahi…';
+  api('mdns-services', undefined, 40).then(function (d) {
+    AV.svc = d;
+    drawServices();
+  }).catch(function (e) {
+    $('ms-said').textContent = '';
+    var host = $('ms-table');
+    clear(host);
+    host.appendChild(listTable(['Type', 'Name', 'Interface', 'Protocol', 'Host', 'Address', 'TXT'], [], null,
+                               'plain|' + String(e.message || e)));
+  })
+    .then(function () { AV.busy = false; busy($('ms-look'), false); });
+}
+function drawServices() {
+  var d = AV.svc;
+  if (!d) return;
+  var q = $('ms-q').value.trim(), ifc = $('ms-iface').value, pr = $('ms-proto').value;
+  var rows = d.services.filter(function (s) {
+    return (!ifc || s.iface === ifc) && (!pr || s.proto === pr) && matches(s, q);
+  });
+  var types = {};
+  d.services.forEach(function (s) { types[s.type] = 1; });
+  setCard('msvc', num(d.services.length), num(Object.keys(types).length) + ' type(s) · asked ' + ago(d.at), 'info');
+  $('tabn-mdns').textContent = d.services.length ? num(d.services.length) : '';
+  $('ms-said').textContent = num(rows.length) + ' of ' + num(d.services.length);
+  var host = $('ms-table');
+  clear(host);
+  host.appendChild(listTable(['Type', 'Name', 'Interface', 'Protocol', 'Host', 'Address', 'TXT'], rows, function (s) {
+    var tr = el('tr', 'tappable');
+    tr.appendChild(noI18n(el('td', 'mono', s.type)));
+    tr.appendChild(noI18n(el('td', '', s.name)));
+    tr.appendChild(noI18n(el('td', 'mono', s.iface)));
+    var tp = el('td'); tp.appendChild(el('span', 'tag ' + (s.proto === 'IPv6' ? 'violet' : 'info'), s.proto)); tr.appendChild(tp);
+    tr.appendChild(noI18n(el('td', 'mono', s.host || '')));
+    tr.appendChild(noI18n(el('td', 'mono', s.address ? s.address + (s.port ? ':' + s.port : '') : '')));
+    tr.appendChild(noI18n(el('td', 'muted small', (s.txt || '').slice(0, 120))));
+    tr.onclick = function () {
+      modal(s.name, function (body) {
+        body.appendChild(peekFacts([['Type', s.type], ['Interface', s.iface + ' ' + s.proto], ['Address', (s.address || '–') + (s.port ? ':' + s.port : '')]]));
+        body.appendChild(kvTable(Object.keys(s).map(function (k) { return [k, s[k], 'mono']; })));
+      });
+    };
+    return tr;
+  }, 'plain|Nothing is shown on mDNS now - or avahi-daemon is not running'));
+  explainWhatWasDrawn(host);
+}
+$('ms-look').onclick = loadServices;
+['ms-iface', 'ms-proto'].forEach(function (id) { $(id).onchange = drawServices; });
+$('ms-q').addEventListener('input', debounce(drawServices, 200));
+cardGo('avahi', function () { PANE = 'mdns'; showTab('settings'); });
+cardGo('refl', function () { PANE = 'mdns'; showTab('settings'); });
+
+function loadAvahiPane() {
+  api('mdns').then(function (d) {
+    AV.d = d;
+    $('av-missing').hidden = !!d.installed;
+    if (!d.installed) { $('av-missing-words').textContent = d.error || 'avahi is not installed here'; }
+    var host = $('sect-mdns');
+    clear(host);
+    if (d.installed) {
+      var grid = el('div', 'set-grid');
+      d.keys.forEach(function (k) { grid.appendChild(settingItem(avahiSetting(k))); });
+      host.appendChild(grid);
+      Object.keys(DIRTY).forEach(function (key) {
+        if (key.indexOf('avahi:') !== 0) return;
+        var item = document.querySelector('.set-item[data-key="' + key + '"]');
+        if (item) item.classList.add('changed');
+      });
+    }
+    var st = $('av-state');
+    clear(st);
+    if (d.installed) {
+      st.appendChild(kvTable([
+        ['The daemon', d.service.state + ' (' + d.service.sub + ')', d.service.state === 'active' ? 'good' : 'bad'],
+        ['Starts at boot', d.service.boot], ['Running since', d.service.since || '–'], ['Version', d.version || '–'],
+        ['The file', d.config], ['Interfaces here', (d.system_interfaces || []).join(', ')],
+        ['avahi-browse', d.browse_tool ? 'there' : 'missing - dnf install avahi-tools', d.browse_tool ? '' : 'bad']
+      ]));
+      var r = d.root || {};
+      if (r.at && (r.said || []).some(function (x) { return /avahi/.test(x); })) {
+        st.appendChild(el('p', 'muted small', 'root, ' + ago(r.at) + ':'));
+        var ul = el('ul', 'tight');
+        r.said.forEach(function (x) { ul.appendChild(el('li', /did not|not|refused/.test(x) ? 'warn' : '', x)); });
+        st.appendChild(ul);
+      }
+    }
+    var tools = $('av-tools');
+    clear(tools);
+    if (ADMIN && d.installed) {
+      [['Restart', 'refresh', 'restart'], [d.service.state === 'active' ? 'Stop' : 'Start', 'power',
+        d.service.state === 'active' ? 'stop' : 'start']].forEach(function (a) {
+        var b = cmdButton(a[0], a[1], 'small' + (a[2] === 'stop' ? ' danger' : ''));
+        b.onclick = function () {
+          var go = function () {
+            api('mdns', {action: a[2]}).then(function (x) { toast(x.message, 'good'); avahiWait(x.id); }).catch(oops);
+          };
+          if (a[2] === 'stop') confirmThen('Stop avahi-daemon?', 'mDNS is no longer reflected between the networks until it is started again.', 'Stop', go);
+          else go();
+        };
+        tools.appendChild(b);
+      });
+    }
+    if (d.installed) {
+      var lg = cmdButton('Its log', 'log', 'small');
+      lg.onclick = function () {
+        peek('avahi-daemon - its log', function () { return api('mdns-log&lines=400'); }, function (body, x) {
+          var pre = noI18n(el('pre', 'lines', x.lines.join('\n') || '(nothing)'));
+          body.appendChild(pre);
+          setTimeout(function () { pre.scrollTop = pre.scrollHeight; }, 0);
+        });
+      };
+      tools.appendChild(lg);
+    }
+    explainWhatWasDrawn($('pane-mdns'));
+    markDirtyCount();
+  }).catch(oops);
+}
+function avahiWait(id) {
+  var tries = 0;
+  var again = function () {
+    api('root-result').then(function (d) {
+      var r = d.result || {};
+      if (r.id === id) {
+        (r.said || []).forEach(function (x) { toast(x, /did not|refused|not a key/.test(x) || !r.ok ? 'bad' : 'good'); });
+        if (PANE === 'mdns' && TAB === 'settings') loadAvahiPane();
+        if (TAB === 'mdns') { AV.svc = null; loadMdnsTab(); }
+        return;
+      }
+      if (++tries < 20) setTimeout(again, 1000);
+      else toast('root has not answered - is fake-igd-web.path running?', 'bad');
+    }).catch(function () { if (++tries < 20) setTimeout(again, 1000); });
+  };
+  setTimeout(again, 1200);
+}
 
 /* ---- what root did (nginx, the firewall, a restart) ------------------------ */
 function loadRoot() {
@@ -1079,6 +1331,11 @@ function drawAbout() {
   ]));
   host.appendChild(el('p', 'muted small', 'The same on the server: upnp status · upnp --console · upnp --help'));
 }
+
+searchButtons($('pt-q'), loadPorts, ['pt-proto'], ['pt-hours']);
+searchButtons($('rq-q'), function () { PAGE.requests = 0; loadRequests(); }, ['rq-action'], ['rq-hours']);
+searchButtons($('cl-q'), loadClients, [], ['cl-hours']);
+searchButtons($('ev-q'), function () { PAGE.events = 0; loadEvents(); }, ['ev-kind'], ['ev-time']);
 
 /* ---- start --------------------------------------------------------------------- */
 (function start() {

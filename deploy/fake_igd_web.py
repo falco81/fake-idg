@@ -19,7 +19,11 @@ systemd (fake-igd-web.path) starts this as root, which then:
     rules that were there before - fake-igd never changes those. Put in at once
     (iptables-restore --noflush) and into /etc/sysconfig/iptables between lines
     that start `# fake-igd:`, checked with iptables-restore --test first;
-  * restarts fake-igd.service when a setting it uses was changed.
+  * restarts fake-igd.service when a setting it uses was changed;
+  * changes avahi-daemon.conf (the mDNS reflector) and starts, stops or restarts
+    avahi-daemon - through upnp_mdns.apply, the same as `upnp mdns`: every value
+    checked, a copy kept beside the file, put back when the daemon does not come
+    up with the change (1.5.0).
 
 Nothing in the request is trusted: the values are read from config.json and
 each is checked against the one shape it may have before it goes into a file.
@@ -347,6 +351,34 @@ def write_result(d):
         os.close(dfd)
 
 
+AVAHI_ACTIONS = ("restart", "start", "stop", "enable", "disable")
+
+
+def avahi(changes, action):
+    """The mDNS reflector: changes {key: value} of avahi-daemon.conf, and/or one action."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import upnp_mdns as M
+    said = []
+    if isinstance(changes, dict) and changes:
+        clean = {}
+        for k, v in list(changes.items())[:20]:
+            if k not in M.KNOWN:
+                raise Refused("avahi: %s is not a key fake-igd changes" % str(k)[:40])
+            clean[k] = str(v)[:400]
+        try:
+            said.append("avahi: " + M.apply(clean, restart=action != "no-restart", log=lambda *_: None))
+        except M.MdnsError as e:
+            raise Refused("avahi: %s" % e)
+    if action in AVAHI_ACTIONS:
+        r = subprocess.run(["systemctl", action, M.SERVICE], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           universal_newlines=True)
+        said.append("avahi-daemon: %s %s" % (action, "done" if r.returncode == 0
+                                               else "did not work: " + r.stdout.strip()[:200]))
+    return said
+
+
 def apply(restart=False):
     cfg = read_config()
     said = []
@@ -393,7 +425,10 @@ def serve():
         ask = {}
     ident = str(ask.get("id") or "")[:40] if isinstance(ask, dict) else ""
     try:
-        said = apply(restart=isinstance(ask, dict) and ask.get("restart") is True)
+        if isinstance(ask, dict) and ("avahi" in ask or "avahi_action" in ask):
+            said = avahi(ask.get("avahi") or {}, str(ask.get("avahi_action") or ""))
+        else:
+            said = apply(restart=isinstance(ask, dict) and ask.get("restart") is True)
         try:
             fw = fw_status()
         except Exception:                               # noqa: BLE001

@@ -125,14 +125,17 @@ def save_cfg(changes):
         load_cfg(force=True)
 
 
-def ask_root(restart=False):
-    """apply.ask for fake-igd-web.path: root restarts the service and puts the rest in place."""
+def ask_root(restart=False, extra=None):
+    """apply.ask for fake-igd-web.path: root restarts the service and puts the rest in place
+    (or, with extra, changes the mDNS reflector)."""
     folder = os.path.join(CFG.get("state_dir") or "/var/lib/fake-igd", "web")
     os.makedirs(folder, mode=0o750, exist_ok=True)
     ident = secrets.token_hex(6)
     tmp = os.path.join(folder, ".ask.%s" % ident)
     with open(tmp, "w") as f:
-        json.dump({"id": ident, "restart": bool(restart), "at": time.time()}, f)
+        body = {"id": ident, "restart": bool(restart), "at": time.time()}
+        body.update(extra or {})
+        json.dump(body, f)
     os.replace(tmp, os.path.join(folder, "apply.ask"))
     return ident
 
@@ -262,6 +265,29 @@ def ts(v):
     return t.timestamp() if t else None
 
 
+def window(q, default_s=None):
+    """(since, until) as aware datetimes from otp's time picker (since=, until= in epoch seconds);
+    None for an open end. No since and no default: all time."""
+    def one(name):
+        try:
+            v = float((q.get(name) or ["0"])[0])
+        except ValueError:
+            v = 0
+        return datetime.fromtimestamp(v).astimezone() if v > 0 else None
+    since, until = one("since"), one("until")
+    if since is None and "hours" in q:
+        return since_hours(q, 24), until
+    if since is None and default_s:
+        since = datetime.now().astimezone() - timedelta(seconds=default_s)
+    return since, until
+
+
+def before(ev, until):
+    if until is None:
+        return ev
+    return [e for e in ev if not e.get("_t") or e["_t"] <= until]
+
+
 def since_hours(q, default=24):
     try:
         h = float((q.get("hours") or [default])[0])
@@ -301,13 +327,16 @@ def status_view():
 
 
 def overview(q):
-    hours = max(1, min(24 * 90, int(float((q.get("hours") or ["24"])[0]))))
-    since = datetime.now().astimezone() - timedelta(hours=hours)
+    since, until = window(q, 86400)
     cfg = load_cfg()
-    ev = guarded(U.read_events, cfg, since)
+    ev = before(guarded(U.read_events, cfg, since), until)
+    end = until.timestamp() if until else time.time()
+    if since is None:
+        first = min((e["_t"].timestamp() for e in ev if e.get("_t")), default=end - 86400)
+        since = datetime.fromtimestamp(first).astimezone()
+    start = since.timestamp()
+    hours = max(1.0, (end - start) / 3600.0)
     step = 3600 if hours <= 72 else (6 * 3600 if hours <= 24 * 14 else 86400)
-    end = time.time()
-    start = end - hours * 3600
     buckets = collections.OrderedDict()
     t = start - (start % step)
     while t <= end:
@@ -335,7 +364,7 @@ def overview(q):
             m = U.LOG_RE.match(ln.rstrip("\n"))
             if m:
                 t2 = U.parse_time(m.group(1).replace(" ", "T"))
-                if t2 and t2 >= since:
+                if t2 and t2 >= since and (until is None or t2 <= until):
                     searches += 1
     names = U.ptr_names(list(by_client)) if not U.NO_DNS else {}
     return {"hours": hours, "step": step, "chart": list(buckets.values()),
@@ -347,7 +376,8 @@ def overview(q):
 
 def ports_view(q):
     cfg = load_cfg()
-    ev = guarded(U.read_events, cfg, since_hours(q, 0))
+    since, until = window(q)
+    ev = before(guarded(U.read_events, cfg, since), until)
     agg = U.aggregate_ports(ev, (q.get("proto") or [None])[0] or None)
     names = U.ptr_names([k[0] for k in agg])
     rows = []
@@ -363,7 +393,8 @@ def ports_view(q):
 
 def requests_view(q):
     cfg = load_cfg()
-    ev = guarded(U.read_events, cfg, since_hours(q, 24))
+    since, until = window(q, 86400)
+    ev = before(guarded(U.read_events, cfg, since), until)
     want = (q.get("q") or [""])[0].strip().lower()
     act = (q.get("action") or [""])[0]
     rows = []
@@ -468,6 +499,67 @@ def upgrade_view():
             "online": row, "status": st, "percent": pc, "words": words, "log": lines[-200:],
             "helper": os.path.exists(ON.HELPER), "path_unit": os.path.exists(ON.PATH_UNIT),
             "package": STORE[0].meta_json("upgrade:pkg")}
+
+
+# ---- the mDNS reflector (avahi-daemon) ------------------------------------------------
+AVAHI_NAMES = {
+    "use-ipv4": "mDNS over IPv4", "use-ipv6": "mDNS over IPv6", "allow-interfaces": "Interfaces it uses",
+    "deny-interfaces": "Interfaces it never uses", "cache-entries-max": "Records in the cache",
+    "ratelimit-interval-usec": "Rate limit: the interval (µs)", "ratelimit-burst": "Rate limit: packets in it",
+    "enable-wide-area": "Wide-area browsing (unicast DNS-SD)", "publish-hinfo": "Publish HINFO",
+    "publish-workstation": "Publish as a workstation", "disable-publishing": "Publish nothing of this machine",
+    "enable-reflector": "The reflector", "reflect-ipv": "Reflect between IPv4 and IPv6",
+    "reflect-filters": "Reflect only these service types",
+}
+AVAHI_PANE_ORDER = ["enable-reflector", "allow-interfaces", "deny-interfaces", "reflect-filters", "reflect-ipv",
+                    "use-ipv4", "use-ipv6", "cache-entries-max", "ratelimit-interval-usec", "ratelimit-burst",
+                    "enable-wide-area", "publish-hinfo", "publish-workstation", "disable-publishing"]
+
+
+def mdns_view():
+    import upnp_mdns as M
+    try:
+        st = M.status()
+    except M.MdnsError as e:
+        return {"installed": False, "error": str(e)}
+    vals, _l = M.read_conf()
+    eff = M.effective(vals)
+    keys = []
+    for k in AVAHI_PANE_ORDER:
+        sect, kind, words = M.KNOWN[k]
+        keys.append({"key": k, "name": AVAHI_NAMES.get(k, k), "says": words,
+                     "section": sect, "kind": kind, "bool": kind == "bool",
+                     "value": (eff.get(k) == "yes") if kind == "bool" else (eff.get(k) or ""),
+                     "default": M.DEFAULT.get(k, ""), "source": "config" if k in vals else "default",
+                     "source_says": ("[%s] %s, set in %s" % (sect, k, M.CONF)) if k in vals
+                     else "[%s] %s - not set in %s: as avahi has it" % (sect, k, M.CONF)})
+    st.update({"installed": True, "keys": keys, "system_interfaces": sorted(M.system_ifaces()),
+               "root": root_result()})
+    return st
+
+
+def mdns_services(q):
+    import upnp_mdns as M
+    try:
+        rows = M.services(resolve=(q.get("resolve") or ["1"])[0] != "0", timeout=12)
+    except M.MdnsError as e:
+        raise ValueError(str(e))
+    return {"services": rows, "at": time.time()}
+
+
+def mdns_log(q):
+    import subprocess
+    try:
+        n = max(20, min(5000, int((q.get("lines") or ["300"])[0])))
+    except ValueError:
+        n = 300
+    try:
+        r = subprocess.run(["journalctl", "-u", "avahi-daemon", "-n", str(n), "--no-pager", "-o", "short-iso"],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=20)
+        lines = r.stdout.splitlines()
+    except (OSError, subprocess.SubprocessError) as e:
+        lines = ["journalctl could not be asked: %s" % e]
+    return {"lines": lines}
 
 
 def look_now(who):
@@ -600,7 +692,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/requests":
             return requests_view(q)
         if path == "/api/clients":
-            return {"clients": guarded(U.clients_data, load_cfg(), since_hours(q, 0))}
+            since, until = window(q)
+            rows = guarded(U.clients_data, load_cfg(), since)
+            if until is not None:
+                rows = [c for c in rows if not c.get("last") or datetime.fromisoformat(c["last"]) <= until]
+            return {"clients": rows}
         if path == "/api/mappings":
             return mappings_view()
         if path == "/api/log":
@@ -609,7 +705,10 @@ class Handler(BaseHTTPRequestHandler):
             return dnat_view(q)
         if path == "/api/events":
             page, per = pager(q)
-            d = S.events((q.get("q") or [""])[0], (q.get("kind") or [""])[0], 0, per, page * per)
+            since, until = window(q)
+            d = S.events((q.get("q") or [""])[0], (q.get("kind") or [""])[0],
+                         since.timestamp() if since else 0, per, page * per,
+                         until.timestamp() if until else 0)
             d.update({"page": page, "per": per})
             return d
         if path == "/api/settings" and method == "GET":
@@ -631,6 +730,35 @@ class Handler(BaseHTTPRequestHandler):
                 me["name"], "restart fake-igd.service" if b.get("restart") is True
                 else "put nginx's allow list and the firewall in place"), "info", me["name"], self.addr())
             return {"ok": True, "id": ident}
+        if path == "/api/mdns" and method == "GET":
+            return mdns_view()
+        if path == "/api/mdns/services":
+            return mdns_services(q)
+        if path == "/api/mdns/log":
+            return mdns_log(q)
+        if path == "/api/mdns" and method == "POST":
+            self.who("fulladmin")
+            import upnp_mdns as M
+            b = self.body()
+            changes = b.get("changes") or {}
+            action = str(b.get("action") or "")
+            if not isinstance(changes, dict) or (not changes and action not in ("restart", "start", "stop",
+                                                                                   "enable", "disable")):
+                raise ValueError("nothing to do")
+            sysif = M.system_ifaces()
+            clean = {}
+            for k, v in changes.items():
+                if isinstance(v, bool):
+                    v = "yes" if v else "no"
+                try:
+                    clean[k] = M.check(k, v, sysif)
+                except M.MdnsError as e:
+                    raise ValueError(str(e))
+            ident = ask_root(extra={"avahi": clean, "avahi_action": action})
+            S.add_event("mdns", "%s asked root: %s" % (me["name"], ", ".join(
+                ["%s=%s" % (k, v or "(as it comes)") for k, v in clean.items()] + ([action] if action else []))),
+                "info", me["name"], self.addr())
+            return {"ok": True, "id": ident, "message": "asked root - avahi-daemon is changed in a moment"}
         if path == "/api/root-result":
             return {"ok": True, "result": root_result()}
         if path == "/api/notify-test" and method == "POST":

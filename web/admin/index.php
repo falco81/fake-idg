@@ -58,11 +58,13 @@ if (isset($_GET['api'])) {
         'log' => '/api/log', 'dnat' => '/api/dnat', 'events' => '/api/events',
         'settings' => '/api/settings', 'users' => '/api/users', 'upgrade' => '/api/upgrade',
         'whoami' => '/api/auth/whoami', 'root-result' => '/api/root-result',
+        'mdns' => '/api/mdns', 'mdns-services' => '/api/mdns/services', 'mdns-log' => '/api/mdns/log',
     ];
     $writes = [
         'settings' => '/api/settings', 'apply' => '/api/apply', 'notify-test' => '/api/notify-test',
         'users' => '/api/users', 'upgrade' => '/api/upgrade', 'upgrade-package' => '/api/upgrade-package',
         'password' => '/api/auth/passwd',
+        'mdns' => '/api/mdns',
     ];
     if ($post) {
         if (!isset($writes[$what])) {
@@ -219,6 +221,8 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
           title="The devices that looked for a UPnP router or asked for ports.">Clients<span class="count" id="tabn-clients"></span></button>
   <button role="tab" aria-selected="false" data-tab="mappings" data-icon="router"
           title="What the clients believe is open now, with the lease left. Nothing is open on the router.">Mappings<span class="count" id="tabn-mappings"></span></button>
+  <button role="tab" aria-selected="false" data-tab="mdns" data-icon="wifi"
+          title="The mDNS reflector on this server (avahi-daemon): whether it runs and reflects, between which interfaces, and every service mDNS shows on them now.">mDNS<span class="count" id="tabn-mdns"></span></button>
   <button role="tab" aria-selected="false" data-tab="log" data-icon="log"
           title="fake-igd's own log, as upnp log shows it - followed live.">Log</button>
   <button role="tab" aria-selected="false" data-tab="events" data-icon="history"
@@ -283,31 +287,14 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     <h2>Requested ports <span class="right" id="pt-said"></span></h2>
     <p class="note">Every port a client asked for (AddPortMapping), one row per client, protocol
       and port: how many times, when first and last, what it said it was for. This is what to
-      forward on the real router - the rules for it are below.</p>
+      forward on the real router - <b>Rules for the router</b> makes them (as <span class="mono">upnp dnat</span>).</p>
     <div class="filterbar btnrow filters">
       <input type="search" id="pt-q" placeholder="an address, a port, a description…" style="flex:1;min-width:200px">
       <select id="pt-proto"><option value="">TCP and UDP</option><option value="TCP">TCP</option><option value="UDP">UDP</option></select>
-      <select id="pt-hours">
-        <option value="24">last 24 hours</option><option value="168">last week</option>
-        <option value="720">last month</option><option value="0" selected>all time</option>
-      </select>
+      <span id="pt-hours" title="How far back the ports are counted."></span>
+      <button class="btn cmd" id="dn-open" data-icon="router" title="Port forwarding rules for the real router, made from these ports - consecutive ports merged into ranges.">Rules for the router</button>
     </div>
     <div id="pt-table" class="scroll rowsonly"></div>
-  </div>
-  <div class="card full">
-    <h2>Rules for the router (DNAT)</h2>
-    <p class="note">Port forwarding rules made from the ports above - consecutive ports merged into
-      ranges. The same as <span class="mono">upnp dnat</span>.</p>
-    <div class="btnrow filters">
-      <select id="dn-format">
-        <option value="iptables">iptables</option><option value="nft">nftables</option>
-        <option value="mikrotik">MikroTik</option><option value="firewalld">firewalld</option>
-      </select>
-      <input type="text" id="dn-wan" placeholder="the WAN interface (eth0, ether1…)" style="max-width:260px" spellcheck="false">
-      <button class="btn cmd" id="dn-go" data-icon="play">Make them</button>
-      <button class="btn cmd" id="dn-copy" data-icon="copy">Copy</button>
-    </div>
-    <pre class="lines" id="dn-out" style="margin-top:12px">–</pre>
   </div>
 </section>
 
@@ -320,11 +307,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     <div class="btnrow filters">
       <input type="search" id="rq-q" placeholder="an address, a port, a description…" style="flex:1;min-width:200px">
       <select id="rq-action"><option value="">every action</option></select>
-      <select id="rq-hours">
-        <option value="1">last hour</option><option value="24" selected>last 24 hours</option>
-        <option value="168">last week</option><option value="720">last month</option>
-        <option value="0">all time</option>
-      </select>
+      <span id="rq-hours" title="How far back the requests go."></span>
       <select id="rq-per"><option>50</option><option selected>100</option><option>500</option></select>
     </div>
     <div id="rq-table" class="scroll rowsonly"></div>
@@ -340,10 +323,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
       ports - with its PTR name, what it said it is, and the ports it asked for.</p>
     <div class="btnrow filters">
       <input type="search" id="cl-q" placeholder="an address, a name…" style="flex:1;min-width:200px">
-      <select id="cl-hours">
-        <option value="24">last 24 hours</option><option value="168">last week</option>
-        <option value="720">last month</option><option value="0" selected>all time</option>
-      </select>
+      <span id="cl-hours" title="How far back the clients are counted."></span>
     </div>
     <div id="cl-table" class="scroll rowsonly"></div>
   </div>
@@ -360,9 +340,36 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
   </div>
 </section>
 
+<!-- ===================== mDNS ===================== -->
+<section class="panel" id="tab-mdns" hidden>
+  <div class="grid top">
+    <div class="card metric ok" id="card-avahi"><div class="label">avahi-daemon</div>
+      <div class="value" id="m-avahi">–</div><div class="sub" id="m-avahi-sub">&nbsp;</div></div>
+    <div class="card metric info" id="card-refl"><div class="label">The reflector</div>
+      <div class="value" id="m-refl">–</div><div class="sub" id="m-refl-sub">&nbsp;</div></div>
+    <div class="card metric info" id="card-mifs"><div class="label">Interfaces</div>
+      <div class="value" id="m-mifs">–</div><div class="sub" id="m-mifs-sub">&nbsp;</div></div>
+    <div class="card metric info" id="card-msvc"><div class="label">Services seen</div>
+      <div class="value" id="m-msvc">–</div><div class="sub" id="m-msvc-sub">&nbsp;</div></div>
+  </div>
+  <div class="card full" data-hold style="margin-top:14px">
+    <h2>Services on the network <span class="right" id="ms-said"></span></h2>
+    <p class="note">What mDNS shows now on every interface avahi uses - AirPlay, Chromecast, printers,
+      the PS5 - asked of avahi-daemon (<span class="mono">avahi-browse -a -r</span>, as
+      <span class="mono">upnp mdns services</span>). Click a row for all it says.</p>
+    <div class="btnrow filters">
+      <input type="search" id="ms-q" placeholder="a name, a type (_airplay), an address, an interface…" style="flex:1;min-width:200px">
+      <select id="ms-iface"><option value="">every interface</option></select>
+      <select id="ms-proto"><option value="">IPv4 and IPv6</option><option value="IPv4">IPv4</option><option value="IPv6">IPv6</option></select>
+      <button class="btn cmd" id="ms-look" data-icon="refresh" title="Ask avahi again now - it takes a few seconds.">Look again</button>
+    </div>
+    <div id="ms-table" class="scroll rowsonly"></div>
+  </div>
+</section>
+
 <!-- ===================== Log ===================== -->
 <section class="panel" id="tab-log" hidden>
-  <div class="card full">
+  <div class="card full" data-hold>
     <h2>The log <span class="right mono small muted" id="lg-file" data-no-i18n></span></h2>
     <p class="note">The tail of fake-igd's own log, coloured as <span class="mono">upnp log</span>
       colours it, followed live. What is typed keeps only the lines with it (a regular expression works).</p>
@@ -371,7 +378,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
       <select id="lg-lines"><option>200</option><option selected>600</option><option>2000</option><option>10000</option></select>
       <button class="btn cmd" id="lg-pause" data-icon="pause">Pause</button>
     </div>
-    <pre class="lines loglines" id="lg-out" style="margin-top:12px;max-height:70vh;overflow:auto">…</pre>
+    <div class="scroll rowsonly" id="lg-scroll" style="margin-top:12px"><pre class="lines loglines" id="lg-out">…</pre></div>
   </div>
 </section>
 
@@ -384,6 +391,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     <div class="btnrow filters">
       <input type="search" id="ev-q" placeholder="anything in an event…" style="flex:1;min-width:200px">
       <select id="ev-kind"><option value="">everything</option></select>
+      <span id="ev-time" title="How far back the events go."></span>
     </div>
     <div id="ev-table" class="scroll rowsonly"></div>
     <div class="pager" id="ev-pager"></div>
@@ -406,6 +414,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     <button type="button" data-pane="network" data-icon="net" title="The port of the description and SOAP, the interfaces it listens on and leaves out, how often it looks again.">Network</button>
     <button type="button" data-pane="ntfy" data-icon="bell" title="A notification to a phone for every new port - ntfy.sh or your own ntfy server.">Notifications (ntfy)</button>
     <button type="button" data-pane="logs" data-icon="log" title="How much the log says, and where the logs and the state are.">Logs and state</button>
+    <button type="button" data-pane="mdns" data-icon="wifi" title="avahi-daemon on this server: the reflector, the interfaces, the filters - every key of avahi-daemon.conf fake-igd knows - and the daemon started, stopped or restarted.">mDNS reflector (avahi)</button>
     <div class="ctl-group">Access</div>
     <button type="button" data-pane="people" data-icon="person" title="Who may open these pages, what each of them may do, and who is signed in right now.">Accounts</button>
     <button type="button" data-pane="web" data-icon="wall" title="Who may reach these pages, how long a sign-in lasts, and the machine's firewall (iptables, the chain FAKE-IGD-IN).">Pages and firewall</button>
@@ -452,6 +461,21 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
       <p class="ctl-lede">The files are moved on the server only (<span class="mono">sudo upnp config set</span>):
         the service's sandbox needs to know the new place too.</p></div>
     <div class="card full"><div id="sect-logs"></div></div>
+  </div>
+
+  <div class="ctl-pane" id="pane-mdns" hidden>
+    <div class="ctl-head"><h2 class="ctl-title">mDNS reflector (avahi)</h2>
+      <p class="ctl-lede">avahi-daemon with <span class="mono">enable-reflector=yes</span> repeats mDNS
+        (Bonjour, AirPlay, Chromecast, printers…) between the server's networks. Saved, the change goes into
+        <span class="mono">/etc/avahi/avahi-daemon.conf</span> line by line - its comments stay, a copy is
+        kept beside it - and avahi-daemon is restarted; when it does not come up with the change, the copy is
+        put back. The same as <span class="mono">sudo upnp mdns ...</span>.</p></div>
+    <div class="card full" id="av-missing" hidden><div class="offline" id="av-missing-words"></div></div>
+    <div class="card full"><div id="sect-mdns"></div></div>
+    <div class="card full">
+      <h2>avahi-daemon <span class="right" id="av-tools"></span></h2>
+      <div id="av-state"><p class="muted">…</p></div>
+    </div>
   </div>
 
   <div class="ctl-pane" id="pane-people" hidden>

@@ -197,8 +197,11 @@ class Store(object):
         if secrets.randbelow(200) == 0:
             self.run("DELETE FROM events WHERE id <= (SELECT MAX(id) FROM events) - ?", (EVENTS_KEPT,))
 
-    def events(self, q="", kind="", since=0.0, limit=100, offset=0):
+    def events(self, q="", kind="", since=0.0, limit=100, offset=0, until=0.0):
         where, args = ["at >= ?"], [float(since or 0)]
+        if until:
+            where.append("at <= ?")
+            args.append(float(until))
         if kind:
             where.append("kind = ?")
             args.append(kind)

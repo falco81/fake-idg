@@ -1,4 +1,4 @@
-# fake-igd 1.4.1
+# fake-igd 1.5.0
 
 A fake UPnP router (IGD) for reconnaissance: it finds out **which ports a PS5 (or any other device) wants to open**, without enabling UPnP on your real router. Everything is logged to `/var/log/fake-igd/` and controlled with the **`upnp`** command - or by its menus with **`upnp --console`**. It also shows and controls the **mDNS reflector (avahi-daemon)** running on the same server, and sends notifications to **ntfy** (ntfy.sh or your private server).
 
@@ -20,8 +20,8 @@ packages only, checked and put in by root, exactly as otp does it.
 ## Installation (AlmaLinux 9)
 
 ```bash
-tar xzf fake-igd-1.4.1.tar.gz
-cd fake-igd-1.4.1
+tar xzf fake-igd-1.5.0.tar.gz
+cd fake-igd-1.5.0
 sudo ./install.sh
 ```
 
@@ -84,7 +84,7 @@ Or on the pages: *Settings → Upgrades* - *Look now*, *Upgrade to X now*, or dr
 console: menu **14 Upgrades**. Or by hand, as before:
 
 ```bash
-tar xzf fake-igd-1.4.1.tar.gz && cd fake-igd-1.4.1
+tar xzf fake-igd-1.5.0.tar.gz && cd fake-igd-1.5.0
 sudo ./install.sh --upgrade
 ```
 
@@ -135,9 +135,10 @@ unchanged).
 | Requests | every SOAP request, newest first, each with everything it carried |
 | Clients | who looked for a UPnP router or asked for ports, with PTR names |
 | Mappings | what the clients believe is open now |
+| mDNS | the reflector (avahi-daemon): the daemon, reflecting or not, its interfaces, and every service mDNS shows now |
 | Log | fake-igd's log, coloured as `upnp log`, followed live, with a grep |
 | Events | settings changed, accounts, sign-ins, upgrades - on the pages and on the command line |
-| Settings | How it answers · Network · Notifications (ntfy, with a test) · Logs and state · **Accounts** · **Pages and firewall** · The service · **Upgrades** · About |
+| Settings | How it answers · Network · Notifications (ntfy, with a test) · Logs and state · **mDNS reflector (avahi)** - every key of avahi-daemon.conf, the daemon restarted/stopped, its journal · **Accounts** · **Pages and firewall** · The service · **Upgrades** · About |
 
 A setting the service uses restarts `fake-igd.service` when it is saved (the pages are a service of
 their own and stay); `web_allow` and the firewall's settings are put in place by root

@@ -4084,3 +4084,5 @@ td.cert-crl-url .tag{flex:none;margin:0 6px 0 0}
 .loglines .lg{color:var(--ok)}
 .loglines .lr{color:var(--crit)}
 .loglines mark{background:rgba(210,153,34,.35);color:inherit;border-radius:2px}
+/* the log: one scroller - the held box; the <pre> in it does not scroll by itself */
+#lg-scroll > pre.lines{max-height:none;overflow:visible;margin:0}

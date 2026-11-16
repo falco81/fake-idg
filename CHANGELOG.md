@@ -2,6 +2,30 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.5.0 (2026-11-16)
+
+- **The pages as otp's, one scroller everywhere**: every list tab (Ports, Requests, Clients, Log,
+  Events, mDNS) is one held card whose table scrolls under headings that stay - the page itself never
+  scrolls beside it, as otp's (`data-hold`, `.scroll.rowsonly`). The log no longer scrolls twice: its
+  box scrolls, never the text in it. The rules for the router moved from a second card on Ports into a
+  window of their own (*Rules for the router*).
+- **otp's time picker** in place of the plain lists of hours - Overview, Ports, Requests, Clients,
+  Events: a window stepped back and forth (‹ ›), quick choices, a calendar; the API takes `since` and
+  `until`.
+- **Search / Clear** beside every search box, as otp's.
+- The settings menu hides at the left edge and slides out when pointed at, as otp's (the pin keeps it
+  open).
+- **mDNS on the pages** - the reflector avahi-daemon on this server, complete:
+  - a tab of its own, **mDNS**: the daemon, the reflector, its interfaces (and those missing), and every
+    service mDNS shows now (avahi-browse -a -r), filtered by words, interface and IPv4/IPv6, each with all
+    it says;
+  - **Settings → mDNS reflector (avahi)**: every key of `avahi-daemon.conf` fake-igd knows (the
+    reflector, allow/deny-interfaces, reflect-filters, reflect-ipv, IPv4/IPv6, the cache, the rate limit,
+    wide-area, publishing) in the same settings as the rest; saved, root changes the file line by line
+    through `upnp_mdns.apply` - its comments kept, a copy beside it, put back when avahi-daemon does not
+    come up with the change - and restarts it; the daemon restarted, stopped or started; its journal.
+  - The API runs with the group `systemd-journal` for avahi-daemon's journal.
+
 ## 1.4.1 (2026-11-16)
 
 - install.sh says where the pages are by name **and by every IPv4 address** of the machine
