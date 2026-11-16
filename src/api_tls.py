@@ -517,10 +517,28 @@ def pending_key(cfg):
     return _read(pending_file(cfg), 65536)
 
 
-def put_pem(ctx, cert, chain, key, how, by, alt=None, keep_before=False, words=""):
+NAME_RE = re.compile(r"^(?=.{1,253}\Z)([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z][A-Za-z0-9-]{1,62}\Z")
+
+
+def names_missing(info):
+    """The DNS names of a certificate (its CN and SAN; not addresses, not wildcards) nginx's
+    server_name does not have."""
+    have = [n.lower() for n in nginx_now()["names"]]
+    out = []
+    for n in [info.get("cn") or ""] + list(info.get("san") or []):
+        n = str(n).strip().lower().rstrip(".")
+        if NAME_RE.match(n) and n not in have and n not in out:
+            out.append(n)
+    return out[:50]
+
+
+def put_pem(ctx, cert, chain, key, how, by, alt=None, keep_before=False, words="", add_names=None):
     """The certificate asked of root (root_tls.py: put) - the one way a certificate goes in,
-    from here and from Automatic certificates. Returns the ask's id."""
+    from here and from Automatic certificates. Returns the ask's id. add_names: DNS names root
+    adds to the 443 server's server_name (asked in the dialog)."""
     payload = {"action": "put", "cert": cert, "chain": chain or "", "key": key, "keep_before": bool(keep_before)}
+    if add_names:
+        payload["server_names_add"] = list(add_names)[:50]
     if alt:
         payload["alt"] = {"cert": alt["cert"], "chain": alt.get("chain") or "", "key": alt["key"]}
     ident = ctx.ask_root(payload, kind="tls")
@@ -599,6 +617,7 @@ def view(ctx):
                        "prefer": ng["prefer"], "dh": dh, "dhparam": ng["dhparam"], "hsts": ng["hsts"]},
             "nginx": {"file": ng["file"], "there": ng["there"]},
             "names": ng["names"], "ips": host_ips(), "host": (ng["names"] or [os.uname()[1]])[0],
+            "machine": socket.gethostname(),
             "how": (meta(ctx.store, "tls:how") or {}).get("how") or "", "pending": pend, "csr": csr,
             "acme": acme, "before": before_acme(), "root": ask_state(ctx),
             "presets": TLS_PRESETS, "dh": DH_WORDS, "at": time.time()}
@@ -632,7 +651,8 @@ def post_tls(ctx):
             except ValueError:
                 raise ValueError("the PFX / PKCS#12 file did not arrive whole")
         got = cert_bundle(text, pfx, str(b.get("password") or ""), pending_key(ctx.cfg))
-        put_pem(ctx, got["cert"], got["chain"], got["key"], "uploaded", who)
+        add = names_missing(got["info"]) if b.get("add_names") is True else []
+        put_pem(ctx, got["cert"], got["chain"], got["key"], "uploaded", who, add_names=add)
         _care_off(ctx, who, "uploaded")
         try:
             os.unlink(pending_file(ctx.cfg))
@@ -640,10 +660,11 @@ def post_tls(ctx):
             pass
         ctx.store.set_meta("tls:csr", "null")
         i = got["info"]
-        ctx.event("%s put in a certificate for %s (%s, good until %s) - root puts it in nginx" % (
+        ctx.event("%s put in a certificate for %s (%s, good until %s) - root puts it in nginx%s" % (
             who, i.get("cn") or ", ".join(i.get("san") or []) or "?",
             "self-signed" if i.get("self_signed") else (i.get("issuer") or "?"),
-            time.strftime("%Y-%m-%d", time.gmtime(i["not_after"])) if i.get("not_after") else "?"))
+            time.strftime("%Y-%m-%d", time.gmtime(i["not_after"])) if i.get("not_after") else "?",
+            "; %s added to nginx's server_name" % ", ".join(add) if add else ""))
         out = view(ctx)
         out["message"] = "checked - root puts it in nginx within a few seconds (%s)" % got["chain_state"].get("words", "")
         return out
@@ -662,10 +683,11 @@ def post_tls(ctx):
             if not 1 <= days <= 3650:
                 raise ValueError("a self-signed certificate is good for 1 to 3650 days")
             key, crt = make_selfsigned(cn, names, days, kind, **subj)
-            put_pem(ctx, crt, "", key, "self-signed", who)
+            add = names_missing({"cn": cn, "san": names}) if b.get("add_names") is True else []
+            put_pem(ctx, crt, "", key, "self-signed", who, add_names=add)
             _care_off(ctx, who, "self-signed")
-            ctx.event("%s made a self-signed certificate for %s - root puts it in nginx" % (
-                who, ", ".join([cn] + names)))
+            ctx.event("%s made a self-signed certificate for %s - root puts it in nginx%s" % (
+                who, ", ".join([cn] + names), "; %s added to nginx's server_name" % ", ".join(add) if add else ""))
             out = view(ctx)
             out["message"] = "made - root puts it in nginx within a few seconds; the browser asks once more to accept it"
             return out
