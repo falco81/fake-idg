@@ -2,6 +2,14 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.9.1 (2026-11-17)
+
+- The Gateway tab no longer comes apart: its heading card was marked as the page's one long card, so opened
+  before the data came it took the whole window, and the cards drawn after it slid over its text (bits of
+  it showing between them). The heading is an ordinary card now.
+- A device's chart with nothing in its window is one line, not 200 px of nothing; the six cards on top are
+  6, 3 or 2 to a row, a device's eight figures 8, 4 or 2 - never one left alone on a row.
+
 ## 1.9.0 (2026-11-17)
 
 - **Gateway for devices: each device's own firewall** (the FW designer: the firewall button of a device, or its

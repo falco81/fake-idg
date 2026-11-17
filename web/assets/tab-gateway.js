@@ -81,7 +81,8 @@
     return box;
   }
   function paintChart(box, tip, s, step) {
-    if (!s.some(function (p) { return p.bytes || p.dropped; })) { box.appendChild(el('div', 'empty', 'Nothing went through in this window')); return; }
+    if (!s.some(function (p) { return p.bytes || p.dropped; })) { box.classList.add('is-empty'); box.appendChild(el('div', 'empty', 'Nothing went through in this window')); return; }
+    box.classList.remove('is-empty');
     var W = box.clientWidth || 700, H = box.clientHeight || 200, padL = 64, padR = 12, padT = 12, padB = 26;
     var w = Math.max(10, W - padL - padR), h = Math.max(10, H - padT - padB);
     var top = Math.max(1, s.reduce(function (m, p) { return Math.max(m, p.bytes); }, 0));

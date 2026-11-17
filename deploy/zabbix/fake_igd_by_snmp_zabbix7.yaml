@@ -14,10 +14,10 @@ zabbix_export:
       the page; link this template. MIB: FAKE-IGD-MIB (deploy/FAKE-IGD-MIB.txt in the package).
 
 
-      Made by fake-igd 1.9.0.'
+      Made by fake-igd 1.9.1.'
     vendor:
       name: fake-igd
-      version: 7.0-1.9.0
+      version: 7.0-1.9.1
     groups:
     - name: Templates/Applications
     items:

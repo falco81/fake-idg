@@ -4562,3 +4562,11 @@ td.mt-why{max-width:520px;color:var(--tx-dim);white-space:normal}
 .nt-filter{display:flex;align-items:center;gap:10px;margin:0 0 10px}
 .nt-filter select{min-width:200px}
 @media (max-width:900px){.nte-table td.nte-what{min-width:180px}.nte-table select{min-width:110px}}
+/* 1.9.1: the Gateway tab - a chart with nothing in its window is one line, not 200 px of nothing */
+.gt-chart.is-empty{height:auto;padding:14px 0;border:1px dashed var(--line);border-radius:10px}
+#tab-gateway .gt-cards{grid-template-columns:repeat(6,minmax(0,1fr))}
+@media (max-width:1500px){#tab-gateway .gt-cards{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:700px){#tab-gateway .gt-cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.gt-device > .facts{display:grid;grid-template-columns:repeat(8,minmax(0,1fr))}
+@media (max-width:1500px){.gt-device > .facts{grid-template-columns:repeat(4,minmax(0,1fr))}}
+@media (max-width:700px){.gt-device > .facts{grid-template-columns:repeat(2,minmax(0,1fr))}}

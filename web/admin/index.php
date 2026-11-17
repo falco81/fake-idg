@@ -500,7 +500,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
 <!-- ===================== Events ===================== -->
 <!-- ===================== Gateway (1.8.2) ===================== -->
 <section class="panel" id="tab-gateway" hidden>
-  <div class="card full gt-top" data-hold>
+  <div class="card full gt-top">
     <h2>The gateway for devices <span class="right gt-tools"><span class="small muted" id="gt-read"></span>
       <span id="gt-hours" title="The window of the charts."></span>
       <button type="button" class="btn cmd small" id="gt-refresh" data-icon="refresh">Read it again</button></span></h2>
