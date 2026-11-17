@@ -317,6 +317,8 @@ install_program() {
     done
     # FAKE-IGD-MIB (1.7.2): Settings → Monitoring hands it out (api_monitor.py looks beside itself)
     [[ -f "$SOURCE_DIR/deploy/FAKE-IGD-MIB.txt" ]] && install -m 0644 "$SOURCE_DIR/deploy/FAKE-IGD-MIB.txt" "$OPT_DIR/FAKE-IGD-MIB.txt"
+    [[ -f "$SOURCE_DIR/deploy/zabbix/fake_igd_by_snmp_zabbix7.yaml" ]] && install -D -m 0644 \
+        "$SOURCE_DIR/deploy/zabbix/fake_igd_by_snmp_zabbix7.yaml" "$OPT_DIR/zabbix/fake_igd_by_snmp_zabbix7.yaml"
     # ...and none that a version before shipped and this one does not (an old pane's API).
     for m in "$OPT_DIR"/api_*.py; do
         [[ -f "$m" && ! -f "$SOURCE_DIR/src/$(basename "$m")" ]] && rm -f "$m"
@@ -954,10 +956,27 @@ if [[ -n "$DO_UPGRADE" ]]; then
     }
     upgrade_told_end() {
         local rc=$?
-        if [[ $rc -ne 0 ]]; then upgrade_tell failed "install.sh --upgrade stopped (exit $rc) - its output says why"; fi
+        if [[ $rc -ne 0 ]]; then
+            # Whatever stopped it half way (otp 1.0.44, 1.0.287): the services started again as they
+            # are; the new program in place and not staying up - the version before, as it was.
+            if [[ "${UPGRADE_PROGRAM:-}" == new ]]; then
+                warn "the upgrade stopped half way (exit $rc); the services are started again as they are"
+                systemctl restart $APP fake-igd-api >/dev/null 2>&1 || true
+                if ! upgrade_stays_up && upgrade_put_old_back; then
+                    upgrade_stays_up && warn "the version before runs again - look at what stopped the new one (journalctl -u fake-igd -u fake-igd-api)"
+                fi
+            fi
+            upgrade_tell failed "install.sh --upgrade stopped (exit $rc) - its output says why"
+        fi
         return 0
     }
     trap upgrade_told_end EXIT
+    # Stopped by a signal (otp 1.0.146) - Ctrl-C, a hang-up, fake_igd_upgrade.py's TERM at its
+    # deadline - bash ran the EXIT trap with status 0: nothing was put back, the pages' band stayed
+    # "running".
+    trap 'exit 130' INT
+    trap 'exit 129' HUP
+    trap 'exit 143' TERM
     step "Upgrading fake-igd to $VERSION ($steps steps)"
     upgrade_tell running "Upgrading fake-igd to $VERSION"
     step() { printf '\n%s==> %s%s\n' "$C_HEAD" "$1" "$C_OFF"; UPGRADE_PART=$((UPGRADE_PART + 1)); upgrade_tell running "$1"; }
@@ -966,37 +985,65 @@ if [[ -n "$DO_UPGRADE" ]]; then
     # The version before kept until the new one runs (otp 1.0.287): put back when it does not stay up.
     UPGRADE_OLD="$OPT_DIR/.before-upgrade"
     rm -rf "$UPGRADE_OLD"
-    if mkdir -p -m 0700 "$UPGRADE_OLD" && (cd "$OPT_DIR" && cp -p ./*.py VERSION "$UPGRADE_OLD/" 2>/dev/null); then
-        [[ -d "$WEB_DIR" ]] && cp -rp "$WEB_DIR" "$UPGRADE_OLD/web"
+    # Its program and root's helpers (every *.py), VERSION when there is one, its two units and its
+    # pages. A copy that cannot be made (a full disk) is none - never a reason to stop the upgrade.
+    if mkdir -p -m 0700 "$UPGRADE_OLD/units" && (cd "$OPT_DIR" && cp -p ./*.py "$UPGRADE_OLD/") \
+            && { [[ ! -f "$OPT_DIR/VERSION" ]] || cp -p "$OPT_DIR/VERSION" "$UPGRADE_OLD/"; } \
+            && { [[ ! -f "$UNIT_DIR/$APP.service" ]] || cp -p "$UNIT_DIR/$APP.service" "$UPGRADE_OLD/units/"; } \
+            && { [[ ! -f "$UNIT_DIR/fake-igd-api.service" ]] || cp -p "$UNIT_DIR/fake-igd-api.service" "$UPGRADE_OLD/units/"; } \
+            && { [[ ! -d "$WEB_DIR" || -L "$WEB_DIR" ]] || cp -rp "$WEB_DIR" "$UPGRADE_OLD/web"; }; then
         touch "$UPGRADE_OLD/complete"
+    else
+        rm -rf "$UPGRADE_OLD"
+        warn "the version before could not be kept aside - it cannot be put back if the new one does not start"
     fi
+    upgrade_stays_up() {    # otp's otp_stays_up: running, not restarting over and over, and the program runs at all
+        local n0 n1
+        n0="$(systemctl show -p NRestarts --value $APP.service 2>/dev/null || true)"
+        sleep 10
+        n1="$(systemctl show -p NRestarts --value $APP.service 2>/dev/null || true)"
+        systemctl is-active --quiet $APP.service && systemctl is-active --quiet fake-igd-api.service &&
+            [[ "${n0:-0}" == "${n1:-0}" ]] && "$VENV/bin/python" -I "$OPT_DIR/$APP.py" --version >/dev/null 2>&1
+    }
     upgrade_put_old_back() {
         [[ -f "$UPGRADE_OLD/complete" ]] || return 1
-        warn "the version before is put back"
-        cp -p "$UPGRADE_OLD"/*.py "$UPGRADE_OLD/VERSION" "$OPT_DIR/" || return 1
+        warn "the version before is put back: its program, root's helpers, units and pages"
+        local f
+        # what only the new version has (a new pane's api_*.py, root_*.py) goes: the old API loads every api_*.py
+        for f in "$OPT_DIR"/*.py; do [[ -f "$UPGRADE_OLD/$(basename "$f")" ]] || rm -f "$f"; done
+        cp -p "$UPGRADE_OLD"/*.py "$OPT_DIR/" || return 1
+        [[ -f "$UPGRADE_OLD/VERSION" ]] && cp -p "$UPGRADE_OLD/VERSION" "$OPT_DIR/VERSION"
+        rm -rf "$OPT_DIR/__pycache__"
+        for f in "$UPGRADE_OLD"/units/*.service; do [[ -f "$f" ]] && cp -p "$f" "$UNIT_DIR/$(basename "$f")"; done
+        systemctl daemon-reload >/dev/null 2>&1 || true
         if [[ -d "$UPGRADE_OLD/web" ]]; then rm -rf "$WEB_DIR"; cp -rp "$UPGRADE_OLD/web" "$WEB_DIR"; fi
+        if command -v restorecon >/dev/null 2>&1; then
+            restorecon -RF "$OPT_DIR" "$UNIT_DIR"/fake-igd* >/dev/null 2>&1 || true
+            [[ -d "$WEB_DIR" ]] && restorecon -RF "$WEB_DIR" >/dev/null 2>&1 || true
+        fi
         systemctl restart $APP fake-igd-api 2>/dev/null || true
+        UPGRADE_PROGRAM=""
         return 0
     }
     base_packages
     ensure_python
     accounts
+    UPGRADE_PROGRAM=new
     install_program
     install_config
     install_upgrader
     if [[ -n "$WITH_WEB" ]]; then
         ensure_php
     fi
-    if ! install_units; then
-        upgrade_put_old_back && warn "the version before runs again - look at what stopped the new one (journalctl -u fake-igd -u fake-igd-api)"
-        fail "the new version did not start"
-    fi
+    # Not started: fail's exit runs upgrade_told_end, which puts the version before back.
+    install_units || fail "the new version did not start"
     if [[ -n "$WITH_WEB" ]]; then
         install_pages
         first_account
     fi
     open_firewall
     root_facts_write
+    UPGRADE_PROGRAM=done
     rm -rf "$UPGRADE_OLD"
     does_it_work
     step "Done"

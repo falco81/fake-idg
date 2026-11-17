@@ -67,7 +67,7 @@ MUST_CHANGE_ALLOWED = ("/api/auth/password", "/api/auth/passwd", "/api/auth/logo
 LOCK = threading.RLock()
 
 NAMES = {
-    "mode": "Mode", "mapping_response": "The answer to AddPortMapping", "http_port": "Description and SOAP port",
+    "mode": "Mode", "mapping_response": "The answer to AddPortMapping", "igd_version": "UPnP version (InternetGatewayDevice)", "http_port": "Description and SOAP port",
     "external_ip": "Public IP reported", "interfaces": "Interfaces", "exclude_interfaces": "Interfaces left out",
     "allowed_clients": "Who is answered", "ntfy_url": "ntfy topic URL", "ntfy_token": "ntfy access token",
     "ntfy_user": "ntfy user", "ntfy_password": "ntfy password", "ntfy_priority": "Priority",

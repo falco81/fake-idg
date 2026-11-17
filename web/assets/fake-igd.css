@@ -4162,3 +4162,20 @@ table.if-t td.cert-crl-url .mono{flex:0 1 auto;min-width:0;overflow:hidden;text-
 .upband-line a.fgo{cursor:pointer}
 /* The sign-in page: under the box's title, as its own red box would be. */
 .signbox .offline.upband b{display:block;margin-bottom:2px}
+
+/* 1.7.4 r4: own */
+/* own (round 4): the steps of a client on the Clients tab and in its popup */
+.step-pills{display:inline-flex;flex-wrap:nowrap;gap:3px;vertical-align:middle;white-space:nowrap}
+.step-pills .tag{font-size:10px;padding:1px 6px}
+.step-said{margin-top:3px;max-width:360px;white-space:normal}
+td.step-tl-what{white-space:nowrap}
+td.step-tl-said{white-space:normal;word-break:break-all;overflow-wrap:anywhere}
+
+/* 1.7.4 r4: server */
+/* r4 server: About's settings in otp's order (name, performance meter, API port, Debug log) and
+   the debug log's sub-switch on a row of its own below them, as otp's "...every X" switches. */
+#pane-about .set-item[data-key="site_name"]{order:1}
+#pane-about .set-item[data-key="perf_meter"]{order:2}
+#pane-about .set-item[data-key="api_port"]{order:3}
+#pane-about .set-item[data-key="debug"]{order:4}
+#pane-about .set-item[data-key="debug_api"]{order:5;grid-column-start:1}

@@ -17,7 +17,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from xml.etree import ElementTree as ET
 
-VERSION = "1.7.3"
+VERSION = "1.7.4"
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 APP = "fake-igd"
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
@@ -26,6 +26,7 @@ SERVICE = "fake-igd"
 DEFAULTS = {
     "mode": "active",
     "mapping_response": "accept",
+    "igd_version": 1,
     "http_port": 5000,
     "external_ip": "auto",
     "interfaces": [],
@@ -59,6 +60,7 @@ DEFAULTS = {
 KEY_HELP = {
     "mode": "active = answer like a UPnP router, passive = only listen and log",
     "mapping_response": "accept = confirm AddPortMapping (nothing is opened), reject = refuse with error 501",
+    "igd_version": "1: InternetGatewayDevice:1 (what fake-igd always was); 2: InternetGatewayDevice:2 with WANIPConnection:2, as miniupnpd built with IGD2 - a device that searches only for :2 is answered only then (the Clients tab shows what it searched for)",
     "http_port": "TCP port for the device description and SOAP",
     "external_ip": "public IP reported to clients, 'auto' = detect automatically",
     "interfaces": "interfaces to listen on, empty = all",
@@ -91,11 +93,11 @@ KEY_HELP = {
 }
 ALLOWED_VALUES = {"mode": ("active", "passive"), "mapping_response": ("accept", "reject"),
                   "log_level": ("DEBUG", "INFO", "WARNING", "ERROR")}
-NUMBER_RANGES = {"api_port": (1024, 65535), "session_idle_minutes": (5, 1440), "http_port": (1, 65535), "ntfy_priority": (1, 5), "interface_rescan_seconds": (10, 3600),
+NUMBER_RANGES = {"igd_version": (1, 2), "api_port": (1024, 65535), "session_idle_minutes": (5, 1440), "http_port": (1, 65535), "ntfy_priority": (1, 5), "interface_rescan_seconds": (10, 3600),
                  "notify_interval_seconds": (30, 86400)}
 SECRET_KEYS = ("ntfy_token", "ntfy_password")
 SETTING_GROUPS = [
-    ("How it answers", ["mode", "mapping_response", "allowed_clients", "external_ip"]),
+    ("How it answers", ["mode", "mapping_response", "igd_version", "allowed_clients", "external_ip"]),
     ("Network", ["http_port", "interfaces", "exclude_interfaces", "interface_rescan_seconds",
                  "notify_interval_seconds"]),
     ("Notifications (ntfy)", ["ntfy_url", "ntfy_token", "ntfy_user", "ntfy_password", "ntfy_priority",
@@ -107,7 +109,7 @@ SETTING_GROUPS = [
     ("Upgrades", ["upgrade_url", "upgrade_check"]),
 ]
 # What the fake-igd service itself uses: a change of anything else does not restart it (1.4.0).
-SERVICE_KEYS = ("mode", "mapping_response", "http_port", "external_ip", "interfaces", "exclude_interfaces",
+SERVICE_KEYS = ("mode", "mapping_response", "igd_version", "http_port", "external_ip", "interfaces", "exclude_interfaces",
                 "allowed_clients", "ntfy_url", "ntfy_token", "ntfy_user", "ntfy_password", "ntfy_priority",
                 "ntfy_tags", "ntfy_ca_file", "notify_on_renew", "notify_other_router", "log_level", "log_file",
                 "request_log", "state_dir", "interface_rescan_seconds", "notify_interval_seconds")
@@ -857,6 +859,8 @@ def cmd_mappings(args, cfg):
 def clients_data(cfg, since=None):
     cl = {}
     for e in read_events(cfg, since):
+        if not e.get("client"):
+            continue                  # the daemon's own rows (a lease run out) - nobody asked
         c = cl.setdefault(e.get("client", "?"), {"req": 0, "ports": set(), "last": None, "ua": "", "search": 0})
         c["req"] += 1
         if e.get("action") == "AddPortMapping" and e.get("description") != "upnp-cli-test":

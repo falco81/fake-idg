@@ -2,6 +2,57 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.7.4 (2026-11-17)
+
+Round 4, run 1 of 3: every area compared with otp 1.0.288 again, and bugs hunted - in the pages (every
+button and dialog, admin and read-only, wide and low screens) and in the application (the API with bad
+input, root's helpers, the command line, security).
+
+**The PS5 and the UPnP service**
+- Every step of a device is logged and shown: its M-SEARCH (ST, MX, User-Agent), what was answered (ST,
+  USN, LOCATION) or why not, each fetch of the descriptions, each SOAP question (GetExternalIPAddress,
+  GetStatusInfo... - also in the request log, once a minute). The Clients tab has "How far it got"
+  (searched · answered · description · service · SOAP · ports) and says where a device stopped; its popup
+  shows the timeline.
+- SSDP answered as UDA 1.1 / miniupnpd: the ST as asked, never a later version than the device has (an
+  IGD:2 search was answered with IGD:1, which a strict client throws away); upnp:rootdevice and uuid:
+  searches; a unicast M-SEARCH at once. New setting igd_version: 2 makes it InternetGatewayDevice:2 with
+  WANIPConnection:2 (AddAnyPortMapping, DeletePortMappingRange, GetListOfPortMappings), as miniupnpd.
+- Fixed: a bad Content-Length crashed the handler or held a thread; leases outside ui4 and non-IPv4
+  internal clients were taken; any "GetTotal..." action answered; mappings held before a restart of the
+  service were forgotten (mappings.json now read at start); no limit on mappings (1024 now); junk rows in
+  the request log; the conflict line named the wrong address.
+
+**Security**
+- An account that must change its password could use the whole API (it could make a full administrator);
+  now it may only change it, as otp.
+- `?api=auth-login` (the generic road) handed the session token to the page's script and passed by
+  nginx's count of sign-ins - closed.
+- A name typed at sign-in could add a line to the events and syslog; "End it" with a short id could end
+  several sign-ins; a backup folder under a link could make root write elsewhere - all fixed.
+
+**Upgrades, backups, network**
+- install.sh --upgrade stopped half way (any failure, Ctrl-C, a hang-up, the helper's deadline) puts the
+  version before back - its program, root's helpers, units and pages, without the new version's extra
+  files - as otp's upgrade rescue; the pages' band says failed, never "running" for ever.
+- An older package sent after a good one no longer throws the good one away; a command-line mistake
+  (--run of an older package without --downgrade) no longer leaves a red band on every page; "To be
+  done by hand" is not judged while install.sh --upgrade runs by hand either.
+- The network change: the timer that takes it back is started before anything changes - a helper that
+  died half way can no longer leave a new network with no way back; /etc/hosts names right.
+- A save of Settings with one refused value keeps nothing of it.
+
+**As otp's**
+- `upnp` does what the pages do: `upnp api`, `events`, `check`, `backup now|verify`, `db`, `updates
+  check|start|stop|reboot`, `time sync`, `net`, `tls`, `acme order`, `mail-test`, `siem-test`, `proxy-test`,
+  `snmp-trap` (root's key /run/fake-igd-api/cli-token; "root (command line)" in the events) - and in the console.
+- Monitoring: the Zabbix 7.0 template "fake-igd by SNMP" to download; the engine ID shown while SNMP is off.
+- Alerts: a clock that is off, a source blocked for guessing, a certificate the CA did not renew, a change
+  on trial that went back; the administration's address in the mails with "Open in the administration".
+- Accounts: the Signs in and Columns columns, Columns of the tables; the second step switched on ends the
+  other sign-ins. A read-only account following a link to a full administrator's pane gets the first pane.
+- The php2shell banner hidden where the distribution backported the fix; About in otp's order.
+
 ## 1.7.3 (2026-11-17)
 
 - **No more "the parts root installs are from before it" after every upgrade.** The new API starts in the
