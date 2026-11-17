@@ -35,6 +35,14 @@ if 'api=passkey-login' not in t:
         line = '%s"~(^|&)api=passkey-login(&|$)"%s$binary_remote_addr;\n' % (m.group(1), m.group(2))
         t = t[:m.end()] + line + t[m.end():]
         said.append("a passkey's sign-in in the sign-in rate limit")
+if 'apple-touch-icon' not in t and 'location = /favicon.ico' in t:
+    # 1.9.8: a home screen's icon and the manifest (an iPad's "Add to Home Screen")
+    b = block(r'(?ms)^    # A home screen.*?^    location = /assets/manifest\.webmanifest \{.*?^    \}\n')
+    if b:
+        i = t.index('location = /favicon.ico')
+        j = t.index('\n', i) + 1
+        t = t[:j] + b + t[j:]
+        said.append("the home screen's icon and manifest")
 if said:
     open(p, 'w').write(t)
 print('; '.join(said))

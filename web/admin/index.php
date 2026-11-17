@@ -243,7 +243,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
 <!doctype html>
 <html lang="en" class="app-shell-root">
 <head>
-<?php igd_head($title, $nonce); ?>
+<?php igd_head($title, $nonce, $site !== '' ? $site : 'fake-igd'); ?>
 <link rel="stylesheet" nonce="<?= h($nonce) ?>" href="/assets/hload.css?v=<?= h(IGD_VERSION) ?>-<?= (int) @filemtime(dirname(__DIR__) . '/assets/hload.css') ?>">
 </head>
 <body class="app-shell fold-words<?= $me ? ' framed' : '' ?>">

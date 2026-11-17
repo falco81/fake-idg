@@ -15,7 +15,7 @@ if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME'])
     exit;
 }
 
-const IGD_VERSION = '1.9.7';
+const IGD_VERSION = '1.9.8';
 
 header('Cache-Control: no-cache, no-store, must-revalidate');
 header('Pragma: no-cache');
@@ -97,7 +97,7 @@ function igd_guard_post(): void
 }
 
 /** The head of a page: the words-swapper (English only for now), the style, the icon. */
-function igd_head(string $title, string $nonce): void
+function igd_head(string $title, string $nonce, string $short = 'fake-igd'): void
 {
     $v = IGD_VERSION . '-' . (int) @filemtime(__DIR__ . '/assets/fake-igd.css')
        . '-' . (int) @filemtime(__DIR__ . '/assets/core.js');
@@ -105,6 +105,17 @@ function igd_head(string $title, string $nonce): void
     echo "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n";
     echo '<title>' . h($title) . "</title>\n";
     echo '<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">' . "\n";
+    /* On a home screen (1.9.8, as otp 1.0.254): an iPad's "Add to Home Screen" takes this icon (not a picture of
+       the page) and this name, and opens the pages on their own, without Safari's bars; the manifest does the
+       same for Android and Chrome. */
+    $hv = IGD_VERSION . '-' . (int) @filemtime(__DIR__ . '/assets/apple-touch-icon.png');
+    echo '<link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png?v=' . h($hv) . '">' . "\n";
+    echo '<link rel="manifest" href="/assets/manifest.webmanifest?v=' . h($hv) . '">' . "\n";
+    echo '<meta name="apple-mobile-web-app-title" content="'
+       . h(preg_match('/^.{1,24}/us', $short !== '' ? $short : 'fake-igd', $m) ? $m[0] : 'fake-igd') . '">' . "\n";
+    echo '<meta name="apple-mobile-web-app-capable" content="yes">' . "\n";
+    echo '<meta name="mobile-web-app-capable" content="yes">' . "\n";
+    echo '<meta name="apple-mobile-web-app-status-bar-style" content="black">' . "\n";
     echo '<meta name="theme-color" content="#0d1117">' . "\n";
     echo '<script nonce="' . h($nonce) . '">window.OTP_LANGS = [{"code":"en","name":"English","english":"English"}];'
        . ' window.OTP_LANG = "en";</script>' . "\n";

@@ -2,6 +2,16 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.9.8 (2026-11-17)
+
+- **On a home screen** (an iPad's Share → Add to Home Screen, as otp 1.0.254): an icon of its own (the shield
+  holding a router, 180 px for iPadOS - not a picture of the page), the name of this machine's pages under it,
+  and opened from there the pages fill the screen without Safari's bars (apple-mobile-web-app-capable, the
+  status bar black). A web app manifest does the same for Android and Chrome (192 and 512 px, maskable, SVG;
+  display standalone, start /admin/). nginx answers /apple-touch-icon*.png too, where iPadOS looks without the
+  page's link, and serves the manifest as application/manifest+json - an upgrade adds both to an nginx config
+  already in place.
+
 ## 1.9.7 (2026-11-17)
 
 - **Sign in with Face ID, Touch ID or Windows Hello (a passkey)** - instead of the password, no longer the second

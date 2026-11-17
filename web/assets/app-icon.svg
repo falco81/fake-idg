@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- fake-igd on a home screen (1.9.8): the favicon's shield and router, full-bleed - iPadOS and Android round
+       the corners themselves; the shield inside the safe zone of a maskable icon. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b2230"/>
+      <stop offset="1" stop-color="#0d1117"/>
+    </linearGradient>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#79b8ff"/>
+      <stop offset="1" stop-color="#1f6feb"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="46%" r="42%">
+      <stop offset="0" stop-color="#1f6feb" stop-opacity=".35"/>
+      <stop offset="1" stop-color="#1f6feb" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <circle cx="256" cy="240" r="210" fill="url(#glow)"/>
+  <path d="M256 104l130 48v100c0 82-55 137-130 164-75-27-130-82-130-164V152z"
+        fill="url(#g)" fill-opacity=".2" stroke="url(#g)" stroke-width="16" stroke-linejoin="round"/>
+  <rect x="168" y="244" width="176" height="68" rx="18" fill="none" stroke="#3fb950" stroke-width="18"/>
+  <path d="M208 278h10M248 278h10M288 278h10" stroke="#3fb950" stroke-width="18" stroke-linecap="round"/>
+  <path d="M206 244l-22-50M306 244l22-50" stroke="#3fb950" stroke-width="18" stroke-linecap="round"/>
+</svg>
