@@ -4232,3 +4232,20 @@ label.se-f:hover{background:var(--panel2)}
 ul.se-confirm{margin:8px 0 10px;padding-left:18px;display:flex;flex-direction:column;gap:6px;max-height:42vh;overflow:auto}
 ul.se-confirm code{font-size:12px;overflow-wrap:anywhere;white-space:normal}
 @media (max-width:640px){.se-f{padding:8px 10px}.se-kind-says{flex-basis:100%}.se-rule{flex-direction:column;align-items:flex-start}}
+
+/* 1.7.12: a popup has ONE scroller - its body. A list in it (listTable's held scroller, a log, an output)
+   grows in the body instead of scrolling inside it (two scrollbars, one in the other, was the clients'
+   popup with its steps). Its header stays readable: the body is what scrolls, the list only sideways. */
+.modal .body .scroll,
+.modal .body .scroll.lt-held,
+.modal .body .lt-paged .scroll{max-height:none !important;overflow-y:visible !important;overflow-x:auto}
+.modal .body pre,.modal .body .out,.modal .body .log-out,.modal .body .up-log{max-height:none !important;overflow-y:visible !important}
+/* Wider popups, as wide as the screen allows (responsive): the medium one was 860-900 px on any screen. */
+.modal .box{width:min(1480px,96vw)}
+.modal .box.medium{width:min(1180px,94vw)}
+.modal .box.narrow{width:min(640px,94vw)}
+@media (max-width: 760px){
+  .modal{padding:10px 8px}
+  .modal .box,.modal .box.medium,.modal .box.narrow{width:100%;max-height:96vh}
+  .modal .body{padding:16px 14px}
+}

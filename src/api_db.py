@@ -510,6 +510,49 @@ ERASE = [("events", "the event log", "events",
           "sent goes with it.")]
 
 
+# Kept outside the database (1.7.12): erased by root (deploy/root_history.py) - the API may read them, not
+# write them. (key, name, file in the log folder or the state folder, says)
+ERASE_ROOT = [("requests", "the requests - Ports, Requests, Clients", "requests.jsonl",
+               "every SSDP and SOAP request of every device (the request log and its rotated copies): what the "
+               "Ports, Requests and Clients tabs, the Overview's chart and the reports are made of."),
+              ("log", "the service's log - searches and steps", "fake-igd.log",
+               "what fake-igd.service wrote down (and its rotated copies): the devices' searches, how far each "
+               "client got, what the service said. The Log tab starts empty."),
+              ("mappings", "the mappings", "mappings.json",
+               "what the devices believe is open now. fake-igd.service is stopped and started again for it: "
+               "for a few seconds the PS5 gets no answer.")]
+
+
+def _count_lines(path):
+    try:
+        with open(path, "rb") as f:
+            return sum(1 for _ in f)
+    except OSError:
+        return None
+
+
+def _root_groups(ctx):
+    out = []
+    logdir = os.path.dirname(ctx.cfg.get("request_log") or "/var/log/fake-igd/requests.jsonl")
+    for key, name, fname, says in ERASE_ROOT:
+        if key == "mappings":
+            p = os.path.join(ctx.cfg.get("state_dir") or "/var/lib/fake-igd", fname)
+            try:
+                with open(p, encoding="utf-8") as f:
+                    n = len(json.load(f) or [])
+            except (OSError, ValueError, TypeError):
+                n = 0
+            unit = "mapping(s)"
+        else:
+            p = ctx.cfg.get("request_log") if key == "requests" else ctx.cfg.get("log_file")
+            p = p or os.path.join(logdir, fname)
+            n = _count_lines(p)
+            unit = "line(s)"
+        out.append({"key": key, "name": name, "rows": n or 0, "unit": unit, "says": says, "root": True,
+                    "unknown": n is None})
+    return out
+
+
 def erasable(ctx):
     groups = []
     for key, name, table, says in ERASE:
@@ -518,7 +561,8 @@ def erasable(ctx):
         except (sqlite3.Error, IndexError, KeyError):
             continue
         groups.append({"key": key, "name": name, "rows": n, "says": says})
-    return {"groups": groups, "bytes": db_bytes(ctx)}
+    groups += _root_groups(ctx)
+    return {"groups": groups, "bytes": db_bytes(ctx), "root": ctx.root_result("history")}
 
 
 def view(ctx):
@@ -722,8 +766,18 @@ def _post_db(ctx):
     if act == "erase":
         picked = [g for g in (b.get("groups") or []) if isinstance(g, str)]
         known = {k: (n, t) for k, n, t, _s in ERASE}
-        if not picked or any(g not in known for g in picked):
+        rooted = {k: n for k, n, _f, _s in ERASE_ROOT}
+        if not picked or any(g not in known and g not in rooted for g in picked):
             raise ValueError("nothing known to erase")
+        to_root = [g for g in picked if g in rooted]
+        picked = [g for g in picked if g in known]
+        ident = None
+        if to_root:
+            ident = ctx.ask_root({"what": to_root}, kind="history")
+            ctx.event("%s asked root to erase %s" % (who, ", ".join(rooted[g] for g in to_root)), "warn")
+        if not picked:
+            return {"erased": [], "root": ident, "message": "asked root to erase %s - done within seconds"
+                    % ", ".join(rooted[g] for g in to_root)}
         safety = make_copy(ctx, "before-restore")
         done = []
         for g in picked:
@@ -741,8 +795,9 @@ def _post_db(ctx):
             after = db_bytes(ctx)
         ctx.event("%s erased the collected data: %s; a copy was made first: %s" % (who, ", ".join(done), safety),
                   "warn")
-        return {"erased": done, "copy": safety, "before": before, "after": after,
-                "message": "erased; a copy was made first: %s" % safety}
+        return {"erased": done, "copy": safety, "before": before, "after": after, "root": ident,
+                "message": "erased; a copy was made first: %s%s" % (
+                    safety, "; root erases %s within seconds" % ", ".join(rooted[g] for g in to_root) if to_root else "")}
     raise ValueError("no such action")
 
 

@@ -2,6 +2,21 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.7.12 (2026-11-17)
+
+- **Settings → The database → Erase the collected data** erases the history kept outside the database too
+  (done by root, deploy/root_history.py): *the requests* (the request log and its rotated copies - the
+  Ports, Requests and Clients tabs, the Overview's chart, the reports), *the service's log* (the devices'
+  searches, how far each client got, the Log tab) and *the mappings* (fake-igd.service stopped, emptied,
+  started again - a few seconds without an answer). Each says how many lines or mappings it has; the
+  confirm says that no copy is kept of these. Root never takes the files from config.json: only
+  fake-igd's own log and state folders, plain files, no link followed, truncated on the open file.
+- **One scroller in every popup**: a list in a popup (the client's steps, a request's fields, a port's
+  requests…) grows in the popup's body instead of scrolling inside it - the client's popup had two
+  scrollbars, one in the other. A test now opens the popups of every tab and checks it.
+- **Wider popups, as the screen allows**: the medium one up to 1180 px (it was 860-900 on any screen), the
+  large ones up to 1480 px, the small ones 640 px; on a phone the whole width.
+
 ## 1.7.11 (2026-11-17)
 
 - **SELinux → Download the report holds the whole of SELinux on the machine**, not only fake-igd's part:

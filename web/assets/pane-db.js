@@ -224,7 +224,7 @@
     clear(host);
     $('erase-size').textContent = bytes(d.bytes || 0) + ' in all';
     (d.groups || []).forEach(function (g) {
-      var row = el('label', 'erase-one' + (g.rows ? '' : ' empty'));
+      var row = el('label', 'erase-one' + (g.rows ? '' : ' empty') + (g.root ? ' by-root' : ''));
       var box = document.createElement('input');
       box.type = 'checkbox';
       box.dataset.group = g.key;
@@ -235,12 +235,20 @@
       var words = el('div', 'erase-words');
       var top = el('div', 'erase-top');
       top.appendChild(el('span', 'erase-name', g.name));
-      top.appendChild(el('span', 'tag ' + (g.rows ? 'info' : 'dim'), g.rows ? num(g.rows) + ' row(s)' : 'already empty'));
+      top.appendChild(el('span', 'tag ' + (g.rows ? 'info' : 'dim'), g.rows ? num(g.rows) + ' ' + (g.unit || 'row(s)') : (g.unknown ? 'not read' : 'already empty')));
+      /* Kept outside the database (1.7.12): erased by root, a copy of the database does not hold it. */
+      if (g.root) top.appendChild(el('span', 'tag warn', 'by root - no copy'));
       words.appendChild(top);
       words.appendChild(el('div', 'erase-says', g.says));
       row.appendChild(words);
       host.appendChild(row);
     });
+    /* What root said when it last erased what is kept outside the database. */
+    var r = d.root || {};
+    if (r.at && (r.said || []).length) {
+      var said = el('p', 'note ' + (r.ok === false ? 'bad' : 'good'), (r.ok === false ? 'Root could not erase it all: ' : 'Root erased it ' + ago(r.at) + ': ') + r.said.join(' · '));
+      host.appendChild(said);
+    }
     markErase();
   }
   function erasePicked() {
@@ -266,7 +274,13 @@
       names.forEach(function (n) { ul.appendChild(el('li', '', n)); });
       body.appendChild(ul);
       body.appendChild(el('p', 'note', 'The accounts, the destinations of the backups and every setting are not touched.'));
-      body.appendChild(el('p', 'muted', 'A copy of the database is made first, so this can be undone by restoring it.'));
+      var rootOnes = Array.prototype.filter.call(document.querySelectorAll('#erase-list input[type=checkbox]'),
+        function (b) { return b.checked && b.closest('.erase-one').classList.contains('by-root'); });
+      if (picked.length > rootOnes.length)
+        body.appendChild(el('p', 'muted', 'A copy of the database is made first, so what is in it can be undone by restoring it.'));
+      if (rootOnes.length)
+        body.appendChild(el('p', 'note warn', 'The requests, the service\'s log and the mappings are not in the database: root erases them and no copy is kept - they are gone for good.'
+          + (picked.indexOf('mappings') >= 0 ? ' For the mappings fake-igd.service is stopped and started again: for a few seconds the PS5 gets no answer.' : '')));
     }, [{words: 'No, leave it', close: true}, {words: 'Erase it', cls: 'danger', icon: 'forget', close: true, go: function () {
       job('Erasing ' + names.join(', '), {action: 'erase', groups: picked, tidy: $('erase-tidy').checked}, function (x) {
         toast(x.message, 'good');
