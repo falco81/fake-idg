@@ -126,8 +126,176 @@ def device_checked(d, net):
     if ip in (n.network_address, n.broadcast_address) or any(ip == x.ip for x in defs) or str(ip) == net.get("router"):
         return None, "%s: %s is not the address of a device there" % (name, ip)
     did = str(d.get("id") or "")
-    return {"id": did if DEV_ID_RE.match(did) else secrets.token_hex(6), "name": name, "ip": str(ip), "mac": mac,
-            "on": d.get("on") is not False}, ""
+    out = {"id": did if DEV_ID_RE.match(did) else secrets.token_hex(6), "name": name, "ip": str(ip), "mac": mac,
+           "on": d.get("on") is not False}
+    # Its DNS servers and its own rules (1.8.2): each checked again here - one refused is left out and said.
+    out["dns"], out["rules"], out["left_out"] = [], [], []
+    for x in (d.get("dns") if isinstance(d.get("dns"), list) else [])[:MOST_DNS]:
+        got, bad = dns_checked(x, out, net)
+        (out["left_out"].append(bad) if bad else out["dns"].append(got))
+    for x in (d.get("rules") if isinstance(d.get("rules"), list) else [])[:MOST_RULES]:
+        got, bad = rule_checked(x, out, net)
+        (out["left_out"].append(bad) if bad else out["rules"].append(got))
+    return out, ""
+
+
+# ---- a device's DNS servers and its own rules (1.8.2) -----------------------------------------------------
+MOST_DNS = 8
+MOST_RULES = 64
+RULE_ID_RE = re.compile(r"^[0-9a-z]{4,16}\Z")
+PORT_RE = re.compile(r"^([0-9]{1,5})(?:[-:]([0-9]{1,5}))?\Z")
+PROTOS = ("tcp", "udp", "icmp", "any")
+# What no rule of a device may open toward: this network, loopback, link-local, multicast, reserved.
+NEVER_RULE = ("0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "224.0.0.0/4", "240.0.0.0/4")
+
+
+def local_nets(net):
+    """[(network, interface)] of this server's interfaces."""
+    out = []
+    for dev, addrs in (net.get("ifaces") or {}).items():
+        for a in addrs:
+            n = ipaddress.ip_interface(a).network
+            if (n, dev) not in out:
+                out.append((n, dev))
+    return out
+
+
+def own_addrs(net):
+    return [str(ipaddress.ip_interface(a).ip) for addrs in (net.get("ifaces") or {}).values() for a in addrs]
+
+
+def where(dest, net):
+    """(the interface a destination network is reached through, why not) - one local network wholly, or
+    nothing local at all (then through the router: the default route's interface)."""
+    for n, dev in local_nets(net):
+        if dest.subnet_of(n):
+            return dev, ""
+        if dest.overlaps(n):
+            return "", "%s covers %s's network %s and more - give %s alone, or the rest apart" % (dest, dev, n, n)
+    return net.get("defif") or "", ""
+
+
+def dns_checked(x, dev, net):
+    """{ip, dot, via, direct} - a DNS server the device may ask (udp and tcp 53, with dot tcp 853 as well)."""
+    if isinstance(x, str):
+        x = {"ip": x}
+    if not isinstance(x, dict):
+        return None, "%s: a DNS server is an address" % dev["name"]
+    try:
+        a = ipaddress.ip_address(str(x.get("ip") or "").strip())
+    except ValueError:
+        return None, "%s: %r is not an IPv4 address of a DNS server" % (dev["name"], str(x.get("ip"))[:40])
+    if a.version != 4 or any(a in ipaddress.ip_network(n) for n in NEVER_RULE):
+        return None, "%s: %s cannot be a DNS server here" % (dev["name"], a)
+    if str(a) == dev["ip"]:
+        return None, "%s: %s is the device itself" % (dev["name"], a)
+    via, bad = where(ipaddress.ip_network("%s/32" % a), net)
+    if bad:
+        return None, "%s: %s" % (dev["name"], bad)
+    home = [n for n, d in local_nets(net) if d == net.get("defif") and a in n]
+    return {"ip": str(a), "dot": x.get("dot") is True, "via": via,
+            "direct": bool(home) or str(a) in own_addrs(net)}, ""
+
+
+def ports_checked(raw, proto):
+    """"80", "8000-8100", "80,443,8000-8100" - as iptables takes them (ranges with ":"); fifteen at most."""
+    raw = re.sub(r"\s", "", str(raw or ""))
+    if not raw:
+        return "", ""
+    if proto not in ("tcp", "udp"):
+        return None, "ports are for TCP or UDP"
+    parts = [p for p in raw.split(",") if p]
+    out = []
+    for p in parts:
+        m = PORT_RE.match(p)
+        if not m or not 1 <= int(m.group(1)) <= 65535 or \
+                (m.group(2) and not int(m.group(1)) < int(m.group(2)) <= 65535):
+            return None, "%s is not a port or a range (8080, 8000-8100, 80,443)" % p[:20]
+        out.append(m.group(1) + (":" + m.group(2) if m.group(2) else ""))
+    if sum(2 if ":" in p else 1 for p in out) > 15:
+        return None, "fifteen ports at most in one rule (a range counts as two)"
+    return ",".join(out), ""
+
+
+def rule_checked(x, dev, net):
+    """A device's own rule: {id, to, proto, ports, comment, on, via} - never toward everything, never toward
+    this server itself or another device of the gateway, never the special ranges."""
+    if not isinstance(x, dict):
+        return None, "%s: a rule is an object" % dev["name"]
+    try:
+        to = ipaddress.ip_network(str(x.get("to") or "").strip(), strict=False)
+    except ValueError:
+        return None, "%s: %r is not an IPv4 address or network" % (dev["name"], str(x.get("to"))[:40])
+    if to.version != 4:
+        return None, "%s: IPv4 only" % dev["name"]
+    if to.prefixlen < 8:
+        return None, "%s: %s would open it to (nearly) everything - the internet is allowed already; a rule is " \
+                     "for one network or address" % (dev["name"], to)
+    for n in NEVER_RULE:
+        if to.overlaps(ipaddress.ip_network(n)):
+            return None, "%s: %s is in %s, which is never forwarded to" % (dev["name"], to, n)
+    if ipaddress.ip_address(dev["ip"]) in to:
+        return None, "%s: %s holds the device itself" % (dev["name"], to)
+    mine = [a for a in own_addrs(net) if ipaddress.ip_address(a) in to]
+    if mine:
+        return None, "%s: %s holds this server itself (%s) - that is Firewall and access, not forwarding" % (
+            dev["name"], to, ", ".join(mine))
+    proto = str(x.get("proto") or "any").lower()
+    if proto not in PROTOS:
+        return None, "%s: the protocol is tcp, udp, icmp or any" % dev["name"]
+    ports, bad = ports_checked(x.get("ports"), proto)
+    if bad:
+        return None, "%s: %s" % (dev["name"], bad)
+    via, bad = where(to, net)
+    if bad:
+        return None, "%s: %s" % (dev["name"], bad)
+    rid = str(x.get("id") or "")
+    note = NAME_BAD.sub("", str(x.get("comment") or "")).strip()[:60]
+    return {"id": rid if RULE_ID_RE.match(rid) else secrets.token_hex(4), "to": str(to), "proto": proto,
+            "ports": ports, "comment": note, "on": x.get("on") is not False, "via": via,
+            "direct": via == net.get("defif") and any(to.subnet_of(n) for n, d in local_nets(net)
+                                                      if d == net.get("defif"))}, ""
+
+
+def _proto_bits(proto, ports, side="--dport"):
+    if proto == "any":
+        return ""
+    if not ports:
+        return " -p %s" % proto
+    if "," in ports:
+        return " -p %s -m multiport %ss %s" % (proto, side, ports)
+    return " -p %s -m %s %s %s" % (proto, proto, side, ports)
+
+
+def allow_lines(d, net):
+    """A device's DNS servers and own rules, each to its destination only - in and out the interfaces they
+    are reached through; toward another network of this server the answers back as well (conntrack)."""
+    defif = net["defif"]
+    mac = " -m mac --mac-source %s" % d["mac"] if d.get("mac") else ""
+    who = "%s (%s)" % (d["name"], d["ip"])
+    out = []
+
+    def pair(dest, via, proto, ports, words):
+        out.append("-A %s -s %s/32 -d %s -i %s -o %s%s%s -m comment --comment \"fake-igd: %s %s\" -j ACCEPT"
+                   % (CHAIN, d["ip"], dest, defif, via, mac, _proto_bits(proto, ports), who, words))
+        if via != defif:
+            out.append("-A %s -s %s -d %s/32 -i %s -o %s%s -m conntrack --ctstate ESTABLISHED,RELATED "
+                       "-m comment --comment \"fake-igd: %s %s back\" -j ACCEPT"
+                       % (CHAIN, dest, d["ip"], via, defif, _proto_bits(proto, ports, "--sport"), who, words))
+    for x in d.get("dns") or []:
+        if x.get("direct"):
+            continue
+        dest = "%s/32" % x["ip"]
+        for proto in ("udp", "tcp"):
+            pair(dest, x["via"], proto, "53", "dns %s %s" % (x["ip"], proto))
+        if x.get("dot"):
+            pair(dest, x["via"], "tcp", "853", "dns %s dot" % x["ip"])
+    for r in d.get("rules") or []:
+        if not r.get("on") or r.get("direct"):
+            continue
+        dest = str(ipaddress.ip_network(r["to"]))
+        pair(dest, r["via"], r["proto"], r["ports"], "rule %s%s" % (r["id"], (": " + r["comment"]) if r["comment"] else ""))
+    return out
 
 
 def wanted(net):
@@ -162,6 +330,9 @@ def lines_for(devices, net):
             if n not in blocked:
                 blocked.append(n)
     out = []
+    # first what each device may reach beyond the internet: its DNS servers, its own rules (1.8.2)
+    for d in devices:
+        out += allow_lines(d, net)
     for n in blocked + [x for x in NEVER if x not in blocked]:
         out.append("-A %s -d %s -m comment --comment \"fake-igd: never forwarded to %s\" -j DROP" % (CHAIN, n, n))
     for d in devices:
@@ -170,6 +341,76 @@ def lines_for(devices, net):
                    % (CHAIN, d["ip"], defif, defif, mac, d["name"], d["ip"]))
     out.append("-A %s -m comment --comment \"fake-igd: nothing else is forwarded\" -j DROP" % CHAIN)
     return out
+
+
+# ---- a packet through the chain: the same lines root puts in, first match wins (1.8.2) ------------------
+OPT_RE = re.compile(r'(-[sdio]|-p|--dport|--sport|--dports|--sports|--mac-source|--ctstate|--comment|-j) '
+                    r'("[^"]*"|\S+)')
+
+
+def parse(line):
+    got = {}
+    for k, v in OPT_RE.findall(line):
+        got[k] = v.strip('"')
+    return got
+
+
+def _port_in(spec, port):
+    for p in spec.split(","):
+        a, _, b = p.partition(":")
+        if (int(a) <= port <= int(b)) if b else port == int(a):
+            return True
+    return False
+
+
+def evaluate(lines, pk):
+    """pk: {src, dst, mac, in, out, proto, port, sport, state}. (verdict, the deciding line's comment, its
+    index) - "FALLTHROUGH" when no line decides (then FORWARD goes on: never with fake-igd's DROP at the end)."""
+    for n, line in enumerate(lines):
+        r = parse(line)
+        try:
+            if "-s" in r and ipaddress.ip_address(pk["src"]) not in ipaddress.ip_network(r["-s"]):
+                continue
+            if "-d" in r and ipaddress.ip_address(pk["dst"]) not in ipaddress.ip_network(r["-d"]):
+                continue
+        except ValueError:
+            continue
+        if "-i" in r and pk.get("in") != r["-i"] or "-o" in r and pk.get("out") != r["-o"]:
+            continue
+        if "--mac-source" in r and (pk.get("mac") or "").lower() != r["--mac-source"].lower():
+            continue
+        if "-p" in r and r["-p"] != pk.get("proto"):
+            continue
+        dp = r.get("--dport") or r.get("--dports")
+        if dp and not (pk.get("port") and _port_in(dp, int(pk["port"]))):
+            continue
+        sp = r.get("--sport") or r.get("--sports")
+        if sp and not (pk.get("sport") and _port_in(sp, int(pk["sport"]))):
+            continue
+        if "--ctstate" in r and (pk.get("state") or "NEW") not in r["--ctstate"].split(","):
+            continue
+        return r.get("-j", "?"), r.get("--comment", ""), n
+    return "FALLTHROUGH", "", -1
+
+
+def route_of(dst, net):
+    """The interface this server sends a destination out of: a local network's, else the default route's."""
+    a = ipaddress.ip_address(dst)
+    for n, dev in local_nets(net):
+        if a in n:
+            return dev
+    return net.get("defif") or ""
+
+
+def try_packet(devices, dev, dst, proto, port, net, mac=None):
+    """A packet from the device (its MAC, or another's) to dst - through the lines as they would be."""
+    lines = lines_for([d for d in devices if d.get("on")], net)
+    pk = {"src": dev["ip"], "dst": dst, "mac": dev.get("mac") if mac is None else mac, "in": net.get("defif"),
+          "out": route_of(dst, net), "proto": proto, "port": port or 0, "state": "NEW"}
+    v, why, n = evaluate(lines, pk)
+    home = [x for x, d in local_nets(net) if d == net.get("defif") and ipaddress.ip_address(dst) in x]
+    return {"verdict": v, "rule": why, "line": lines[n] if n >= 0 else "", "out": pk["out"],
+            "direct": bool(home)}
 
 
 # ---- the state file -------------------------------------------------------------------------------
@@ -470,6 +711,8 @@ def apply(by):
     w = wanted(net)
     st = state_read()
     said = ["left out: %s" % x for x in w["why"]]
+    for d in w["devices"]:
+        said += ["left out: %s" % x for x in d.get("left_out") or []]
     was = put(st, w["on"], w["devices"], net, said)
     now = (st.get("on") is True, [d for d in st.get("devices") or [] if d.get("on")])
     changed = now != (was["on"], [d for d in was["devices"] if d.get("on")] if was["on"] else [])
