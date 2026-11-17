@@ -459,24 +459,38 @@ class RosRest(object):
         return sock
 
     def connect(self):
+        """One TLS connection kept for the whole read (1.9.2: HTTP keep-alive - one handshake and one sign-in on
+        the router, not one for every menu); opened again only where the router closes it."""
         self.ready = True
-        sock = self._open(first=True)
+        self._sock = self._open(first=True)
         try:
-            self._ask(sock, "/system/identity")
-        finally:
-            sock.close()
+            self._ask(self._sock, "/system/identity")
+        except MtError:
+            self._drop()
+            raise
+        if getattr(self, "_will_close", True):
+            self._drop()
         self.steps.append({"what": "signed in as %s" % self.user, "ok": True, "said": "REST"})
         return self
 
+    def _drop(self):
+        s, self._sock = getattr(self, "_sock", None), None
+        if s is not None:
+            try:
+                s.close()
+            except OSError:
+                pass
+
     def close(self):
         self.ready = False
+        self._drop()
 
     def _ask(self, sock, p, q=()):
         url = "/rest" + p + ("?" + urllib.parse.urlencode(list(q)) if q else "")
         auth = base64.b64encode(("%s:%s" % (self.user, self.password)).encode("utf-8")).decode()
         host = bare_host(self.host)
         head = ("GET %s HTTP/1.1\r\nHost: %s\r\nAuthorization: Basic %s\r\nAccept: application/json\r\n"
-                "User-Agent: fake-igd\r\nConnection: close\r\n\r\n"
+                "User-Agent: fake-igd\r\nConnection: keep-alive\r\n\r\n"
                 % (url, ("[%s]" % host if ":" in host else host) + ("" if self.port in (80, 443) else ":%d" % self.port),
                    auth))
         try:
@@ -484,7 +498,9 @@ class RosRest(object):
             r = http.client.HTTPResponse(sock, method="GET")
             r.begin()
             body = r.read(64 << 20)
+            self._will_close, self._conn_err = r.will_close, False
         except (http.client.HTTPException, OSError) as e:
+            self._will_close, self._conn_err = True, True
             raise MtError("%s: %s" % (self.host, getattr(e, "strerror", None) or e))
         if r.status == 401:
             raise MtError("%s refused the sign-in of %s (401) - the name or the password, or the account's group "
@@ -515,11 +531,26 @@ class RosRest(object):
             q.append((k, v))
         if not self.ready:
             raise MtError("not connected to %s" % self.host)
-        sock = self._open()
+        reused = getattr(self, "_sock", None) is not None
+        if not reused:
+            self._sock = self._open()
         try:
-            return self._ask(sock, p, q)
-        finally:
-            sock.close()
+            got = self._ask(self._sock, p, q)
+        except MtError:
+            conn = getattr(self, "_conn_err", False)
+            if conn or getattr(self, "_will_close", True):
+                self._drop()
+            if not (reused and conn):           # an answer of the router (401, 404...) is not asked again
+                raise
+            self._sock = self._open()           # the router closed the kept one: once more, on a new one
+            try:
+                got = self._ask(self._sock, p, q)
+            except MtError:
+                self._drop()
+                raise
+        if getattr(self, "_will_close", True):
+            self._drop()
+        return got
 
     def read(self, path, query=None):
         return self.get(path, query)
@@ -564,6 +595,44 @@ def ssh_check(line):
     if SSH_FORBIDDEN.search(frame.replace('"', "")):
         raise Refused("not a console line fake-igd sends: %s" % str(line)[:80])
     return line
+
+
+BATCH_MARK = re.compile(r"^==fake-igd=([a-z0-9_]+)==$")
+
+
+def ssh_batch(names):
+    """One console line that prints every menu of `names` (READ's names) one after the other, each after a
+    mark of its own (1.9.2): ONE ssh connection - one sign-in on the router - for a whole read, not one for
+    each menu. Each print is one ssh_command() would make, checked as such; the marks are fixed words."""
+    parts = []
+    for name in names:
+        if name not in READ or not re.match(r"^[a-z0-9_]+$", name):
+            raise Refused("not something fake-igd reads from a router: %s" % str(name)[:40])
+        parts.append(':put "==fake-igd=%s=="' % name)
+        parts.append(ssh_command(READ[name][0]))
+    return "; ".join(parts)
+
+
+def ssh_batch_check(line):
+    """Refuse a batch line that is not ssh_batch()'s: marks and prints of READ, nothing else."""
+    for part in str(line or "").split("; "):
+        if re.match(r'^:put "==fake-igd=[a-z0-9_]+=="$', part):
+            continue
+        ssh_check(part)
+    return line
+
+
+def ssh_split(text):
+    """The answer of a batch: {name: its lines} by the marks."""
+    out, cur = {}, None
+    for line in str(text or "").replace("\r\n", "\n").split("\n"):
+        m = BATCH_MARK.match(line.strip())
+        if m:
+            cur = m.group(1)
+            out[cur] = []
+        elif cur is not None:
+            out[cur].append(line)
+    return {k: "\n".join(v) for k, v in out.items()}
 
 
 def ssh_answers(text):
@@ -728,9 +797,12 @@ class RosSsh(object):
             a += ["-i", key_path, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes"]
         return a + ["-l", self.user, "--", bare_host(self.host)]
 
-    def run(self, line):
-        """One console line (ssh_check'ed) on the router: its words, or MtError."""
-        ssh_check(line)
+    def run(self, line, batch=False):
+        """One console line (ssh_check'ed, or ssh_batch_check'ed) on the router: its words, or MtError."""
+        if batch:
+            ssh_batch_check(line)
+        else:
+            ssh_check(line)
         if not shutil.which(self.ssh) and not os.path.isfile(self.ssh):
             raise MtError("the ssh client is not installed (dnf install openssh-clients)")
         folder = None
@@ -767,8 +839,8 @@ class RosSsh(object):
             why = [x for x in said.splitlines() if x.strip()]
             raise MtError(why[-1][:200] if why else "ssh exited %s" % code)
         low = text.strip().lower()
-        if low.startswith(("expected ", "syntax error", "bad command", "no such command", "not enough permissions",
-                           "failure:", "input does not match")):
+        if not batch and low.startswith(("expected ", "syntax error", "bad command", "no such command",
+                                         "not enough permissions", "failure:", "input does not match")):
             raise MtError(text.strip().splitlines()[0][:200])
         return text
 
@@ -836,16 +908,52 @@ class RosSsh(object):
         pass
 
     def read(self, path, query=None):
-        text = self.run(ssh_command(path, query))
+        return self._answers(self.run(ssh_command(path, query)))
+
+    @staticmethod
+    def _answers(text):
         got = ssh_answers(text)
         if not got and text.strip() and "=" not in text:
             got = keyvalue_answers(text)
         return got[:LIST_MOST]
 
+    def read_many(self, names):
+        """Every menu of `names` in ONE ssh connection (1.9.2) - {name: entries} and {name: why not}. RouterOS
+        reads the whole line before it runs any of it: a menu it does not know (an older RouterOS) fails the
+        whole line - then the ones it knows are read in one line again, and only the one it does not know is
+        said missing."""
+        names = list(names)
+        text = self.run(ssh_batch(names), batch=True)
+        parts = ssh_split(text)
+        if not parts:
+            low = text.strip().lower()
+            bad = re.search(r"bad command name (\S+)", low)
+            if bad and len(names) > 1:
+                word = bad.group(1)
+                gone = [n for n in names if word in READ[n][0].split("/")]
+                if gone and len(gone) < len(names):
+                    got, missing = self.read_many([n for n in names if n not in gone])
+                    for n in gone:
+                        missing[n] = "bad command name %s - not on this RouterOS" % word
+                    return got, missing
+            raise MtError(text.strip().splitlines()[0][:200] if text.strip() else "no answer to the read")
+        got, missing = {}, {}
+        for n in names:
+            if n not in parts:
+                missing[n] = "not answered"
+                continue
+            low = parts[n].strip().lower()
+            if low.startswith(("bad command", "no such command", "not enough permissions", "failure:", "syntax error",
+                               "expected ")):
+                missing[n] = parts[n].strip().splitlines()[0][:200]
+                continue
+            got[n] = self._answers(parts[n])
+        return got, missing
+
 
 def _ssh_env():
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C", "HOME": tempfile.gettempdir()}
-    for k in ("FAKE_SSH_LOG", "FAKE_SSH_HOSTKEY", "FAKE_ROUTER_WRITES"):    # the test's stand-in for ssh
+    for k in ("FAKE_SSH_LOG", "FAKE_SSH_HOSTKEY", "FAKE_ROUTER_WRITES", "FAKE_SSH_UNKNOWN"):    # the test's stand-in for ssh
         if os.environ.get(k):
             env[k] = os.environ[k]
     return env
@@ -1002,6 +1110,12 @@ def read_all(sess, log=None):
     """Everything READ says is needed, plus what else it can read: {name: [entries]} and what could not be
     read, with why ({name: words}). The checks need filter4, nat4, interfaces and their lists."""
     out, missing = {}, {}
+    if hasattr(sess, "read_many"):              # ssh: one connection for the whole read (1.9.2)
+        names = [n for n in READ if n not in ("users", "groups")]
+        got, missing = sess.read_many(names)
+        if "identity" in missing:
+            raise MtError("its identity could not be read: %s" % missing["identity"])
+        return got, missing
     for name, (path, _single, needed) in READ.items():
         if name in ("users", "groups"):
             continue
@@ -1109,10 +1223,17 @@ def probe(sess, user=""):
     out = {"ok": False}
     try:
         sess.connect()
-        ident = sess.read("/system/identity")
-        res = sess.read("/system/resource")
+        seen = {}
+        if hasattr(sess, "read_many"):          # ssh: the questions below in one connection (1.9.2)
+            got, _miss = sess.read_many(["identity", "resource", "routerboard", "users", "groups"])
+            seen = {READ[k][0]: v for k, v in got.items()}
+
+        def rd(path):
+            return seen[path] if path in seen else sess.read(path)
+        ident = rd("/system/identity")
+        res = rd("/system/resource")
         try:
-            rb = sess.read("/system/routerboard")
+            rb = rd("/system/routerboard")
         except MtError:
             rb = []
         r0, b0 = (res[0] if res else {}), (rb[0] if rb else {})
@@ -1124,9 +1245,9 @@ def probe(sess, user=""):
         sess.steps.append({"what": "the routerboard", "ok": True, "said": " ".join(x for x in (
             out["board"], out["serial"]) if x) or "-"})
         try:
-            me = [u for u in sess.read("/user") if u.get("name") == user]
+            me = [u for u in rd("/user") if u.get("name") == user]
             group = me[0].get("group") if me else ""
-            groups = [g for g in sess.read("/user/group") if g.get("name") == group] if group else []
+            groups = [g for g in rd("/user/group") if g.get("name") == group] if group else []
             policy = [p for p in str((groups[0] if groups else {}).get("policy") or "").split(",")
                       if p and not p.startswith("!")]
             out.update(group=group, policy=policy, can_write=bool(set(policy) & WRITE_POLICIES))

@@ -4,13 +4,91 @@ Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
 ## 1.9.2 (2026-11-17)
 
-- MikroTik: the router's WAN is told without an interface list WAN too. RouterOS 7 calls the default route's
-  next hop `immediate-gw` (6 said `immediate-gateway`) - it was not read, so on a router with no list WAN every
-  rule with in-interface or dst-address came out "cannot tell". Now, in this order: the interface list WAN, the
-  default route of the main table (its immediate-gw's interface, an interface named as its gateway, or the
-  interface whose network holds the gateway), the interface that carries the public address fake-igd knows,
-  the only interface with a public address. A dst-nat to the public address on that interface (dst-address=,
-  in-interface=) is then checked as it is.
+**MikroTik: each device's own way out, and its ports on its own public address.** Nothing of the router is
+assumed or typed in: for every device fake-igd walks a new connection to the internet as RouterOS does - the
+router's interface that holds it, a VRF, mangle prerouting (mark-routing, mark-connection and the marks after
+them, passthrough), /routing rule, the routing table and its route (longest prefix, distance, the gateway to
+an interface: immediate-gw, gateway%interface, the connected network, recursively), the interface out, srcnat
+(masquerade, src-nat, netmap, accept) - and so the public address the internet sees it as (igd_mtpath.py). A
+rule that holds for some of the traffic only (a protocol, a port, some destinations) is said and passed. Its
+ports are then checked on that address and interface - a dst-nat with dst-address= and in-interface= checked
+as it is - and the filter's forward chain out to the device's own interface. A device that goes out as a
+private address (LTE behind another NAT) is said so.
+- The router's WAN without an interface list WAN: RouterOS 7's `immediate-gw` (6 said `immediate-gateway`)
+  is read; else the default routes of every table; else the interface with the public address fake-igd
+  knows; else the only one with a public address. /ip vrf and /routing rule are read too.
+- **Fewer connections to the router.** Over ssh a read was one connection - one sign-in and sign-out in the
+  router's log - for each of its ~28 menus; now a read is two (the identity, then every menu in ONE console
+  line, each after a mark of its own; a RouterOS that does not know a menu - /ip vrf on 6 - fails the whole
+  line, so the rest is read in one line again and that one said missing). Try reaching it: two as well. Over
+  REST one TLS connection (HTTP keep-alive) for the whole read instead of one for each menu; the RouterOS API
+  already kept one.
+- **Every search box alike**: a cross that empties it and a button that offers what can be typed - the same as
+  **Ctrl+Space** - inside the box. Ports, Requests, Clients, Events, the mail queue as before; now also
+  Mappings (client: name: port: to: proto: description: by:, with -field: and field~part), the Log (the parts
+  of fake-igd's lines, WARNING/ERROR, the addresses in the lines shown), Find a setting (every part of
+  Settings, to go to), the users of a setting, and the MikroTik's firewall.
+- An alert mail of a port not open on the MikroTik links to that port in Gateway → MikroTik.
+
+- Settings holds only configuration again. Settings → MikroTik is how the router is reached and trusted (the
+  form, Try reaching it, How to set it up, the certificate / host key / key, Read it now) with one status line
+  and a link "See what was read in Gateway → MikroTik"; the per-port table and the whole firewall moved out.
+  Fields that do not apply to the way chosen (its certificate, the authority, the name on the certificate over
+  ssh; "Sign in with" over REST/API) are hidden, not shown as big dimmed blocks (new per-field `hide_asleep`
+  option of the panes framework - every other pane unchanged).
+- The Gateway tab has two sub-tabs, in the address: #gateway/devices (default) and #gateway/mikrotik, with deep
+  links #gateway/devices/IP and #gateway/mikrotik/IP[/proto/port].
+  - Devices: each device a compact card - sent today, now, its own DNS/rules, drops, a small chart, what it
+    may reach, its UPnP steps, its way out and ports on the MikroTik - with Details (a wide popup: top
+    destinations and ports, drops, ports asked for, its connections) and Its firewall, which opens the FW
+    designer as a popup right there (read-only for read-only accounts; Try a packet and Save for full admins).
+  - MikroTik: the router's strip (identity, RouterOS, how and when it was read, rules, WAN, its own UPnP,
+    warnings, Read it now for full admins); for each device its WAY OUT drawn as nodes - device → its interface
+    → VRF / mangle / routing rule (only those that exist) → route and table → the interface out (WAN) → the
+    srcnat rule → the PUBLIC address (red when it goes out as a private address or has no way) - every node
+    opens the rule; what holds for some traffic only; then its ports checked on that public address
+    (public:port → dst-nat #n → forward #n → device:port, each hop opens its rule), the state, IPv6, the commands
+    to copy; the rules still to add merged into ranges; then the whole firewall (IPv4/IPv6, filter/nat/mangle/
+    raw, the search with suggestions - port: action: chain: proto: list: if: addr: state: comment: off: - long
+    chains, interfaces and address lists folded to their first 12 with "Show all", the rules that concern a
+    port asked for always in sight).
+  - Not configured: a clean empty state; a full admin gets "Configure it in Settings → MikroTik" (the only
+    jump from the main menu into Settings, as for Gateway for devices with no device).
+- Links between the main tabs, never into Settings: a device card → Clients (its popup), Requests, Ports,
+  Mappings, its way on the MikroTik; a port on the MikroTik → the Ports and Mappings tabs at that port; the
+  Clients, Ports and Mappings popups of a gateway device or one the MikroTik knows → its card and its way out
+  (and that port on the MikroTik); the Ports tab's MikroTik column → Gateway → MikroTik at that port; the
+  Overview's MikroTik card → Gateway → MikroTik; an alert of a port not open on the MikroTik → that port there.
+  Also by address: #clients/IP, #requests/IP[/proto/port], #ports/IP[/proto/port], #mappings/IP[/port].
+- The FW designer of a device is one shared module (gw-designer.js) used by Settings → Gateway for devices
+  and by the Gateway tab.
+
+**Sign-in with Face ID, Touch ID or Windows Hello** (a passkey, as otp's):
+- **Settings → Accounts → "...with Face ID, Touch ID or Windows Hello (a passkey)"** (off by default,
+  asleep until *A second step when signing in to these pages* is on), as otp 1.0.254: the second step of
+  signing in to these pages, never instead of the password. At its first sign-in an account chooses the app
+  or a passkey and sets it up; then it gives it at each sign-in. Accounts → Reset the second step and
+  `upnp user reset-2fa NAME` take the passkeys away too; Accounts (and `upnp user list`) say "a passkey", of
+  which device for which name of the pages.
+- **The checks of the server** (igd_webauthn.py, otp's, standard library only): ES256, RS256 and EdDSA
+  signatures; the question used once (kept with the sign-in, taken by the one answer); its type; the origin
+  and the name the pages were opened by (a name over HTTPS, never an address); the user present AND verified
+  (face, finger or PIN); the counter may not go back (a copied passkey, said in the events). No attestation:
+  only the public half is kept, in the account's row. Wrong answers are counted as wrong codes are (the
+  address and the name, and the fifth on one sign-in asks the password again). Bounded as otp 1.0.262: CBOR
+  8 deep / 64 items, RSA 2048-8192 bits with a small odd exponent.
+- **A passkey is for a name**: offered on these pages opened by a name over HTTPS (`https://fake-igd.example/`);
+  opened by an address it is not offered, and the page says why. The pages tell the API the name they were
+  reached by (X-IGD-Host, from the browser's Host).
+- **Your account → Passkeys - Face ID, Touch ID** (otp 1.0.257): the account's passkeys - the device, the name
+  of the pages, added, last used; the pencil names one, the bin takes one away (asked twice; never the last -
+  that is the second step itself, reset by another full admin). **Add a passkey of this device**, up to 10,
+  only within 15 minutes of the second step given (otp 1.0.262; said before the button is pressed). In the events.
+
+- **A new sign-in once the second step is given** (otp 1.0.149): the app's code or the passkey, set up or
+  given, ends the sign-in the password alone opened and opens one with a new token - its cookie set by the
+  pages (HttpOnly, SameSite=Strict, Secure over HTTPS, as at sign-in), never shown to the page. Whoever saw the
+  cookie of the password-only sign-in gets nothing: it is refused at once. Two answers at once open one sign-in.
 
 ## 1.9.1 (2026-11-17)
 

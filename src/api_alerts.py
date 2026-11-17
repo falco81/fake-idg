@@ -593,8 +593,10 @@ def alert_mail(ctx, new, still, gone, events, test=False, left=0):
             lines = [_h(p["said"])]
             if p.get("since"):
                 lines.append('<span style="color:#6b7280">Since: %s</span>' % _h(_when(p["since"])))
-            link = (_link(ctx, p["pane"]), "Open in the administration →") \
-                if p.get("pane") and (level or p["level"]) != "good" else ""
+            # a place on the main menu where it has one (1.9.2: Gateway → MikroTik), else its Settings pane
+            link = ((admin_url(ctx) + p["link"]) if str(p.get("link") or "").startswith("#") else _link(ctx, p["pane"]),
+                    "Open in the administration →") \
+                if (p.get("pane") or p.get("link")) and (level or p["level"]) != "good" else ""
             body.append(_card(level or p["level"], p["title"], lines, link))
             text.append("- %s: %s" % (p["title"], p["said"]))
         text.append("")

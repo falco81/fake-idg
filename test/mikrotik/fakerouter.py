@@ -34,9 +34,17 @@ def note(kind, words):
             f.write(words + "\n")
 
 
+CONNECTIONS = {"rest": 0}
+
+
 class Rest(BaseHTTPRequestHandler):
     server_version = "MikroTik"
     sys_version = ""
+    protocol_version = "HTTP/1.1"           # keeps the connection, as RouterOS's www-ssl does (1.9.2)
+
+    def setup(self):
+        CONNECTIONS["rest"] += 1
+        BaseHTTPRequestHandler.setup(self)
 
     def log_message(self, *a):
         pass

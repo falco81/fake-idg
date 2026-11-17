@@ -291,35 +291,35 @@ class WanWithoutList(unittest.TestCase):
     default route of RouterOS 7 (immediate-gw), by the gateway's network, or by the public address."""
 
     def snap(self, routes, public=""):
-        return {"iflists": {"all": ["VLAN108", "bridge"]}, "public_ip": public,
-                "addresses4": [{"address": "195.189.0.26/29", "interface": "VLAN108", "disabled": False},
+        return {"iflists": {"all": ["FIBRE", "bridge"]}, "public_ip": public,
+                "addresses4": [{"address": "203.0.113.26/29", "interface": "FIBRE", "disabled": False},
                                {"address": "192.168.40.1/24", "interface": "bridge", "disabled": False}],
                 "routes4": routes}
 
     def test_immediate_gw(self):
-        raw = {"routes4": [{"dst-address": "0.0.0.0/0", "gateway": "195.189.0.25",
-                            "immediate-gw": "195.189.0.25%VLAN108", "active": "true", "routing-table": "main"}]}
+        raw = {"routes4": [{"dst-address": "0.0.0.0/0", "gateway": "203.0.113.25",
+                            "immediate-gw": "203.0.113.25%FIBRE", "active": "true", "routing-table": "main"}]}
         snap = M.snapshot(raw, {}, "test")
-        self.assertEqual(snap["routes4"][0]["immediate"], "195.189.0.25%VLAN108")
+        self.assertEqual(snap["routes4"][0]["immediate"], "203.0.113.25%FIBRE")
         w = C.wan_of(dict(self.snap(snap["routes4"])))
-        self.assertEqual(w["ifs"], {"VLAN108"})
-        self.assertEqual([str(a) for a in w["addrs4"]], ["195.189.0.26"])
+        self.assertEqual(w["ifs"], {"FIBRE"})
+        self.assertEqual([str(a) for a in w["addrs4"]], ["203.0.113.26"])
 
     def test_gateway_network(self):
-        w = C.wan_of(self.snap([{"dst": "0.0.0.0/0", "gateway": "195.189.0.25", "immediate": "", "active": True,
+        w = C.wan_of(self.snap([{"dst": "0.0.0.0/0", "gateway": "203.0.113.25", "immediate": "", "active": True,
                                  "disabled": False, "table": "main"}]))
-        self.assertEqual(w["ifs"], {"VLAN108"})
+        self.assertEqual(w["ifs"], {"FIBRE"})
 
     def test_public_address(self):
-        w = C.wan_of(self.snap([], public="195.189.0.26"))
-        self.assertEqual(w["ifs"], {"VLAN108"})
-        self.assertIn("195.189.0.26", w["how"])
+        w = C.wan_of(self.snap([], public="203.0.113.26"))
+        self.assertEqual(w["ifs"], {"FIBRE"})
+        self.assertIn("203.0.113.26", w["how"])
 
     def test_dst_address_rule(self):
-        snap = self.snap([], public="195.189.0.26")
+        snap = self.snap([], public="203.0.113.26")
         snap.update({"rules": {"ip": {"nat": [{"chain": "dstnat", "action": "dst-nat", "protocol": "udp",
-                                               "dst-port": "9308", "dst-address": "195.189.0.26",
-                                               "in-interface": "VLAN108", "to-addresses": "192.168.40.95",
+                                               "dst-port": "9308", "dst-address": "203.0.113.26",
+                                               "in-interface": "FIBRE", "to-addresses": "192.168.40.95",
                                                "n": 71, ".id": "*47", "disabled": False}],
                                       "filter": [], "raw": [], "mangle": []}}, "lists": {}})
         res = C.check_all(snap, [{"device": "192.168.40.95", "proto": "udp", "port": 9308, "to_port": 9308}])
@@ -472,7 +472,10 @@ class Live(unittest.TestCase):
         return snap
 
     def test_read_rest_api_plain(self):
+        before = fakerouter.CONNECTIONS["rest"]
         self.read_whole(M.session(self.conf(), password=fakerouter.PASSWORD, pin=self.pin))
+        # 1.9.2: one TLS connection for the whole read over REST (keep-alive), not one for each menu
+        self.assertEqual(fakerouter.CONNECTIONS["rest"] - before, 1)
         self.read_whole(M.session(self.conf(mode="api", port=self.api_port), password=fakerouter.PASSWORD, pin=self.pin))
         self.read_whole(M.session(self.conf(mode="api", tls="plain", port=self.plain_port), password=fakerouter.PASSWORD))
         got = M.probe(M.session(self.conf(mode="api", tls="plain", port=self.plain_port), password="no"), fakerouter.USER)
@@ -496,7 +499,21 @@ class Live(unittest.TestCase):
         M.host_key_trust(kh, "127.0.0.1", 2222, keys, keys[0]["fingerprint"])
         self.assertEqual(oct(os.stat(kh).st_mode & 0o777), "0o600")
         self.assertEqual(M.host_keys_known(kh, "127.0.0.1", 2222)[0]["fingerprint"], keys[0]["fingerprint"])
+        open(os.environ["FAKE_SSH_LOG"], "w").close()
         self.read_whole(M.session(c, key=key, known_hosts=kh))
+        # 1.9.2: a whole read is two ssh connections (the identity on connecting, then every menu in one line)
+        with open(os.environ["FAKE_SSH_LOG"]) as f:
+            self.assertEqual(len(f.read().splitlines()), 2)
+        # a RouterOS that does not know /ip vrf: the rest read in one line again, vrfs said missing
+        os.environ["FAKE_SSH_UNKNOWN"] = "/ip/vrf"
+        try:
+            sess = M.session(c, key=key, known_hosts=kh)
+            sess.connect()
+            raw, missing = M.read_all(sess)
+        finally:
+            del os.environ["FAKE_SSH_UNKNOWN"]
+        self.assertIn("vrfs", missing)
+        self.assertTrue(raw.get("nat4"))
         got = M.probe(M.session(c, key=key, known_hosts=kh), fakerouter.USER)
         self.assertTrue(got["ok"], got)
         # with a password, on a terminal of its own
@@ -513,7 +530,7 @@ class Live(unittest.TestCase):
             del os.environ["FAKE_SSH_HOSTKEY"]
         self.assertTrue(M.host_key_forget(kh, "127.0.0.1", 2222))
         for line in open(os.environ["FAKE_SSH_LOG"]):
-            M.ssh_check(line.split(" ", 3)[3].rstrip("\n"))
+            M.ssh_batch_check(line.split(" ", 3)[3].rstrip("\n"))
 
     @classmethod
     def tearDownClass(cls):

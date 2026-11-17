@@ -204,3 +204,8 @@ def as_value(path):
                 "/ip/firewall/connection/tracking"):
         return lines[0] + "\n" if lines else "\n"
     return "\n".join(lines) + "\n"
+
+
+# 1.9.2: menus of RouterOS 7 only (the ssh stand-in can be told to not know them: FAKE_SSH_UNKNOWN)
+ROUTER.setdefault("/ip/vrf", [])
+ROUTER.setdefault("/routing/rule", [])
