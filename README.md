@@ -38,10 +38,10 @@ The installer does everything (each step says `==> what`, as otp's):
    - if the package is not available, it **builds Python 3.14.9 from source** (python.org) into `/usr/local` (`make altinstall`, the system Python 3.9 stays untouched). The archive is verified with SHA-256. Building takes a few minutes, log: `/var/log/fake-igd-python-build.log`.
 3. Creates the virtualenv `/opt/fake-igd/venv` with **colorama** (from the bundled wheel in `vendor/`, works offline).
 4. Creates the system user and group `fake-igd` (the service and the pages' API), `fake-igd-www` (the
-   pages' php-fpm pool) and the group `fake-igd-web` (who may read the API's token). The user who ran
-   `sudo ./install.sh` is added to `fake-igd`, to read the logs with `upnp` without sudo (after signing in
-   again) - that group may also change `config.json`, which root puts into nginx and the firewall, so add
-   nobody else you would not give it to.
+   pages' php-fpm pool) and the group `fake-igd-web` (who may read the API's token). Nobody is added to
+   `fake-igd` (as otp): that group may change `config.json`, which root puts into nginx and the firewall.
+   To read the logs with `upnp` without sudo, add yourself by hand - install.sh prints the command:
+   `sudo usermod -aG fake-igd $USER` (and sign in again).
 5. Installs the service (systemd, start on boot, sandboxed), the `upnp` command, bash completion and log rotation.
 6. Checks for port collisions and opens 1900/udp and 5000/tcp (and http/https for the pages) in **firewalld**
    where it runs; where iptables is in use instead, see 10.
@@ -444,8 +444,8 @@ sudo upnp config edit                               # $EDITOR + JSON validation
 sudo upnp mode passive                              # changes restart the service automatically (--no-restart)
 ```
 
-Reading (status, ports, log, ...) works without sudo for members of the `fake-igd` group (install.sh adds
-the user who ran it; that group may also write `config.json`). Configuration changes, `clear`, `user` changes
+Reading (status, ports, log, ...) works without sudo for members of the `fake-igd` group (nobody is added by
+install.sh - `sudo usermod -aG fake-igd $USER`; that group may also write `config.json`). Configuration changes, `clear`, `user` changes
 and every command that asks the API (`api`, `check`, `events`, `backup`, `db` ...) require `sudo`.
 A value with a control character (a new line, a tab, NUL) is refused; `interfaces` and `exclude_interfaces`
 take interface names only.
