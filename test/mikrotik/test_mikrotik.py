@@ -35,7 +35,8 @@ os.environ["PATH"] = os.path.join(HERE, "bin") + os.pathsep + os.environ.get("PA
 import fakerouter   # noqa: E402
 import fixture      # noqa: E402
 import igd_mikrotik as M   # noqa: E402
-import igd_mtcheck as C    # noqa: E402
+import igd_mtcheck as C
+import igd_mtpath as P    # noqa: E402
 
 TMP = tempfile.mkdtemp(prefix="fake-igd-mt-test-")
 WRITES = os.path.join(TMP, "writes")
@@ -324,6 +325,96 @@ class WanWithoutList(unittest.TestCase):
         res = C.check_all(snap, [{"device": "192.168.40.95", "proto": "udp", "port": 9308, "to_port": 9308}])
         self.assertEqual(res["rows"][0]["state"], "ok", res["rows"][0])
         self.assertFalse(any("cannot be told" in w for w in res["warnings"]))
+
+
+class Ways(unittest.TestCase):
+    """1.9.2: each device's way out and public address - mangle routing marks, VRF, routing rules, srcnat -
+    and its port checked on that address and interface (a router of three uplinks, no list WAN)."""
+
+    @classmethod
+    def setUpClass(cls):
+        def r(n, **kw):
+            d = {k.replace("_", "-"): v for k, v in kw.items()}
+            d.update({"n": n, ".id": "*%X" % (n + 1), "disabled": False})
+            return d
+        lists = {"NAT_LAN": [{"address": "192.168.40.0/24"}], "NAT_NH": [{"address": "192.168.40.11"}],
+                 "NAT_LTE": [{"address": "192.168.40.12"}],
+                 "RFC1918": [{"address": a} for a in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]}
+        cls.snap = {
+            "iflists": {"all": ["LAN", "FIBRE", "UP2", "LTE", "GUEST"]},
+            "addresses4": [{"address": a, "interface": i, "disabled": False} for a, i in (
+                ("192.168.40.1/24", "LAN"), ("203.0.113.26/29", "FIBRE"), ("198.51.100.5/27", "UP2"),
+                ("192.168.47.1/24", "LTE"), ("172.16.16.1/24", "GUEST"))],
+            "routes4": [{"dst": "0.0.0.0/0", "gateway": "203.0.113.25", "table": "main", "active": True},
+                        {"dst": "0.0.0.0/0", "gateway": "198.51.100.1", "table": "vrf-slave", "active": True},
+                        {"dst": "0.0.0.0/0", "gateway": "192.168.47.254", "table": "vrf-lte", "active": True},
+                        {"dst": "10.20.0.0/16", "gateway": "192.168.40.250", "table": "main", "active": True}],
+            "vrfs": [{"name": "vrf-slave", "interfaces": "GUEST", "disabled": False}],
+            "routing_rules": [{"src-address": "192.168.40.13/32", "action": "lookup-only-in-table",
+                               "table": "vrf-lte", "disabled": False}],
+            "lists": {"ip": {k: [dict(e, disabled=False) for e in v] for k, v in lists.items()}},
+            "rules": {"ip": {
+                "mangle": [r(0, chain="prerouting", action="mark-routing", new_routing_mark="vrf-lte",
+                             passthrough="no", src_address_list="NAT_LTE", dst_address_list="!RFC1918"),
+                           r(1, chain="prerouting", action="mark-routing", new_routing_mark="vrf-slave",
+                             passthrough="no", src_address_list="NAT_NH", dst_address_list="!RFC1918"),
+                           r(2, chain="prerouting", action="mark-routing", new_routing_mark="vrf-lte",
+                             passthrough="no", protocol="tcp", dst_port="25")],
+                "nat": [r(0, chain="srcnat", action="accept", src_address_list="RFC1918", dst_address_list="RFC1918"),
+                        r(1, chain="srcnat", action="src-nat", src_address_list="NAT_LTE", to_addresses="192.168.47.1"),
+                        r(2, chain="srcnat", action="src-nat", src_address_list="NAT_NH", to_addresses="198.51.100.5"),
+                        r(3, chain="srcnat", action="masquerade", out_interface="UP2"),
+                        r(4, chain="srcnat", action="masquerade", src_address_list="NAT_LAN",
+                          to_addresses="203.0.113.26"),
+                        r(5, chain="dstnat", action="dst-nat", protocol="udp", dst_port="9308",
+                          dst_address="203.0.113.26", in_interface="FIBRE", to_addresses="192.168.40.95",
+                          to_ports="9308"),
+                        r(6, chain="dstnat", action="dst-nat", protocol="udp", dst_port="9308",
+                          dst_address="203.0.113.26", in_interface="FIBRE", to_addresses="192.168.40.11")],
+                "filter": [r(0, chain="forward", action="accept", connection_nat_state="dstnat",
+                             in_interface="FIBRE"),
+                           r(1, chain="forward", action="drop")],
+                "raw": []}}}
+
+    def way(self, ip):
+        return P.device_way(self.snap, ip)
+
+    def test_main(self):
+        w = self.way("192.168.40.95")
+        self.assertEqual((w["public"], w["out_if"], w["table"], w["in_if"]), ("203.0.113.26", "FIBRE", "main", "LAN"))
+        self.assertTrue(w["ok"])
+        self.assertTrue(any("tcp" in s["words"] or "#2" in s["words"] for s in w["some"]))   # the port-25 mark
+
+    def test_mangle_mark(self):
+        w = self.way("192.168.40.11")
+        self.assertEqual((w["public"], w["out_if"], w["table"]), ("198.51.100.5", "UP2", "vrf-slave"))
+
+    def test_private_way_out(self):
+        w = self.way("192.168.40.12")
+        self.assertEqual((w["public"], w["out_if"], w["table"]), ("192.168.47.1", "LTE", "vrf-lte"))
+        self.assertFalse(w["ok"])
+        self.assertIn("private", w["trouble"])
+
+    def test_routing_rule(self):
+        w = self.way("192.168.40.13")
+        self.assertEqual((w["out_if"], w["table"]), ("LTE", "vrf-lte"))
+
+    def test_vrf_and_masquerade(self):
+        w = self.way("172.16.16.20")
+        self.assertEqual((w["public"], w["out_if"], w["table"]), ("198.51.100.5", "UP2", "vrf-slave"))
+        self.assertTrue(any(s.get("stage") == "vrf" for s in w["steps"]))
+
+    def test_ports_on_its_own_address(self):
+        res = C.check_all(self.snap, [{"device": "192.168.40.95", "proto": "udp", "port": 9308, "to_port": 9308},
+                                      {"device": "192.168.40.11", "proto": "udp", "port": 9308, "to_port": 9308}])
+        a, b = res["rows"]
+        self.assertEqual(a["state"], "ok", a)
+        self.assertEqual(a["way"]["public"], "203.0.113.26")
+        # .11 goes out as 198.51.100.5 on UP2: a dst-nat on FIBRE's address does not reach it from where its
+        # peers answer - the rule is there, but not on its way
+        self.assertEqual(b["way"]["public"], "198.51.100.5")
+        self.assertNotEqual(b["state"], "ok")
+        self.assertEqual(len(res["ways"]), 2)
 
 class Live(unittest.TestCase):
     """The three ways, each against a fake router."""

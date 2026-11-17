@@ -271,7 +271,8 @@ def wan_of(snap):
             return None
     ifs, how = set(members.get("WAN") or []), "the interface list WAN"
     if not ifs:
-        routes = [r for r in snap.get("routes4") or [] if r.get("active") and not r.get("disabled")]
+        routes = [r for r in snap.get("routes4") or [] if r.get("active") and not r.get("disabled")
+                  and str(r.get("dst") or "0.0.0.0/0") == "0.0.0.0/0"]
         main = [r for r in routes if str(r.get("table") or "main") == "main"] or routes
         for r in main:
             im = str(r.get("immediate") or "")
@@ -452,6 +453,18 @@ def check_port(snap, want, wan=None):
     # the filter's forward chain, after the translation (walked also where there is none yet: what an added
     # dst-nat would meet)
     dev_ifs = {a.get("interface") for a in snap.get("arp") or [] if a.get("address") == device} - {None, ""}
+    if not dev_ifs:                                 # 1.9.2: the router's network that holds it
+        best = None
+        for a in snap.get("addresses4") or []:
+            try:
+                x = ipaddress.ip_interface(a.get("address") or "")
+            except ValueError:
+                continue
+            if not a.get("disabled") and ipaddress.ip_address(device) in x.network and \
+                    (best is None or x.network.prefixlen > best[0]):
+                best = (x.network.prefixlen, a.get("interface"))
+        if best and best[1]:
+            dev_ifs = {best[1]}
     fp = Packet("ip", proto, to_port, [ipaddress.ip_address(device)], in_ifs, in_lists,
                 out_ifs=dev_ifs or None, out_lists=lists_of(snap, dev_ifs) if dev_ifs else None,
                 nat_state="dstnat", chain="forward", lists=lists4)
@@ -566,13 +579,40 @@ def _check_v6(snap, want, wan, proto, port, c):
             "v6_rules": [{"table": "filter", "id": r.get(".id"), "n": r.get("n"), "family": "ipv6"} for r in rules if r]}
 
 
+def device_wan(snap, way, wan):
+    """The WAN of one device (1.9.2): the interface and public address its own way out comes to (mangle,
+    routing marks, VRF, routing rules, srcnat - igd_mtpath) - where a connection to it from the internet
+    comes in. Where its way cannot be told, the router's WAN as a whole."""
+    if way and way.get("ok"):
+        return {"ifs": {way["out_if"]}, "addrs4": [ipaddress.ip_address(way["public"])],
+                "how": "its own way out: %s as %s" % (way["out_if"], way["public"])}
+    return wan
+
+
 def check_all(snap, wants):
     """Every port asked for, and what is wrong of the router as a whole (its own UPnP on)."""
+    import igd_mtpath as P
     wan = wan_of(snap)
+    if not wan["ifs"]:
+        ifs = P.default_out_ifs(snap)
+        if ifs:
+            wan = dict(wan, ifs=ifs, how="the interfaces of the default routes (every table)",
+                       addrs4=[ipaddress.ip_interface(a["address"]).ip for a in snap.get("addresses4") or []
+                               if a.get("interface") in ifs and not a.get("disabled")])
+    ways = {}
+    for w in wants:
+        if w["device"] not in ways:
+            try:
+                ways[w["device"]] = P.device_way(snap, w["device"])
+            except Exception as e:                  # noqa: BLE001 - its way said as not told
+                ways[w["device"]] = {"device": w["device"], "ok": False, "trouble": "cannot tell: %s" % e,
+                                     "steps": [], "some": []}
     rows = []
     for w in wants:
         try:
-            rows.append(check_port(snap, w, wan))
+            row = check_port(snap, w, device_wan(snap, ways.get(w["device"]), wan))
+            row["way"] = {k: ways[w["device"]].get(k) for k in ("public", "out_if", "table", "ok", "trouble")}
+            rows.append(row)
         except Exception as e:                      # noqa: BLE001 - one port that cannot be told is said so
             rows.append({"device": w.get("device"), "name": w.get("name") or "", "proto": w.get("proto"),
                          "port": w.get("port"), "to_port": w.get("to_port"), "state": "unsure",
@@ -592,6 +632,7 @@ def check_all(snap, wants):
         counts[r["state"]] = counts.get(r["state"], 0) + 1
     return {"rows": rows, "warnings": warnings, "wan": {"ifs": sorted(wan["ifs"]), "how": wan["how"],
                                                         "addrs4": [str(a) for a in wan["addrs4"]]},
+            "ways": list(ways.values()),
             "counts": counts, "open": counts.get("ok", 0), "total": len(rows)}
 
 

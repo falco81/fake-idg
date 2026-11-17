@@ -48,6 +48,9 @@ READ = {
     "addresses4": ("/ip/address", False, True),
     "addresses6": ("/ipv6/address", False, False),
     "routes4": ("/ip/route", False, False),
+    # 1.9.2: the way of each device out - VRFs and routing rules (RouterOS 7; missing on 6, said so)
+    "vrfs": ("/ip/vrf", False, False),
+    "routing_rules": ("/routing/rule", False, False),
     "arp": ("/ip/arp", False, False),
     "neigh6": ("/ipv6/neighbor", False, False),
     "filter4": ("/ip/firewall/filter", False, True),
@@ -1077,8 +1080,16 @@ def snapshot(raw, missing, via):
                      "immediate": str(r.get("immediate-gw") or r.get("immediate-gateway") or ""),
                      "active": _bool(r.get("active", "true")), "disabled": _bool(r.get("disabled")),
                      "table": str(r.get("routing-table") or r.get("routing-mark") or "main"),
-                     "distance": str(r.get("distance") or "")}
-                    for r in raw.get("routes4") or [] if str(r.get("dst-address") or "") == "0.0.0.0/0"],
+                     "distance": str(r.get("distance") or ""), "pref-src": str(r.get("pref-src") or ""),
+                     "comment": str(r.get("comment") or ""), ".id": str(r.get(".id") or "")}
+                    for r in (raw.get("routes4") or [])[:LIST_MOST]
+                    if ":" not in str(r.get("dst-address") or "")],
+        "vrfs": [{"name": str(r.get("name") or ""), "interfaces": str(r.get("interfaces") or ""),
+                  "disabled": _bool(r.get("disabled"))} for r in raw.get("vrfs") or []],
+        "routing_rules": [{k: str(v) for k, v in r.items() if k in (
+            "src-address", "dst-address", "routing-mark", "interface", "action", "table", "comment", ".id")}
+            | {"disabled": _bool(r.get("disabled")), "inactive": _bool(r.get("inactive"))}
+            for r in raw.get("routing_rules") or []],
         "arp": [{"address": str(r.get("address") or ""), "mac": str(r.get("mac-address") or "").upper(),
                  "interface": str(r.get("interface") or "")} for r in raw.get("arp") or []],
         "neigh6": [{"address": str(r.get("address") or ""), "mac": str(r.get("mac-address") or "").upper(),
