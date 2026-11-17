@@ -1436,6 +1436,10 @@ def cmd_gateway(M, args, cfg):
     the router."""
     what = args.what or "status"
     d = api(M, "GET", "/api/gateway")
+    if what in ("dns", "rule", "try"):
+        return _gateway_fw(M, args, cfg, d, what)
+    if what in ("top", "conns"):
+        return _gateway_top(M, args, cfg, what)
     if what in ("on", "off", "keep", "back", "add", "del"):
         body = {"action": what}
         if what == "add":
@@ -1493,6 +1497,192 @@ def cmd_gateway(M, args, cfg):
                  for x in devs])
     else:
         print("  no device yet - sudo upnp gateway add IP --name NAME --mac-seen")
+    return 0
+
+
+def _gateway_top(M, args, cfg, what):
+    """upnp gateway top | conns IP - the Gateway tab's numbers: each device's traffic today, its DNS, rules and
+    drops; or one device's live connections (conntrack, as root last read it)."""
+    d = api(M, "GET", "/api/gateway/tab")
+    if _out(args, d):
+        return 0
+    fmt = lambda n: "%.1f MB" % (n / 1e6) if n >= 1e6 else ("%.1f kB" % (n / 1e3) if n >= 1e3 else "%d B" % n)
+    if what == "conns":
+        dev = next((x for x in d.get("devices") or [] if x.get("ip") == args.ip), None)
+        if not dev:
+            M.fail("%s is not one of the devices of the gateway" % (args.ip or "?"))
+        print(M.col("%s (%s) - %d connection(s) now" % (dev["name"], dev["ip"], dev.get("conns_n") or 0), M.C.bold)
+              + "  (read by root %s; the way out only - the answers come from the router)" % _when(d.get("read_at")))
+        M.table(["proto", "to", "port", "what", "state", "pkts", "sent", "expires"],
+                [[c["proto"], c["dst"], c["dport"] or "-", "", c.get("state") or "-", c.get("pkts"), fmt(c.get("bytes") or 0),
+                  "%ds" % c.get("timeout", 0)] for c in dev.get("conns") or []])
+        return 0
+    v = d.get("view") or {}
+    on = (v.get("applied") or {}).get("on") and (v.get("live") or {}).get("ip_forward") == "1"
+    print(M.col("Gateway for devices", M.C.bold) + "  " + (M.col("forwarding ON", M.C.green) if on else M.col("off", M.C.yellow))
+          + "  sent today %s · final DROP %d pkts · read %s" % (fmt((d.get("today") or {}).get("bytes") or 0), d.get("dropped") or 0,
+                                                                 _when(d.get("read_at"))))
+    rows = []
+    for x in d.get("devices") or []:
+        hits = lambda lst: sum((y.get("hits") or {}).get("pkts") or 0 for y in lst)
+        rows.append([x["name"], x["ip"], fmt(x["today"]["bytes"]), "%s/s" % fmt(x["today"]["rate"]), x.get("conns_n") or 0,
+                     "%d (%d srv)" % (hits(x.get("dns") or []), len(x.get("dns") or [])),
+                     "%d (%d)" % (hits(x.get("rules") or []), len(x.get("rules") or [])), (x.get("dropped") or {}).get("pkts") or 0,
+                     ", ".join(t["dst"] for t in (x.get("top_dst") or [])[:3])])
+    if rows:
+        M.table(["device", "address", "sent today", "now", "conns", "dns pkts", "rule pkts", "dropped", "top destinations"], rows)
+    else:
+        print("  no device - sudo upnp gateway add IP --name NAME --mac-seen")
+    return 0
+
+
+def _gateway_fw(M, args, cfg, d, what):
+    """upnp gateway dns|rule|try IP ... - a device's DNS servers and rules of its own (Settings → Gateway for
+    devices → its firewall), and a packet tried through them."""
+    dev = next((x for x in d.get("devices") or [] if x.get("ip") == args.ip), None)
+    if not dev:
+        M.fail("%s is not one of the devices of the gateway (upnp gateway add %s --name NAME)" % (args.ip or "?", args.ip or "IP"))
+    dns = [{"ip": x["ip"], "dot": bool(x.get("dot"))} for x in dev.get("dns") or []]
+    rules = [{k: r.get(k) for k in ("id", "to", "proto", "ports", "comment", "on")} for r in dev.get("rules") or []]
+    rest = list(args.rest or [])
+    if what == "try":
+        if len(rest) < 2:
+            M.fail("upnp gateway try IP DEST PROTO [PORT]")
+        t = api(M, "POST", "/api/gateway", {"action": "try", "id": dev["id"], "dns": dns, "rules": rules, "dst": rest[0],
+                                            "proto": rest[1], "port": rest[2] if len(rest) > 2 else 0})
+        if _out(args, t):
+            return 0
+        (M.ok if t.get("verdict") == "ACCEPT" or t.get("direct") else M.warn)(
+            "%s %s %s → %s: %s%s" % (dev["name"], rest[1], rest[2] if len(rest) > 2 else "", rest[0], t.get("words"),
+                                    (" (out %s)" % t["out"]) if t.get("out") else ""))
+        if t.get("rule"):
+            print("  decided by: %s" % t["rule"])
+        return 0
+    if what == "rule" and (not rest or rest[0] == "list"):
+        if _out(args, {"rules": dev.get("rules") or []}):
+            return 0
+        if not rules:
+            print("  %s has no rule of its own - the internet only" % dev["name"])
+        for n, r in enumerate(dev.get("rules") or [], 1):
+            h = r.get("hits") or {}
+            print("  %2d  %-3s %-5s %-16s → %-20s %-8s %s" % (n, "on" if r.get("on") else "off", r.get("proto"), r.get("ports") or "",
+                                                          r.get("to"), r.get("via") or "", (r.get("comment") or "") +
+                                                          ("  (%d pkts)" % h["pkts"] if h.get("pkts") else "")))
+        print("  DNS: %s" % (", ".join(x["ip"] + (" +DoT" if x.get("dot") else "") for x in dev.get("dns") or []) or "as now"))
+        return 0
+    if what == "dns":
+        if len(rest) < 2 or rest[0] not in ("add", "del"):
+            M.fail("upnp gateway dns IP add|del DNS [--dot]")
+        if rest[0] == "add":
+            dns = [x for x in dns if x["ip"] != rest[1]] + [{"ip": rest[1], "dot": bool(args.dot)}]
+        else:
+            if not any(x["ip"] == rest[1] for x in dns):
+                M.fail("%s is not a DNS server of %s" % (rest[1], dev["name"]))
+            dns = [x for x in dns if x["ip"] != rest[1]]
+    else:
+        if rest[0] == "add":
+            if not args.to:
+                M.fail("upnp gateway rule IP add --to NET [--proto tcp] [--ports 8080] [--comment ...]")
+            rules.append({"to": args.to, "proto": args.proto, "ports": args.ports, "comment": args.comment, "on": True})
+        elif rest[0] == "del":
+            try:
+                n = int(rest[1]) if len(rest) > 1 else 0
+            except ValueError:
+                n = 0
+            if not 1 <= n <= len(rules):
+                M.fail("which rule? upnp gateway rule %s list - then del N" % args.ip)
+            rules.pop(n - 1)
+        else:
+            M.fail("upnp gateway rule IP list | add --to NET ... | del N")
+    r = api(M, "POST", "/api/gateway", {"action": "designer_save", "id": dev["id"], "dns": dns, "rules": rules})
+    M.info(r.get("message") or "saved")
+    if r.get("id"):
+        got = follow_root(M, cfg, "gateway", r.get("id"), 60, "root")
+        return _said_root(M, got) if got else 1
+    return 0
+
+
+# ---- MikroTik (1.8.2): the real router, read-only ----------------------------------------------------------
+MT_WORDS = {"ok": "open", "no_dnat": "no dst-nat", "no_accept": "dropped by the filter", "shadowed": "shadowed",
+            "disabled": "disabled", "elsewhere": "forwarded elsewhere", "unsure": "cannot tell"}
+
+
+def cmd_mikrotik(M, args, cfg):
+    """upnp mikrotik [status|check|rules [ipv4|ipv6] [--table T]|try|read] - Settings → MikroTik: the real router,
+    read only - whether it carries every port a device asked for, and its firewall."""
+    what = args.what or "status"
+    if what == "try":
+        d = api(M, "POST", "/api/mikrotik", {"do": "test"}, timeout=120)
+        if _out(args, d):
+            return 0 if d.get("ok") else 1
+        for s in d.get("steps") or []:
+            print("  %s %-40s %s" % (M.col("✓", M.C.green) if s.get("ok") else M.col("✗", M.C.red), s.get("what"),
+                                     M.col(s.get("said") or "", M.C.dim)))
+        if not d.get("ok") and d.get("fingerprint"):
+            M.warn("its certificate %s is not trusted - compare it with /certificate print detail on the router, "
+                   "then trust it in Settings → MikroTik" % d.get("fingerprint_words"))
+        return 0 if d.get("ok") else 1
+    if what == "read":
+        d = api(M, "POST", "/api/mikrotik", {"do": "read"}, timeout=180)
+        M.info(d.get("message") or "read")
+        return 0 if (d.get("state") or {}).get("ok") else 1
+    if what == "rules":
+        d = api(M, "GET", "/api/mikrotik/rules")
+        if _out(args, d):
+            return 0
+        snap = d.get("snap") or {}
+        if not snap:
+            M.fail("the MikroTik is not read yet - upnp mikrotik read")
+        fam = "ipv6" if (args.family or "ipv4") in ("ipv6", "6") else "ip"
+        tables = [args.table] if args.table else ["filter", "nat", "mangle", "raw"]
+        for t in tables:
+            rows = ((snap.get("rules") or {}).get(fam) or {}).get(t) or []
+            print(M.col("%s firewall %s" % ("/ipv6" if fam == "ipv6" else "/ip", t), M.C.bold) + "  %d rule(s)" % len(rows))
+            if rows:
+                M.table(["#", "chain", "action", "what it matches", "packets", "comment"],
+                        [[r.get("n"), r.get("chain"), ("X " if r.get("disabled") else "") + str(r.get("action") or "")
+                          + ((" > " + r["to-addresses"] + (":" + r["to-ports"] if r.get("to-ports") else "")) if r.get("to-addresses") else ""),
+                          " ".join("%s=%s" % (k, v) for k, v in r.items() if k in (
+                              "protocol", "dst-port", "src-address", "dst-address", "in-interface", "in-interface-list",
+                              "out-interface-list", "connection-state", "connection-nat-state", "src-address-list",
+                              "dst-address-list")), r.get("packets") or 0, (r.get("comment") or "")[:40]] for r in rows])
+            print()
+        return 0
+    d = api(M, "GET", "/api/mikrotik")
+    if _out(args, d):
+        return 0
+    st, sn, c = d.get("state") or {}, d.get("snap") or {}, d.get("conf") or {}
+    if not d.get("on"):
+        print(M.col("MikroTik", M.C.bold) + "  " + M.col("off - nothing reaches the router (Settings → MikroTik)", M.C.yellow))
+        return 0
+    print(M.col("MikroTik", M.C.bold) + "  %s:%s over %s" % (c.get("host") or "-", d.get("port_used"), c.get("mode")))
+    if st.get("ok") is False:
+        M.warn("it cannot be read: %s" % st.get("trouble"))
+    if sn:
+        print("  %-16s %s, RouterOS %s on %s - read %s" % ("it is", sn.get("identity"), sn.get("version"), sn.get("board"),
+                                                       _when(sn.get("at"))))
+    ch = d.get("checks") or {}
+    for w in ch.get("warnings") or []:
+        M.warn(w)
+    if not ch:
+        return 0
+    print("  %-16s %d of %d port(s) asked for are open on it" % ("the ports", ch.get("open", 0), ch.get("total", 0)))
+    if True:                                            # the rows: all of them for check, the not open ones else
+        rows = ch.get("rows") or []
+        if what != "check":
+            rows = [r for r in rows if r.get("state") != "ok"][:20]
+        if rows:
+            print()
+            M.table(["device", "port", "IPv4 on the MikroTik", "why", "IPv6"],
+                    [[r.get("device"), "%s/%s" % (r.get("port"), r.get("proto")),
+                      M.col(MT_WORDS.get(r.get("state"), r.get("state")), M.C.green if r.get("state") == "ok" else M.C.red),
+                      (r.get("nat_why") or "")[:70], r.get("v6")] for r in rows])
+        if what == "check":
+            cmds = [x for r in rows for x in (r.get("commands") or []) + (r.get("v6_commands") or [])]
+            if cmds:
+                print("\n" + M.col("What would put it right - type it on the MikroTik yourself (fake-igd only reads):", M.C.bold))
+                for x in cmds:
+                    print("  " + x)
     return 0
 
 

@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""A stand-in for ssh-keygen (-t ed25519 -f PATH, and -y -f PATH): a key that looks like one."""
+import sys
+a = sys.argv[1:]
+f = a[a.index("-f") + 1]
+if "-y" in a:
+    print("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHRoaXNpc2FmYWtla2V5Zm9ydGhldGVzdHNvbmx5 given"); sys.exit(0)
+c = a[a.index("-C") + 1] if "-C" in a else ""
+open(f, "w").write("-----BEGIN OPENSSH PRIVATE KEY-----\nZmFrZQ==\n-----END OPENSSH PRIVATE KEY-----\n")
+open(f + ".pub", "w").write("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHRoaXNpc2FmYWtla2V5Zm9ydGhldGVzdHNvbmx5 %s\n" % c)

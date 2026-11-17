@@ -108,6 +108,10 @@ SETTINGS = [
     {"key": "alerts_gateway", "name": "The gateway for devices not forwarding", "kind": "bool", "default": True,
      "only_when": ON, "says": "The gateway for devices is on, but net.ipv4.ip_forward was turned off by something "
                               "else, or fake-igd's chain is no longer first in FORWARD (Settings → Gateway for devices)."},
+    {"key": "alerts_mikrotik", "name": "A port asked for not open on the MikroTik", "kind": "bool", "default": False,
+     "only_when": ON, "says": "Settings → MikroTik reads the real router: a port a device asked for that the MikroTik does "
+                              "not carry (no dst-nat, shadowed, disabled, dropped by the filter), the MikroTik that "
+                              "cannot be read, or its own UPnP switched on. Off by default."},
     {"key": "alerts_upgrade", "name": "An upgrade that failed", "kind": "bool", "default": True, "only_when": ON,
      "says": "An upgrade of fake-igd (Settings → Upgrades) that failed, or never said that it ended."},
     {"key": "alerts_mailq", "name": "Mails that do not go", "kind": "bool", "default": True, "only_when": ON,
@@ -260,6 +264,11 @@ def problems(ctx, c=None):
         if gw:
             out["gateway"] = {"level": "bad", "title": "The gateway for devices does not forward", "pane": "gateway",
                               "said": gw}
+    if c.get("alerts_mikrotik"):
+        try:
+            out.update(__import__("api_mikrotik").problems(ctx))
+        except Exception:                               # noqa: BLE001
+            pass
     if c.get("alerts_upgrade"):
         try:
             import igd_online as ON

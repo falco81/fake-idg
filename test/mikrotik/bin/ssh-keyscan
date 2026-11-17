@@ -1,0 +1,7 @@
+#!/bin/sh
+# a stand-in for ssh-keyscan: the router's (fake) ed25519 host key
+for last; do :; done
+port=22; prev=""; for a in "$@"; do [ "$prev" = "-p" ] && port=$a; prev=$a; done
+name=$last; [ "$port" != "22" ] && name="[$last]:$port"
+echo "# $last:$port SSH-2.0-ROSSSH"
+echo "$name ssh-ed25519 ${FAKE_SSH_HOSTKEY:-AAAAC3NzaC1lZDI1NTE5AAAAIGZha2VpZ2RtaWtyb3Rpa2hvc3RrZXlmb3J0ZXN0cw==}"

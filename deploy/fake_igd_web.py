@@ -947,6 +947,7 @@ def forward_view():
                         universal_newlines=True)
     out["chain"] = ch.returncode == 0
     mine = [x for x in ch.stdout.splitlines() if x.startswith("-A ")]
+    out["lines"] = mine[:2000]
     out["ends_drop"] = bool(mine) and mine[-1].endswith("-j DROP") and " -s " not in mine[-1] \
         and " -d " not in mine[-1] and " -i " not in mine[-1]
     v = subprocess.run(["iptables", "-v", "-x", "-n", "-L", FWD_CHAIN], stdout=subprocess.PIPE,

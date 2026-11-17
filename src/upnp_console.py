@@ -2493,6 +2493,11 @@ class Console(object):
             ("23", "Gateway for devices: how it stands", lambda: self.act("gateway")),
             ("24", "Gateway for devices: add a device", self.gw_add),
             ("25", "Gateway for devices: switch it on or off", self.gw_switch),
+            ("26", "MikroTik: does it carry the ports asked for?", lambda: self.act("mikrotik", "check")),
+            ("27", "MikroTik: read it now", lambda: self.act("mikrotik", "read")),
+            ("28", "MikroTik: try reaching it", lambda: self.act("mikrotik", "try")),
+            ("29", "MikroTik: its firewall (IPv4)", lambda: self.act("mikrotik", "rules", "ipv4")),
+            ("30", "MikroTik: its firewall (IPv6)", lambda: self.act("mikrotik", "rules", "ipv6")),
         ])
 
     def gw_add(self):

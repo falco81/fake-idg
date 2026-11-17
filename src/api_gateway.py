@@ -34,7 +34,12 @@ for _d in (HERE, os.path.join(os.path.dirname(HERE), "deploy")):
 import root_gateway as R     # noqa: E402 - the same checks as root's (it reads only, here)
 
 NAME = "gateway"
-SETTINGS = []
+SETTINGS = [
+    {"key": "gateway_keep_days", "name": "The Gateway tab's traffic kept for (days)", "kind": "int", "default": 7,
+     "min": 1, "max": 90, "pane": "gateway",
+     "says": "The packets and bytes of each device, sampled every minute while the gateway is on (from root's "
+             "reading of fake-igd's FORWARD chain), for the charts of the Gateway tab. Older samples go."},
+]
 LOCK = threading.Lock()
 READ_EVERY = 300
 ASK_STALE_S = 120
@@ -394,12 +399,188 @@ def get_trial(ctx):
 
 
 ROUTES = {("GET", "/api/gateway"): get_gateway, ("POST", "/api/gateway"): post_gateway,
-          ("GET", "/api/gateway/trial"): get_trial}
+          ("GET", "/api/gateway/trial"): get_trial, ("GET", "/api/gateway/tab"): lambda ctx: tab(ctx)}
+
+
+# ---- the Gateway tab (1.8.2): samples of the counters every minute, the devices' traffic --------------
+SAMPLE_EVERY = 60
+KEYS = ("out", "internet", "dns", "rules", "dropped")
+
+
+def samples_ready(store):
+    store.run("CREATE TABLE IF NOT EXISTS gw_samples (at REAL NOT NULL, ip TEXT NOT NULL, k TEXT NOT NULL, "
+              "pkts INTEGER NOT NULL, bytes INTEGER NOT NULL)")
+    store.run("CREATE INDEX IF NOT EXISTS gw_samples_at ON gw_samples (ip, at)")
+
+
+def counters_of(st):
+    """{ip: {key: (pkts, bytes)}} from root's last reading: everything it sent through this server, the
+    internet line, its DNS lines, its own rules, its drops toward networks it may not reach."""
+    fv = ((st.get("live") or {}).get("forward")) or {}
+    bc = fv.get("by_comment") or {}
+    out = {}
+    for d in st.get("devices") or []:
+        who = "fake-igd: %s (%s)" % (d.get("name"), d.get("ip"))
+        k = {"out": (int((fv.get("counters") or {}).get(d.get("ip"), {}).get("out_pkts") or 0),
+                     int((fv.get("counters") or {}).get(d.get("ip"), {}).get("out_bytes") or 0))}
+        for key, pre in (("internet", "fake-igd: gateway for %s (%s)" % (d.get("name"), d.get("ip"))),
+                         ("dns", who + " dns"), ("rules", who + " rule"), ("dropped", who + " dropped")):
+            p = b = 0
+            for c, n in bc.items():
+                if (c == pre or c.startswith(pre + " ") or c.startswith(pre + ":")) and not c.endswith(" back"):
+                    p += int(n.get("pkts") or 0)
+                    b += int(n.get("bytes") or 0)
+            k[key] = (p, b)
+        out[d.get("ip")] = k
+    return out
+
+
+def sample(ctx, st):
+    """One sample of every device's counters, when root has read them since the last one."""
+    at = float((st.get("live") or {}).get("read_at") or 0)
+    if not at or at <= float(ctx.store.get_meta("gateway:sampled") or 0):
+        return
+    samples_ready(ctx.store)
+    for ip, ks in counters_of(st).items():
+        for k, (p, b) in ks.items():
+            ctx.store.run("INSERT INTO gw_samples (at, ip, k, pkts, bytes) VALUES (?, ?, ?, ?, ?)", (at, ip, k, p, b))
+    ctx.store.set_meta("gateway:sampled", repr(at))
+    days = int(ctx.setting("gateway_keep_days") or 7)
+    if int(at) % 3600 < SAMPLE_EVERY:
+        ctx.store.run("DELETE FROM gw_samples WHERE at < ?", (at - days * 86400,))
+
+
+def series_of(store, ip, since, until, buckets=60):
+    """Bytes and packets sent through this server per bucket - from the samples, each the counter's growth
+    since the one before (a counter that went down - put in again - counts from nothing)."""
+    samples_ready(store)
+    rows = store.rows("SELECT at, k, pkts, bytes FROM gw_samples WHERE ip = ? AND at >= ? AND at <= ? ORDER BY at",
+                      (ip, since - 3600, until))
+    step = max(60.0, (until - since) / buckets)
+    n = int((until - since) // step) + 1
+    out = [{"t": since + i * step, "bytes": 0, "pkts": 0, "dns": 0, "rules": 0, "dropped": 0} for i in range(n)]
+    last = {}
+    for r in rows:
+        k = r["k"]
+        was = last.get(k)
+        last[k] = (r["pkts"], r["bytes"])
+        if was is None or r["at"] < since:
+            continue
+        dp = r["pkts"] - was[0] if r["pkts"] >= was[0] else r["pkts"]
+        db = r["bytes"] - was[1] if r["bytes"] >= was[1] else r["bytes"]
+        i = min(n - 1, int((r["at"] - since) // step))
+        if k == "out":
+            out[i]["bytes"] += db
+            out[i]["pkts"] += dp
+        elif k in ("dns", "rules", "dropped"):
+            out[i][k] += dp
+    return {"step": step, "series": out}
+
+
+def today_of(store, ip, key="out"):
+    """(bytes today, bytes per second now) of a device from the samples."""
+    samples_ready(store)
+    lt = time.localtime()
+    midnight = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
+    rows = store.rows("SELECT at, pkts, bytes FROM gw_samples WHERE ip = ? AND k = ? AND at >= ? ORDER BY at",
+                      (ip, key, midnight - 3600))
+    tot = pk = 0
+    rate = 0.0
+    for a, b in zip(rows, rows[1:]):
+        db = b["bytes"] - a["bytes"] if b["bytes"] >= a["bytes"] else b["bytes"]
+        dp = b["pkts"] - a["pkts"] if b["pkts"] >= a["pkts"] else b["pkts"]
+        if b["at"] >= midnight:
+            tot += db
+            pk += dp
+        rate = db / max(1.0, b["at"] - a["at"])
+    return {"bytes": tot, "pkts": pk, "rate": rate if rows and time.time() - rows[-1]["at"] < 300 else 0.0}
+
+
+PORT_WORDS = {53: "DNS", 80: "HTTP", 443: "HTTPS", 853: "DNS over TLS", 123: "NTP", 3478: "PSN (STUN)",
+              3479: "PSN (STUN)", 3480: "PSN", 9308: "the port the PS5 asked for", 1900: "SSDP"}
+
+
+def tab(ctx):
+    """GET /api/gateway/tab?since=&until= - everything of the Gateway tab: the cards, each device with its
+    traffic over time, its DNS, rules and drops with their packets, its live connections (from root's
+    reading), the whole chain with its counters, and the MikroTik's word on its ports when it is read."""
+    ctx.need("readonly")
+    now = time.time()
+    try:
+        until = float(ctx.arg("until") or 0) or now
+        since = float(ctx.arg("since") or 0) or until - 86400
+    except ValueError:
+        until, since = now, now - 86400
+    since = max(since, until - 90 * 86400)
+    st = state()
+    v = view(ctx)
+    live = st.get("live") or {}
+    fv = live.get("forward") or {}
+    bc = fv.get("by_comment") or {}
+    conns = st.get("conns") or {}
+    seen = st.get("seen") or {}
+    neigh = v.get("neigh") or {}
+    mt = None
+    try:
+        mk = sys.modules.get("api_mikrotik")
+        if mk is not None and hasattr(mk, "checks"):
+            got = mk.checks(ctx)
+            mt = got.get("rows") if isinstance(got, dict) else None
+    except Exception:                                   # noqa: BLE001 - no strip then
+        mt = None
+    devices = []
+    for d in v["devices"]:
+        ip = d.get("ip")
+        who = "fake-igd: %s (%s)" % (d.get("name"), ip)
+        cs = conns.get(ip) or []
+        tops, ports = {}, {}
+        for c in cs:
+            t = tops.setdefault(c["dst"], {"dst": c["dst"], "bytes": 0, "pkts": 0, "conns": 0, "ports": []})
+            t["bytes"] += c["bytes"]
+            t["pkts"] += c["pkts"]
+            t["conns"] += 1
+            if c["dport"] and c["dport"] not in t["ports"]:
+                t["ports"].append(c["dport"])
+            key = "%s/%s" % (c["proto"], c["dport"])
+            pp = ports.setdefault(key, {"proto": c["proto"], "port": c["dport"], "conns": 0, "bytes": 0,
+                                        "words": PORT_WORDS.get(c["dport"], "")})
+            pp["conns"] += 1
+            pp["bytes"] += c["bytes"]
+        drops = _hits(bc, who + " dropped")
+        devices.append({"id": d.get("id"), "name": d.get("name"), "ip": ip, "mac": d.get("mac") or "",
+                        "on": d.get("on") is not False, "applied": d.get("applied"),
+                        "neigh_mac": neigh.get(ip, ""), "seen": (seen.get(ip) or {}).get("changed") or 0,
+                        "counters": d.get("counters") or {}, "internet": d.get("internet") or {},
+                        "dns": d.get("dns") or [], "rules": d.get("rules") or [], "dropped": drops,
+                        "drops_by_net": sorted(({"to": c.split(" dropped toward ")[1], "pkts": n.get("pkts") or 0}
+                                                for c, n in bc.items() if c.startswith(who + " dropped toward ")
+                                                and n.get("pkts")), key=lambda x: -x["pkts"]),
+                        "today": today_of(ctx.store, ip), "chart": series_of(ctx.store, ip, since, until),
+                        "conns": sorted(cs, key=lambda c: -c["bytes"])[:200], "conns_n": len(cs),
+                        "top_dst": sorted(tops.values(), key=lambda t: -t["bytes"])[:10],
+                        "top_ports": sorted(ports.values(), key=lambda t: -t["conns"])[:10],
+                        "mikrotik": [r for r in (mt or []) if r.get("device") == ip][:30] if mt is not None else None})
+    chain = []
+    for ln in fv.get("lines") or []:
+        m = re.search(r'--comment "?(fake-igd: [^"]*)"?', ln)
+        c = m.group(1) if m else ""
+        chain.append({"line": ln, "comment": c, "pkts": (bc.get(c) or {}).get("pkts", 0),
+                      "bytes": (bc.get(c) or {}).get("bytes", 0),
+                      "target": ln.rsplit("-j ", 1)[-1] if "-j " in ln else ""})
+    tot_today = {"bytes": sum(x["today"]["bytes"] for x in devices), "pkts": sum(x["today"]["pkts"] for x in devices),
+                 "rate": sum(x["today"]["rate"] for x in devices)}
+    return {"view": {k: v[k] for k in ("on", "net", "applied", "live", "trial", "now")},
+            "devices": devices, "chain": chain, "jump": fv.get("first") or [], "policy": fv.get("policy") or "",
+            "dropped": int(fv.get("dropped") or 0), "today": tot_today,
+            "dropped_today": sum(today_of(ctx.store, x["ip"], "dropped")["pkts"] for x in devices),
+            "mikrotik": mt is not None, "since": since, "until": until, "now": now,
+            "read_at": live.get("read_at") or 0}
 
 
 def background(ctx):
     """The trial put back - what is wanted with it; a trial whose timer was lost - root asked; how it stands
-    read every five minutes while it is on (the packets, and whether forwarding is still on)."""
+    read every minute while it is on (the packets of each device for the Gateway tab, sampled here into the
+    database - root never writes it), and whether forwarding is still on."""
     st = state()
     _trial_ack(ctx, st)
     t = st.get("trial") if isinstance(st.get("trial"), dict) else {}
@@ -409,11 +590,15 @@ def background(ctx):
         ident = ctx.ask_root({"do": "expire", "id": t.get("id")})
         ctx.store.set_meta("gateway:asked", json.dumps({"id": ident, "at": time.time(), "do": "expire"}))
         return
+    if st.get("on") is True:
+        sample(ctx, st)
     if st.get("on") is True and not waiting:
         live = st.get("live") or {}
-        if time.time() - float(live.get("read_at") or 0) >= READ_EVERY:
-            ident = ctx.ask_root({"do": "read"})
-            ctx.store.set_meta("gateway:asked", json.dumps({"id": ident, "at": time.time(), "do": "read"}))
+        last = float(ctx.store.get_meta("gateway:read-asked") or 0)
+        # once a minute - and never more than one waiting (root slow: the next minute asks again)
+        if time.time() - float(live.get("read_at") or 0) >= SAMPLE_EVERY - 5 and time.time() - last >= SAMPLE_EVERY - 5:
+            ctx.ask_root({"do": "read"})
+            ctx.store.set_meta("gateway:read-asked", repr(time.time()))
 
 
 def problem(ctx):

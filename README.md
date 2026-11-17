@@ -623,6 +623,33 @@ There this server can be made the default gateway of **chosen devices** - and of
   back by itself. It comes back after a reboot by itself (`sysctl.d` and `/etc/sysconfig/iptables` between
   fake-igd's marks). The server becomes a single point of failure for those devices.
 
+**Each device's own firewall (1.8.2)** - the firewall button of a device (or its "Allowed" column) opens its FW designer. By default (nothing set)
+a device reaches the internet only, as above. There you can add:
+
+- **DNS servers** it may ask: udp and tcp 53 to exactly those addresses - also in a private network or another
+  network of this server (optionally DNS over TLS, tcp 853). One on the device's own network is reached
+  directly and needs no rule (the designer says so).
+- **Rules of its own**: a destination (an address or a network), a protocol (tcp, udp, icmp, any) and ports
+  (8080, 8000-8100, 80,443), a comment, on/off and their order. One into another network of this server
+  (ens161, ens224 ...) allows `-i <default route's interface> -o <that interface>` for that device (and its MAC)
+  to that destination only, with the answers back (`-m conntrack --ctstate ESTABLISHED,RELATED`) - the
+  destination must route its answers back through this server. Never toward everything (a /0 ... /7 is
+  refused - the internet is allowed already), never this server itself, never the special ranges; 64 rules at
+  most; checked again by root.
+
+In FAKE-IGD-FWD each device gets, in this order: its DNS lines → its own rules → its drops toward every local and
+private network (counted for it) → the drops for everybody → its internet line → the final DROP. The designer
+shows it as a flow (the device → this server → each lane ✓/✗), the lists to edit, **Try a packet** (a destination,
+protocol and port → which line decides, with the same evaluator root's lines are checked with), the packets of
+each line from `iptables -vnx`, and the lines root puts in. Saved on trial, as every firewall change.
+
+**The Gateway tab** shows the devices this server is the gateway for: cards (forwarding, devices, sent today and
+now, dropped, the router), for each device its traffic over time (the counters of its lines are read by root
+every minute and sampled by the API into the database - `gateway_keep_days`, 7 by default), its DNS, rules and
+drops with their packets, its UPnP steps and the ports it asked for, its connections now (`conntrack`, read by
+root: the way out only - the answers come from the router directly), top destinations and ports, the MikroTik's
+word on its ports when Settings → MikroTik reads the router, and FAKE-IGD-FWD line by line with its counters.
+
 On the PS5: *Settings → Network → Settings → Set Up Internet Connection →* your connection *→ Advanced Settings →
 IP Address Settings: Manual* - its IP address, the subnet mask, **Default Gateway = this server's address on that
 network**, DNS as it uses now. The pane shows the exact values, the packets forwarded for each device and when
@@ -633,6 +660,12 @@ sudo upnp gateway                                     # how it stands: forwardin
 sudo upnp gateway add 192.168.40.95 --name "PS5 Pro" --mac-seen
 sudo upnp gateway on                                  # then: sudo upnp gateway keep
 sudo upnp gateway del 192.168.40.95                   # the last one: the forwarding goes off with it
+sudo upnp gateway dns 192.168.40.95 add 172.16.16.53 [--dot]
+sudo upnp gateway rule 192.168.40.95 add --to 172.16.17.10 --proto tcp --ports 8080 --comment "media server"
+sudo upnp gateway rule 192.168.40.95 list             # then: rule 192.168.40.95 del N
+sudo upnp gateway try 192.168.40.95 172.16.17.10 tcp 8080    # which line decides
+upnp gateway top                                      # the Gateway tab's numbers
+upnp gateway conns 192.168.40.95                      # its connections now
 ```
 
 ### What if something else on the network offers UPnP?

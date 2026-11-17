@@ -28,7 +28,7 @@ NOT_MATCHERS = {".id", "n", "chain", "action", "comment", "disabled", "dynamic",
                 "log", "log-prefix", "to-addresses", "to-ports", "jump-target", "address-list",
                 "address-list-timeout", "reject-with", "new-connection-mark", "new-packet-mark", "new-routing-mark",
                 "passthrough", "new-dscp", "new-priority", "new-ttl", "new-mss", "sniff-id", "sniff-target",
-                "sniff-target-port", "route-dst", "place-before", ".nextid", ".about", "copy-from", "time-left",
+                "sniff-target-port", "route-dst", "place-before", ".nextid", ".about", "copy-from", "time-left", "hits",
                 "hw-offload", "randomise-ports", "new-hop-limit"}
 PRIVATE4 = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
                                                 "127.0.0.0/8", "169.254.0.0/16", "0.0.0.0/8", "224.0.0.0/4",
@@ -424,29 +424,29 @@ def check_port(snap, want, wan=None):
         out["rules"].append({"table": "nat" if by in nat else "raw", "id": by.get(".id"), "n": by.get("n"), "family": "ip"})
     for r in cands:
         out["rules"].append({"table": "nat", "id": r.get(".id"), "n": r.get("n"), "family": "ip"})
-    # the filter's forward chain, after the translation
-    f4, whyf = None, ""
-    if s4 == "dnat":
-        dev_ifs = {a.get("interface") for a in snap.get("arp") or [] if a.get("address") == device} - {None, ""}
-        fp = Packet("ip", proto, to_port, [ipaddress.ip_address(device)], in_ifs, in_lists,
-                    out_ifs=dev_ifs or None, out_lists=lists_of(snap, dev_ifs) if dev_ifs else None,
-                    nat_state="dstnat", chain="forward", lists=lists4)
-        fv = walk(filt, "forward", fp)
-        fr = fv.get("rule")
-        if fv["verdict"] in ("accept", "fasttrack-connection"):
-            f4, whyf = "open", "let through by rule %s" % _rule_words(fr)
-        elif fv["verdict"] in ("end", "return"):
-            f4 = "open"
-            notdst = next((r for r in filt if r.get("chain") == "forward" and r.get("action") == "drop"
-                           and "!dstnat" in str(r.get("connection-nat-state") or "")), None)
-            whyf = ("RouterOS's default rule %s drops only what was not translated - this was" % _rule_words(notdst)
-                    if notdst else "nothing in forward drops it (a chain lets through what no rule stops)")
-        elif fv["verdict"] == "unsure":
-            f4, whyf = "unsure", "forward rule %s may stop it - cannot tell: %s" % (_rule_words(fr), ", ".join(fv["unsure"]))
-        else:
-            f4, whyf = "blocked", "forward rule %s %ss it" % (_rule_words(fr), fv["verdict"])
-        if fr is not None:
-            out["rules"].append({"table": "filter", "id": fr.get(".id"), "n": fr.get("n"), "family": "ip"})
+    # the filter's forward chain, after the translation (walked also where there is none yet: what an added
+    # dst-nat would meet)
+    dev_ifs = {a.get("interface") for a in snap.get("arp") or [] if a.get("address") == device} - {None, ""}
+    fp = Packet("ip", proto, to_port, [ipaddress.ip_address(device)], in_ifs, in_lists,
+                out_ifs=dev_ifs or None, out_lists=lists_of(snap, dev_ifs) if dev_ifs else None,
+                nat_state="dstnat", chain="forward", lists=lists4)
+    fv = walk(filt, "forward", fp)
+    fr = fv.get("rule")
+    if fv["verdict"] in ("accept", "fasttrack-connection"):
+        f4, whyf = "open", "let through by rule %s" % _rule_words(fr)
+    elif fv["verdict"] in ("end", "return"):
+        f4 = "open"
+        notdst = next((r for r in filt if r.get("chain") == "forward" and r.get("action") == "drop"
+                       and "!dstnat" in str(r.get("connection-nat-state") or "")), None)
+        whyf = ("RouterOS's default rule %s drops only what came in untranslated: translated, it goes through"
+                % _rule_words(notdst)
+                if notdst else "nothing in forward drops it (a chain lets through what no rule stops)")
+    elif fv["verdict"] == "unsure":
+        f4, whyf = "unsure", "forward rule %s may stop it - cannot tell: %s" % (_rule_words(fr), ", ".join(fv["unsure"]))
+    else:
+        f4, whyf = "blocked", "forward rule %s %ss it" % (_rule_words(fr), fv["verdict"])
+    if fr is not None:
+        out["rules"].append({"table": "filter", "id": fr.get(".id"), "n": fr.get("n"), "family": "ip"})
     # the state of IPv4, in one word
     state = {"dnat": {"open": "ok", "blocked": "no_accept", "unsure": "unsure"}.get(f4, "unsure"),
              "missing": "no_dnat", "disabled": "disabled", "shadowed": "shadowed", "elsewhere": "elsewhere",
@@ -463,13 +463,10 @@ def check_port(snap, want, wan=None):
             out["notes"].append("another rule already forwards this port elsewhere: one port can go to one device")
     if state == "disabled" and by is not None:
         out["commands"].append("/ip firewall nat enable %s" % (by.get(".id") or by.get("n")))
-    if state == "no_accept" or (s4 in ("missing", "disabled", "shadowed", "elsewhere") and _forward_blocks(filt)):
-        fr = None
-        if state == "no_accept":
-            fr = next((x for x in out["rules"] if x["table"] == "filter"), None)
+    if f4 == "blocked" and state in ("ok", "no_accept", "no_dnat", "shadowed", "disabled"):
         out["commands"].append("/ip firewall filter add chain=forward action=accept connection-nat-state=dstnat "
                                "protocol=%s dst-address=%s dst-port=%d %s comment=\"%s\"%s"
-                               % (proto, device, to_port, spec, c, (" place-before=%s" % fr["id"]) if fr and fr.get("id") else ""))
+                               % (proto, device, to_port, spec, c, (" place-before=%s" % fr[".id"]) if fr and fr.get(".id") else ""))
     # IPv6
     out.update(_check_v6(snap, want, wan, proto, to_port, c))
     return out

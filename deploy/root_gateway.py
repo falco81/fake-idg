@@ -333,6 +333,12 @@ def lines_for(devices, net):
     # first what each device may reach beyond the internet: its DNS servers, its own rules (1.8.2)
     for d in devices:
         out += allow_lines(d, net)
+    # then each device's attempts toward a network it may not reach, dropped - and counted for it (the
+    # Gateway tab's "dropped toward local networks"), before the drops for everybody
+    for d in devices:
+        for n in blocked + [x for x in NEVER if x not in blocked]:
+            out.append("-A %s -s %s/32 -d %s -m comment --comment \"fake-igd: %s (%s) dropped toward %s\" -j DROP"
+                       % (CHAIN, d["ip"], n, d["name"], d["ip"], n))
     for n in blocked + [x for x in NEVER if x not in blocked]:
         out.append("-A %s -d %s -m comment --comment \"fake-igd: never forwarded to %s\" -j DROP" % (CHAIN, n, n))
     for d in devices:
@@ -690,6 +696,7 @@ def read(st=None):
     ips = [d.get("ip") for d in st.get("devices") or []]
     st["seen"] = {k: v for k, v in seen.items() if k in ips}
     cfg = W.read_config()
+    st["conns"] = conns_of(ips) if st.get("on") else {}
     st["live"] = {"ip_forward": proc_read("net/ipv4/ip_forward"),
                   "ip6_forward": proc_read("net/ipv6/conf/all/forwarding"),
                   "redirects": proc_read("net/ipv4/conf/all/send_redirects"), "file": os.path.exists(SYSCTL_FILE),
@@ -697,6 +704,57 @@ def read(st=None):
                   "net": net_now(), "neigh": neighbours(), "read_at": now}
     state_write(st)
     return st
+
+
+CONNTRACK_FILE = os.environ.get("FAKE_IGD_CONNTRACK", "/proc/net/nf_conntrack")
+CT_KEEP = 300
+
+
+def conntrack_lines():
+    """The connection table, as /proc/net/nf_conntrack (or conntrack -L -o extended) writes it."""
+    try:
+        with open(CONNTRACK_FILE, encoding="utf-8", errors="replace") as f:
+            return f.read(8 * 1024 * 1024).splitlines()
+    except OSError:
+        pass
+    if shutil.which("conntrack"):
+        r = subprocess.run(["conntrack", "-L", "-o", "extended"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           universal_newlines=True, timeout=20)
+        return r.stdout.splitlines()
+    return []
+
+
+def conns_of(ips):
+    """{ip: [{proto, dst, dport, sport, state, pkts, bytes, timeout, replied}]} - the devices' connections as
+    this server tracks them (it sees the way out only: the answers come from the router directly)."""
+    out = {ip: [] for ip in ips}
+    for ln in conntrack_lines():
+        f = ln.split()
+        if len(f) < 6 or f[0] != "ipv4":
+            continue
+        proto = f[2]
+        try:
+            timeout = int(f[4])
+        except ValueError:
+            timeout = 0
+        kv, state, n = {}, "", 0
+        for tok in f[5:]:
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                if k == "src":
+                    n += 1
+                kv["%s%d" % (k, n)] = v
+            elif tok.isupper() and not tok.startswith("[") and not state:
+                state = tok
+        src = kv.get("src1")
+        if src not in out or len(out[src]) >= CT_KEEP:
+            continue
+        flags = " ".join(t for t in f if t.startswith("["))
+        out[src].append({"proto": proto, "dst": kv.get("dst1", ""), "dport": int(kv.get("dport1") or 0),
+                         "sport": int(kv.get("sport1") or 0), "state": state or ("UNREPLIED" if "[UNREPLIED]" in flags else ""),
+                         "pkts": int(kv.get("packets1") or 0), "bytes": int(kv.get("bytes1") or 0), "timeout": timeout,
+                         "replied": "[UNREPLIED]" not in flags, "assured": "[ASSURED]" in flags})
+    return out
 
 
 def report(st, said, ok=True):

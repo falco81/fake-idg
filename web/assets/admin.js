@@ -49,7 +49,7 @@ dressButtons(document);
 }());
 
 /* ---- tabs ------------------------------------------------------------------ */
-var TABS = ['overview', 'ports', 'requests', 'clients', 'mappings', 'mdns', 'log', 'events', 'settings'];
+var TABS = ['overview', 'ports', 'requests', 'clients', 'mappings', 'gateway', 'mdns', 'log', 'events', 'settings'];
 window.optShowTab = function (name) {
   if (TABS.indexOf(name) < 0) name = 'overview';
   /* A tab this account may not use (its button is hidden) is not opened by the address either. */
@@ -79,6 +79,7 @@ function onTab(name) {
   if (name === 'clients') loadClients();
   if (name === 'mappings') loadMappings();
   if (name === 'mdns' && typeof loadMdnsTab === 'function') loadMdnsTab();
+  if (name === 'gateway' && typeof loadGatewayTab === 'function') loadGatewayTab();
   if (name === 'log') loadLog(true);
   if (name === 'events') loadEvents();
   /* Coming back with changes not yet saved keeps them (otp 1.0.15, 1.0.94). */
@@ -933,8 +934,46 @@ cardOpens('card-maps', 'What the clients believe is open now.', peekMapsCard);
 cardOpens('card-mdns', 'avahi-daemon and its reflector.', peekMdnsCard);
 cardOpens('card-upgrade', 'The version running, and the newest there is.', peekUpgradeCard);
 
+/* The MikroTik on Overview (1.8.2): one strip - how many of the ports asked for it carries - shown only while
+   Settings → MikroTik reads it. */
+function drawMikrotikCard() {
+  var host = $('card-mikrotik');
+  if (!host || typeof window.MT_CHECKS !== 'function') return;
+  window.MT_CHECKS().then(function (d) {
+    clear(host);
+    host.hidden = !d.on;
+    if (!d.on) return;
+    var ch = d.checks || {}, sn = d.snap || {}, st = d.state || {}, S = window.MT_STATE || {};
+    var k = st.ok === false ? 'crit' : (!ch.total ? 'info' : (ch.open === ch.total ? 'ok' : (ch.open ? 'warn' : 'crit')));
+    host.className = 'card full mt-ov tappable ' + k;
+    var top = el('div', 'mt-ov-top');
+    var ic = el('span', 'mt-ov-ic');
+    ic.innerHTML = iconMarkup('wall', 20);
+    top.appendChild(ic);
+    var w = el('div', 'mt-ov-words');
+    w.appendChild(el('div', 'label', 'MikroTik' + (sn.identity ? ' · ' + sn.identity : '')));
+    w.appendChild(el('div', 'mt-ov-v', st.ok === false ? 'cannot be read' : (ch.total ? num(ch.open) + ' of ' + num(ch.total) + ' port(s) open on it'
+      : (sn.at ? 'read - no port asked for yet' : 'not read yet'))));
+    w.appendChild(el('div', 'sub', st.ok === false ? String(st.trouble || '').slice(0, 160) : (sn.at ? 'read ' + ago(sn.at) + (sn.version ? ' · RouterOS ' + sn.version : '') : '')));
+    top.appendChild(w);
+    var chips = el('div', 'mt-chips');
+    Object.keys(ch.counts || {}).forEach(function (s) {
+      if (!S[s]) return;
+      var c = el('span', 'mt-chip ' + S[s][1]);
+      c.appendChild(el('b', '', num(ch.counts[s])));
+      c.appendChild(el('span', '', S[s][0]));
+      chips.appendChild(c);
+    });
+    (ch.warnings || []).forEach(function (x) { if (/UPnP is ON/.test(x)) { var c = el('span', 'mt-chip crit alone'); c.appendChild(el('span', '', 'its own UPnP is ON')); chips.appendChild(c); } });
+    top.appendChild(chips);
+    host.appendChild(top);
+    host.onclick = function () { showTab('settings'); showPane('mikrotik'); };
+    CARD_WHY['card-mikrotik'] = {level: k === 'ok' ? 'ok' : (k === 'crit' ? 'crit' : 'warn'), words: 'Settings → MikroTik reads the real router: of the ports the devices asked for, how many it carries - a dst-nat to the device and nothing that drops it.'};
+  }).catch(function () { host.hidden = true; });
+}
 function loadOverview() {
   paintCards();
+  drawMikrotikCard();
   apiLatest('overview', 'overview' + tpQuery('ov-hours', 'since', 'until')).then(function (d) {
     drawChart(d, Math.round(d.hours || 24));
     $('m-ports-sub').textContent = num(d.add) + ' AddPortMapping · ' + $('ov-hours')._range().words + ' · '
@@ -1131,17 +1170,20 @@ function portTools(r) {
 }
 function loadPorts() {
   var per = Number($('pt-per').value);
-  apiLatest('ports', 'ports&q=' + encodeURIComponent($('pt-q').value) + '&proto=' + $('pt-proto').value
+  var mt = typeof window.MT_CHECKS === 'function' ? window.MT_CHECKS().catch(function () { return {}; }) : Promise.resolve({});
+  Promise.all([apiLatest('ports', 'ports&q=' + encodeURIComponent($('pt-q').value) + '&proto=' + $('pt-proto').value
       + '&result=' + $('pt-result').value + tpQuery('pt-hours', 'since', 'until')
-      + '&page=' + PAGE.ports + '&per=' + per).then(function (d) {
+      + '&page=' + PAGE.ports + '&per=' + per), mt]).then(function (two) {
+    var d = two[0], MTC = mtChecksMap(two[1]);
     QS.ports.said(d.q_error || '');
     var c = d.counts || {};
     $('pt-said').textContent = num(c.ports) + ' port(s) · ' + num(c.udp) + ' UDP · ' + num(c.tcp) + ' TCP · '
       + num(c.clients) + ' client(s)';
     var host = $('pt-table');
     clear(host);
-    host.appendChild(listTable(['Client', 'Protocol', {words: 'Port', cls: 'num'}, {words: 'Asked', cls: 'num'},
-                                'First', 'Last', 'Answered', 'What for', ''], d.ports, function (r) {
+    var heads = ['Client', 'Protocol', {words: 'Port', cls: 'num'}, {words: 'Asked', cls: 'num'}, 'First', 'Last', 'Answered', 'What for', ''];
+    if (MTC) heads.splice(7, 0, 'MikroTik');
+    host.appendChild(listTable(heads, d.ports, function (r) {
       var tr = el('tr');
       tr.appendChild(addrCell(r.client, r.name));
       var tp = el('td'); tp.appendChild(protoTag(r.proto)); tr.appendChild(tp);
@@ -1154,6 +1196,7 @@ function loadPorts() {
         res.appendChild(el('span', 'tag ' + (refusedWords(k) ? 'crit' : 'ok'), k + (r.results[k] > 1 ? ' ×' + r.results[k] : '')));
       });
       tr.appendChild(res);
+      if (MTC) tr.appendChild(mtCell(MTC[mtKey(r.client, r.proto, r.port)]));
       tr.appendChild(noI18n(el('td', 'small', r.description || '')));
       tr.appendChild(portTools(r));
       tr.onclick = function () { portPeek(r); };
@@ -1165,6 +1208,25 @@ function loadPorts() {
 }
 $('pt-q').addEventListener('input', debounce(function () { PAGE.ports = 0; loadPorts(); }, 300));
 ['pt-proto', 'pt-result', 'pt-hours', 'pt-per'].forEach(function (id) { $(id).onchange = function () { PAGE.ports = 0; loadPorts(); }; });
+/* The MikroTik's state of each port (1.8.2), for the Ports tab and its popup: null while it is not read. */
+function mtKey(dev, proto, port) { return dev + '|' + String(proto).toLowerCase() + '|' + port; }
+function mtChecksMap(d) {
+  if (!d || !d.on || !d.checks) return null;
+  var m = {};
+  (d.checks.rows || []).forEach(function (x) { m[mtKey(x.device, x.proto, x.port)] = x; });
+  return m;
+}
+function mtCell(x) {
+  var td = el('td', 'mt-cell');
+  var S = window.MT_STATE || {};
+  if (!x) { td.appendChild(el('span', 'muted small', '–')); return td; }
+  var s = S[x.state] || ['?', 'dim'];
+  var t = el('span', 'tag ' + s[1], s[0]);
+  explain(t, (x.state === 'ok' ? x.forward_why || x.nat_why : x.nat_why) || s[2] || '');
+  td.appendChild(t);
+  if (x.v6 === 'blocked') td.appendChild(el('span', 'tag crit', 'IPv6 blocked'));
+  return td;
+}
 function portPeek(r) {
   peek(String(r.proto).toUpperCase() + ' ' + r.port + ' · ' + r.client, function () {
     return api('requests&q=' + encodeURIComponent('port:' + r.port + ' proto:' + String(r.proto).toLowerCase()
@@ -1178,7 +1240,20 @@ function portPeek(r) {
       ['First', stamp(r.first)], ['Last', stamp(r.last)]]));
     if (r.description) body.appendChild(noI18n(el('p', 'note', 'What it said it is for: ' + r.description)));
     body.appendChild(el('h3', 'peek-h', 'On the real router'));
-    body.appendChild(el('p', 'note', 'Forward ' + String(r.proto).toUpperCase() + ' ' + r.port + ' to '
+    var x = (mtChecksMap(window.MT_CACHE && window.MT_CACHE.d) || {})[mtKey(r.client, r.proto, r.port)];
+    if (x) {
+      var S = window.MT_STATE || {}, s = S[x.state] || ['?', 'dim', ''];
+      var line = el('p', 'note');
+      line.appendChild(el('span', 'tag ' + s[1], 'MikroTik: ' + s[0]));
+      line.appendChild(noI18n(el('span', '', ' ' + (x.state === 'ok' ? (x.forward_why || x.nat_why) : x.nat_why))));
+      body.appendChild(line);
+      var cmds = (x.commands || []).concat(x.v6_commands || []);
+      if (cmds.length) {
+        var pre = noI18n(el('pre', 'lines', cmds.join('\n')));
+        copyOnClick(pre, cmds.join('\n'), 'the commands are on the clipboard - type them on the MikroTik yourself');
+        body.appendChild(pre);
+      }
+    } else body.appendChild(el('p', 'note', 'Forward ' + String(r.proto).toUpperCase() + ' ' + r.port + ' to '
       + r.client + ':' + (r.internal_port || r.port) + ' - Rules for the router makes it for iptables, nftables, MikroTik or firewalld.'));
     body.appendChild(el('h3', 'peek-h', 'Its requests'));
     body.appendChild(requestsTable(d.requests || [], ['client', 'port', 'for']));

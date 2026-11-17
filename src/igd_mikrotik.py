@@ -842,7 +842,7 @@ class RosSsh(object):
 
 def _ssh_env():
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C", "HOME": tempfile.gettempdir()}
-    for k in ("FAKE_SSH_ANSWERS", "FAKE_SSH_LOG"):          # the test's stand-in for ssh
+    for k in ("FAKE_SSH_LOG", "FAKE_SSH_HOSTKEY", "FAKE_ROUTER_WRITES"):    # the test's stand-in for ssh
         if os.environ.get(k):
             env[k] = os.environ[k]
     return env

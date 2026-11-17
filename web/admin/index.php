@@ -337,6 +337,8 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
           title="The devices that looked for a UPnP router or asked for ports. Click a row for all of one.">Clients<span class="count" id="tabn-clients"></span></button>
   <button role="tab" aria-selected="false" data-tab="mappings" data-icon="router"
           title="What the clients believe is open now, with the lease left. Nothing is open on the router.">Mappings<span class="count" id="tabn-mappings"></span></button>
+  <button role="tab" aria-selected="false" data-tab="gateway" data-icon="wall"
+          title="The devices this server is the gateway for: what they send through it, their DNS, rules and drops, their live connections - and FAKE-IGD-FWD line by line with its counters.">Gateway</button>
   <button role="tab" aria-selected="false" data-tab="mdns" data-icon="wifi"
           title="The mDNS reflector on this server (avahi-daemon): whether it runs and reflects, between which interfaces, and every service mDNS shows on them now.">mDNS<span class="count" id="tabn-mdns"></span></button>
   <button role="tab" aria-selected="false" data-tab="log" data-icon="log"
@@ -369,6 +371,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     <div class="card metric ok" id="card-upgrade"><div class="label">Upgrades</div>
       <div class="value" id="m-upgrade">–</div><div class="sub" id="m-upgrade-sub">&nbsp;</div></div>
   </div>
+  <div class="card full mt-ov" id="card-mikrotik" hidden style="margin-top:14px"></div>
   <div class="card full" style="margin-top:14px">
     <h2>Requests
       <span class="right">
@@ -495,6 +498,19 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
 </section>
 
 <!-- ===================== Events ===================== -->
+<!-- ===================== Gateway (1.8.2) ===================== -->
+<section class="panel" id="tab-gateway" hidden>
+  <div class="card full gt-top" data-hold>
+    <h2>The gateway for devices <span class="right gt-tools"><span class="small muted" id="gt-read"></span>
+      <span id="gt-hours" title="The window of the charts."></span>
+      <button type="button" class="btn cmd small" id="gt-refresh" data-icon="refresh">Read it again</button></span></h2>
+    <p class="note">The devices that use this server as their default gateway (a PS5 asks UPnP only of its gateway):
+      what they send through it, sampled every minute; their DNS servers, rules and drops; their connections now;
+      and the chain FAKE-IGD-FWD line by line. Only toward the router - nothing else is forwarded.</p>
+  </div>
+  <div id="gt-body"></div>
+</section>
+
 <section class="panel" id="tab-events" hidden>
   <div class="card full" data-hold>
     <h2>What fake-igd has done</h2>
@@ -538,6 +554,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     <button type="button" data-pane="logs" data-icon="log" title="How much the log says, and where the logs and the state are.">Logs and state</button>
     <button type="button" data-pane="mdns" data-icon="wifi" title="avahi-daemon on this server: the reflector, the interfaces, the filters - every key of avahi-daemon.conf fake-igd knows - and the daemon started, stopped or restarted.">mDNS reflector (avahi)</button>
     <button type="button" class="fulladmin-only" data-pane="gateway" data-icon="router" title="This server as the default gateway of chosen devices - a PS5 asks UPnP only of its gateway: forwarded toward the router for those devices alone, never between this server's networks.">Gateway for devices</button>
+    <button type="button" data-pane="mikrotik" data-icon="wall" title="The real router - a MikroTik - read, read-only: for every port a device asked for, whether it carries it (a dst-nat, nothing that drops it, IPv6); and its whole firewall, IPv4 and IPv6.">MikroTik</button>
     <div class="ctl-group">Access</div>
     <button type="button" data-pane="people" data-icon="person" title="Who may open these pages, what each of them may do, and who is signed in right now.">Accounts</button>
     <button type="button" data-pane="tls" data-icon="lock" title="The certificate of these pages, and how TLS is spoken.">Certificates and TLS</button>
@@ -604,7 +621,7 @@ var ME = <?= json_encode($me, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_A
 var STATUS = <?= $initial ? json_encode($initial, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) : 'null' ?>;
 var PHP_SAFETY = <?= ($me['role'] ?? '') === 'fulladmin' ? json_encode(igd_php_safety(), JSON_HEX_TAG | JSON_HEX_AMP) : 'null' ?>;
 </script>
-<?php foreach (['core.js', 'cols.js', 'hload.js', 'admin.js'] as $igd_js): ?>
+<?php foreach (['core.js', 'cols.js', 'hload.js', 'admin.js', 'tab-gateway.js'] as $igd_js): ?>
 <script nonce="<?= h($nonce) ?>" src="/assets/<?= $igd_js ?>?v=<?= h(IGD_VERSION) ?>-<?= (int) @filemtime(dirname(__DIR__) . '/assets/' . $igd_js) ?>"></script>
 <?php endforeach; ?>
 <?php foreach (glob(dirname(__DIR__) . '/assets/pane-*.js') ?: [] as $igd_js): ?>

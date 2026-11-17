@@ -51,6 +51,10 @@ SETTINGS = [
      "only_when": ("proxy", True),
      "says": "fake-igd.service sends its notifications to the ntfy server through it. A proxy down then stops "
              "them - leave it off unless the ntfy server can be reached no other way."},
+    {"key": "proxy_mikrotik", "name": "The MikroTik (REST, API)", "kind": "bool", "default": False,
+     "only_when": ("proxy", True),
+     "says": "Settings → MikroTik reaches the router through it (CONNECT) - REST and the API; ssh never. The router "
+             "is usually on the LAN: leave it off unless it can be reached no other way."},
 ]
 
 

@@ -2238,6 +2238,21 @@ def build_parser():
     s.add_argument("--json", action="store_true", help="JSON output (status)")
     s.set_defaults(func=admin("cmd_power"))
 
+    s = add("mikrotik", "the real router - a MikroTik - read only: does it carry the ports asked for? its firewall",
+            "  status                  how it is read, and the ports it does not carry (default)\n"
+            "  check                   every port asked for: open / no dst-nat / shadowed / disabled / dropped -\n"
+            "                          and the RouterOS commands that would add what is missing (shown, never sent)\n"
+            "  rules [ipv4|ipv6]       its firewall as read: filter, nat, mangle, raw (--table one of them)\n"
+            "  read                    read it now\n"
+            "  try                     sign in and say each step (Try reaching it)\n"
+            "  Read-only: fake-igd only ever asks it to print. Set it up in Settings → MikroTik." + pages_note,
+            "examples:\n  sudo upnp mikrotik\n  sudo upnp mikrotik check\n  sudo upnp mikrotik rules ipv4 --table nat")
+    s.add_argument("what", nargs="?", choices=("status", "check", "rules", "read", "try"), metavar="status|check|rules|read|try")
+    s.add_argument("family", nargs="?", choices=("ipv4", "ipv6"), help="rules: IPv4 (default) or IPv6")
+    s.add_argument("--table", choices=("filter", "nat", "mangle", "raw"), help="rules: one table only")
+    s.add_argument("--json", action="store_true", help="JSON output")
+    s.set_defaults(func=admin("cmd_mikrotik"))
+
     s = add("gateway", "this server as the default gateway of chosen devices (a PS5 asks UPnP only of its gateway)",
             "  status                  forwarding, fake-igd's chain, the devices and their packets (default)\n"
             "  on | off                switch the gateway for devices on (fake-igd's firewall must be on) or off\n"
@@ -2245,13 +2260,28 @@ def build_parser():
             "      [--mac MAC | --mac-seen]   its MAC too (--mac-seen: as this server's neighbour table has it)\n"
             "  del IP                  the device taken away (the last one: the forwarding goes off with it)\n"
             "  keep | back             a change on trial kept, or put back now\n"
+            "  dns IP add|del DNS [--dot]      the DNS servers the device may ask (udp+tcp 53, --dot: 853 too)\n"
+            "  rule IP list | add --to NET [--proto tcp|udp|icmp|any] [--ports P] [--comment C] | del N\n"
+            "                          its own rules: one destination each (another network of this server too)\n"
+            "  try IP DEST PROTO [PORT]        a packet from the device through the rules: which one decides\n"
+            "  top                     the devices: traffic, DNS, rules, drops (the Gateway tab)\n"
+            "  conns IP                its live connections (conntrack)\n"
             "  Only in and out the interface of the default route, toward the router - never between this\n"
             "  server's networks; fake-igd's FORWARD chain ends in a DROP. IPv6 is never forwarded." + pages_note,
             "examples:\n  sudo upnp gateway\n  sudo upnp gateway add 192.168.40.95 --name \"PS5 Pro\" --mac-seen\n"
-            "  sudo upnp gateway on\n  sudo upnp gateway keep")
-    s.add_argument("what", nargs="?", choices=("status", "on", "off", "add", "del", "keep", "back"),
-                   metavar="status|on|off|add|del|keep|back")
-    s.add_argument("ip", nargs="?", help="the device's IPv4 address (add, del)")
+            "  sudo upnp gateway on\n  sudo upnp gateway keep\n  sudo upnp gateway dns 192.168.40.95 add 172.16.16.53\n"
+            "  sudo upnp gateway rule 192.168.40.95 add --to 172.16.17.10 --proto tcp --ports 8080 --comment media\n"
+            "  sudo upnp gateway try 192.168.40.95 172.16.17.10 tcp 8080")
+    s.add_argument("what", nargs="?", choices=("status", "on", "off", "add", "del", "keep", "back", "dns", "rule",
+                                                "try", "top", "conns"),
+                   metavar="status|on|off|add|del|keep|back|dns|rule|try|top|conns")
+    s.add_argument("ip", nargs="?", help="the device's IPv4 address (add, del, dns, rule, try, conns)")
+    s.add_argument("rest", nargs="*", help="dns: add|del DNS · rule: list|add|del N · try: DEST PROTO [PORT]")
+    s.add_argument("--to", default="", help="rule add: the destination (address or network)")
+    s.add_argument("--proto", default="tcp", choices=("tcp", "udp", "icmp", "any"), help="rule add: the protocol")
+    s.add_argument("--ports", default="", help="rule add: 8080, 8000-8100, 80,443")
+    s.add_argument("--comment", default="", help="rule add: what it is for")
+    s.add_argument("--dot", action="store_true", help="dns add: DNS over TLS (tcp 853) as well")
     s.add_argument("--name", default="", help="what it is (add)")
     s.add_argument("--mac", default="", help="its MAC address (add)")
     s.add_argument("--mac-seen", action="store_true", help="its MAC from this server's neighbour table (add)")

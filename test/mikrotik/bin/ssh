@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""A stand-in for ssh in front of a MikroTik (as isemon's mockrouter.py): it reads the options fake-igd gives,
+refuses a host whose key is not in the UserKnownHostsFile (StrictHostKeyChecking=yes), takes a key (-i, 0600)
+or asks a password on its terminal, and answers the console line as RouterOS does - print as-value of
+fixture.py's router. Anything that is not a print is written to FAKE_ROUTER_WRITES and refused."""
+import os
+import re
+import sys
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, HERE)
+import fixture   # noqa: E402
+
+a = sys.argv[1:]
+opts, key, port, user = {}, None, "22", ""
+i = 0
+while i < len(a):
+    if a[i] == "-o":
+        k, _, v = a[i + 1].partition("="); opts[k] = v; i += 2
+    elif a[i] in ("-p", "-i", "-l", "-F"):
+        if a[i] == "-p": port = a[i + 1]
+        if a[i] == "-i": key = a[i + 1]
+        if a[i] == "-l": user = a[i + 1]
+        i += 2
+    elif a[i] == "--":
+        i += 1; break
+    else:
+        i += 1
+host, line = a[i], a[i + 1] if i + 1 < len(a) else ""
+log = os.environ.get("FAKE_SSH_LOG")
+if log:
+    with open(log, "a") as f:
+        f.write("%s %s %s %s\n" % (user, host, "key" if key else "password", line))
+for must in (("StrictHostKeyChecking", "yes"), ("ForwardAgent", "no"), ("ForwardX11", "no")):
+    if opts.get(must[0]) != must[1]:
+        sys.stderr.write("fake ssh: %s must be %s\n" % must); sys.exit(2)
+name = host if port == "22" else "[%s]:%s" % (host, port)
+kh = opts.get("UserKnownHostsFile", "")
+known = []
+try:
+    known = [l.split() for l in open(kh) if l.split() and name in l.split()[0].split(",")]
+except OSError:
+    pass
+if not known:
+    sys.stderr.write("No ED25519 host key is known for %s and you have requested strict checking.\n"
+                     "Host key verification failed.\n" % name); sys.exit(255)
+if known[0][2] != os.environ.get("FAKE_SSH_HOSTKEY", "AAAAC3NzaC1lZDI1NTE5AAAAIGZha2VpZ2RtaWtyb3Rpa2hvc3RrZXlmb3J0ZXN0cw=="):
+    sys.stderr.write("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
+                     "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n"
+                     "Host key verification failed.\n"); sys.exit(255)
+if key:
+    st = os.stat(key)
+    if st.st_mode & 0o077 or "PRIVATE KEY" not in open(key).read():
+        sys.stderr.write("bad key\n"); sys.exit(255)
+else:
+    sys.stdout.write("%s@%s's password: " % (user, host)); sys.stdout.flush()
+    pw = sys.stdin.readline().strip()
+    if pw != "read-only-please":
+        sys.stdout.write("\r\nPermission denied, please try again.\r\n%s@%s's password: " % (user, host)); sys.stdout.flush()
+        sys.stdin.readline(); sys.exit(255)
+    sys.stdout.write("\r\n")
+m = re.match(r'^(?::put \[|:foreach r in=\[)(/[a-z0-9 -]+) print as-value(?: where .*)?(?:\]|\] do=\{:put \$r\})$', line)
+if not m:
+    w = os.environ.get("FAKE_ROUTER_WRITES")
+    if w:
+        open(w, "a").write("SSH %s\n" % line)
+    sys.stdout.write("bad command name\r\n"); sys.exit(0)
+path = "/" + m.group(1).strip("/").replace(" ", "/")
+if path not in fixture.ROUTER:
+    sys.stdout.write("bad command name print (line 1 column 14)\r\n"); sys.exit(0)
+sys.stdout.write(fixture.as_value(path).replace("\n", "\r\n"))
