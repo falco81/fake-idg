@@ -4,7 +4,8 @@ One SQLite file, /var/lib/fake-igd/fake-igd.db, owned by the fake-igd account:
 
   users      the local accounts of the web pages - a name, a role, a password
              hash (scrypt), when it was made and last signed in, switched off
-             or not, and its second step of signing in (an authenticator app)
+             or not, and its second step of signing in (an authenticator app, or
+             the passkeys of its devices - their public halves only, 1.9.1)
   sessions   who is signed in now - only the SHA-256 of each session's token
              is kept, the token itself lives in the browser's cookie alone; a
              sign-in still to give its second step is kept too, and is good
@@ -59,6 +60,7 @@ POLICY = {
     "login_wait_min": 15,             # ... and the pause
     "password_min": MIN_PASSWORD,     # a password of these accounts at least this long
     "admin_2fa": False,               # a second step (an authenticator app) after the password
+    "admin_2fa_passkey": False,       # ...or a passkey: Face ID, Touch ID, Windows Hello (otp 1.0.254)
 }
 
 SCHEMA = """
@@ -384,7 +386,13 @@ class Store(object):
             r["must_change"] = bool(r["must_change"])
             r["disabled"] = bool(r["disabled"])
             m = _jload(r["mfa"])
-            r["mfa"] = {"kind": m.get("kind"), "at": m.get("at")} if m.get("kind") else None
+            dest = ""
+            if m.get("kind") == "passkey":
+                # which device, for which name of the pages (otp 1.0.254)
+                dest = ", ".join("%s \u00b7 %s" % (k.get("name") or "a device", k.get("host") or "?")
+                                 for k in m.get("keys") or [] if isinstance(k, dict))
+            r["mfa"] = {"kind": m.get("kind"), "at": m.get("at"), "dest": dest,
+                        "keys": len(m.get("keys") or [])} if m.get("kind") else None
         return rows
 
     def user(self, name):
@@ -481,7 +489,12 @@ class Store(object):
         return self.rows("SELECT at, level, addr, words FROM events WHERE kind = 'sign-in' AND who = ? "
                          "COLLATE NOCASE ORDER BY id DESC LIMIT ?", (str(name), int(limit)))
 
-    # ---- the second step (an authenticator app) ---------------------------------------
+    # ---- the second step (an authenticator app, or passkeys) ----------------------------
+    # The account's own, in its row (users.mfa, JSON) - so a backup of the database has it, and
+    # a reset (Accounts, upnp user reset-2fa NAME) takes it all away, passkeys too:
+    #   {"kind": "app", "secret", "step": the last code's step, used once, "at", "by"}
+    #   {"kind": "passkey", "keys": [{"id", "alg", "pub", "count", "host", "name", "at", "used",
+    #    "backed_up"}], "at", "by"}                                   (1.9.1, as otp's adm2fa:<name>)
     def mfa_get(self, name):
         u = self.user(name)
         return _jload(u["mfa"]) if u else {}
@@ -506,6 +519,8 @@ class Store(object):
         """The code of the account's app: True, or StoreError with the words. A code is good once."""
         with self.lock:
             rec = self.mfa_get(name)
+            if rec.get("kind") == "passkey":
+                raise StoreError("the second step of this account is a passkey - use it")
             if rec.get("kind") != "app" or not rec.get("secret"):
                 raise StoreError("this account has no second step set up")
             try:
@@ -615,6 +630,7 @@ class Store(object):
         u.pop("mfa", None)
         u["session"] = sid[:12]
         u["session_started"] = s["created"]
+        u["mfa_at"] = _jload(s.get("data")).get("mfa_at") or 0
         return u
 
     def pending(self, token):
@@ -636,13 +652,42 @@ class Store(object):
         s["data"] = _jload(s.get("data"))
         return s, dict(u)
 
+    def session_take(self, token, key):
+        """A value kept with a sign-in (waiting or not), taken away by the one who reads it - a
+        passkey's question is answered once (otp's session_take). None: not there (any more)."""
+        if not token:
+            return None
+        sid = _sid(token)
+        with self.lock:
+            s = self.one("SELECT data FROM sessions WHERE id = ?", (sid,))
+            if not s:
+                return None
+            d = _jload(s["data"])
+            if key not in d:
+                return None
+            got = d.pop(key)
+            self.run("UPDATE sessions SET data = ? WHERE id = ?", (json.dumps(d), sid))
+        return got
+
+    def session_merge(self, token, data):
+        """Values kept with a sign-in that is good (Your account's passkey question, 1.9.1)."""
+        sid = _sid(token or "")
+        with self.lock:
+            s = self.one("SELECT data FROM sessions WHERE id = ?", (sid,))
+            if not s:
+                raise StoreError("this sign-in has ended - sign in again")
+            d = _jload(s["data"])
+            d.update(data)
+            self.run("UPDATE sessions SET data = ? WHERE id = ?", (json.dumps(d), sid))
+
     def pending_merge(self, token, data):
-        s, _u = self.pending(token)
-        if not s:
-            raise StoreError("this sign-in has ended - sign in again")
-        d = s["data"]
-        d.update(data)
-        self.run("UPDATE sessions SET data = ? WHERE id = ?", (json.dumps(d), s["id"]))
+        with self.lock:
+            s, _u = self.pending(token)
+            if not s:
+                raise StoreError("this sign-in has ended - sign in again")
+            d = s["data"]
+            d.update(data)
+            self.run("UPDATE sessions SET data = ? WHERE id = ?", (json.dumps(d), s["id"]))
 
     def mfa_enrol(self, token, code):
         """The app set up in this sign-in, proven by its first code: kept, and the sign-in opened."""
@@ -653,7 +698,7 @@ class Store(object):
             if self.mfa_get(u["name"]).get("kind"):
                 raise StoreError("this account has its second step set up already - sign in again")
             secret = s["data"].get("mfa_new") or ""
-            if not secret:
+            if not secret or not isinstance(secret, str):
                 raise StoreError("make the QR code first")
             step = totp_match(secret, code)
             if step is None:
@@ -663,14 +708,32 @@ class Store(object):
         self.mfa_passed(token)
         return u
 
+    def mfa_passkey_enrol(self, token, pk):
+        """The passkey set up in this sign-in (checked by igd_webauthn): kept, and the sign-in opened."""
+        with self.lock:
+            s, u = self.pending(token)
+            if not s:
+                raise StoreError("this sign-in has ended - sign in again")
+            if self.mfa_get(u["name"]).get("kind"):
+                raise StoreError("this account has its second step set up already - sign in again")
+            rec = {"kind": "passkey", "keys": [pk], "at": time.time(), "by": u["name"]}
+            self.mfa_put(u["name"], rec)
+        self.mfa_passed(token)
+        return rec
+
+    def mfa_put(self, name, rec):
+        self.run("UPDATE users SET mfa = ? WHERE name = ?", (json.dumps(rec), name))
+
     def mfa_passed(self, token):
-        """The second step given: the sign-in opens - the same token (its cookie is HttpOnly)."""
+        """The second step given: the sign-in opens - the same token (its cookie is HttpOnly). When
+        it was given is kept with it (otp 1.0.262): a passkey is added only soon after."""
         sid = _sid(token)
         s = self.one("SELECT name, addr FROM sessions WHERE id = ?", (sid,))
         if not s:
             raise StoreError("this sign-in has ended - sign in again")
         now = time.time()
-        self.run("UPDATE sessions SET mfa = '', data = '', created = ?, seen = ? WHERE id = ?", (now, now, sid))
+        self.run("UPDATE sessions SET mfa = '', data = ?, created = ?, seen = ? WHERE id = ?",
+                 (json.dumps({"mfa_at": int(now)}), now, now, sid))
         self.run("UPDATE users SET last_login = ?, last_from = ? WHERE name = ?", (now, s["addr"], s["name"]))
 
     def logout(self, token):
