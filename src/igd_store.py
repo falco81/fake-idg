@@ -692,6 +692,8 @@ class Store(object):
         for by, col, other, limit in (("address", "addr", "name", most_addr), ("name", "name", "addr", most_name)):
             seen = {}
             for f in got:
+                if not f[col]:
+                    continue                    # cleared for this count, still counted for the other
                 seen.setdefault(f[col].lower() if by == "name" else f[col], []).append(f)
             for who, fs in seen.items():
                 times = [f["at"] for f in fs]
@@ -713,10 +715,16 @@ class Store(object):
         return rows
 
     def clear_fails(self, by, who):
-        """How many wrong attempts of that address or name were forgotten."""
+        """How many wrong attempts of that address or name were forgotten. Only that count (otp's
+        counters are one per address and one per name): clearing an address forgets its attempts
+        for the address, while the names tried from it keep theirs - and the other way round. A
+        wrong attempt counted for neither any more is gone."""
         col = "addr" if by in ("address", "admin") else "name"
-        return self.run("DELETE FROM fails WHERE %s = ?%s" % (col, " COLLATE NOCASE" if col == "name" else ""),
-                        (str(who),)).rowcount
+        with self.lock:
+            n = self.run("UPDATE fails SET %s = '' WHERE %s = ?%s" % (col, col, " COLLATE NOCASE" if col == "name" else ""),
+                         (str(who),)).rowcount
+            self.run("DELETE FROM fails WHERE addr = '' AND name = ''")
+        return n
 
     def clear_all_fails(self):
         return self.run("DELETE FROM fails").rowcount

@@ -103,11 +103,11 @@ def _web_write(name, text, mode=0o640):
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=dfd)
         with os.fdopen(fd, "w") as f:
             f.write(text)
-        try:
-            import grp
-            os.chown(tmp, 0, grp.getgrnam("fake-igd").gr_gid, dir_fd=dfd)
-        except (KeyError, OSError):
-            pass
+            try:   # on the open file, never by name in a folder the API owns
+                import grp
+                os.fchown(f.fileno(), 0, grp.getgrnam("fake-igd").gr_gid)
+            except (KeyError, OSError):
+                pass
         os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
     except OSError:
         pass
