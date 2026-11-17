@@ -168,8 +168,8 @@ come back by themselves unless kept.
 ### Accounts (local, SQLite)
 
 **full admin** may change everything, **read only** may look. Passwords are kept as scrypt hashes, 8
-characters at least (*Settings → Accounts*: the least length, the second step by an authenticator app for
-every account). Five wrong passwords for one name (an address: ten times as many, 50 at least) hold that
+characters at least (*Settings → Accounts*: the least length, the second step by an authenticator app - or a passkey: Face ID,
+Touch ID, Windows Hello, on the pages opened by a name over HTTPS - for every account). Five wrong passwords for one name (an address: ten times as many, 50 at least) hold that
 name back for 15 minutes; a sign-in ends after 120 minutes without a request and after 12 hours however busy
 (all of these are set under *Settings → Accounts*). `sudo upnp user lockouts` shows who is held back, `sudo
 upnp user clear [NAME|ADDRESS]` lets them try again at once.

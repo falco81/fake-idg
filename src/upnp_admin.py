@@ -608,7 +608,9 @@ def cmd_user(M, args, cfg):
                       M.col(r["role_words"], M.C.magenta if r["role"] == "fulladmin" else M.C.dim),
                       (M.col("off", M.C.red) if r["disabled"] else M.col("on", M.C.green))
                       + (" (to change its password)" if r["must_change"] else ""),
-                      M.col("an app", M.C.green) if r["mfa"] else ("set up at the next sign-in" if on else "-"),
+                      M.col({"app": "an app", "passkey": "a passkey (%d)" % (r["mfa"].get("keys") or 0)}.get(
+                          r["mfa"]["kind"], r["mfa"]["kind"]), M.C.green) if r["mfa"]
+                      else ("set up at the next sign-in" if on else "-"),
                       M.col(r["sessions"], M.C.green) if r["sessions"] else M.col("-", M.C.dim),
                       _when(r["last_login"]), r["last_from"] or "-", r["note"] or ""] for r in rows],
                     "no account yet - make one: sudo upnp user add NAME")

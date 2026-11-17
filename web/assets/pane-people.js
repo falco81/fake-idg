@@ -7,6 +7,7 @@
 
 /* ---- accounts ------------------------------------------------------------- */
 var US = {d: null};
+var MFA_TAG = {app: 'an app', passkey: 'a passkey'};
 function loadUsers() {
   if (typeof colsCardSay === 'function') colsCardSay();
   api('users').then(function (d) {
@@ -26,8 +27,10 @@ function loadUsers() {
       /* The second step of signing in: how it is given, or not yet. */
       var mf = el('td', 'small');
       if (u.mfa) {
-        mf.appendChild(el('span', 'tag ok', {app: 'an app'}[u.mfa.kind] || u.mfa.kind));
-        if (u.mfa.at) mf.appendChild(el('span', 'sub', 'since ' + stamp(u.mfa.at)));
+        mf.appendChild(el('span', 'tag ok', MFA_TAG[u.mfa.kind] || u.mfa.kind));
+        /* a passkey: of which device, for which name of the pages (otp 1.0.254) */
+        if (u.mfa.dest) mf.appendChild(noI18n(el('span', 'sub mono', u.mfa.dest)));
+        else if (u.mfa.at) mf.appendChild(el('span', 'sub', 'since ' + stamp(u.mfa.at)));
       } else {
         mf.appendChild(el('span', 'muted', d.mfa_on ? 'set up at the next sign-in' : '–'));
       }
@@ -118,7 +121,7 @@ function loadUsers() {
           mr.onclick = function (ev) {
             ev.stopPropagation();
             confirmThen('Reset the second step of ' + u.name + '?',
-              htmlText('The app ' + u.name + ' gives the second step with is taken away, and their sign-ins are ended. At the next sign-in they set it up again - with the password alone, so do it only when you know it is them (a lost phone, a new one).'),
+              htmlText('The way ' + u.name + ' gives the second step is taken away, and their sign-ins are ended. At the next sign-in they choose and set it up again - with the password alone, so do it only when you know it is them (a lost phone, a new one).'),
               'Reset it', function () {
                 api('users', {action: 'mfa_reset', name: u.name}).then(function (r) { toast(r.message, 'good'); loadUsers(); }).catch(oops);
               }, true);
@@ -257,7 +260,8 @@ function userInfo(u) {
       ['Made', stamp(u.created)], ['Changed', u.changed ? stamp(u.changed) : '–'],
       ['Last signed in', u.last_login ? stamp(u.last_login) + (u.last_from ? ' from ' + u.last_from : '') : 'never'],
       ['Signed in now', u.sessions ? num(u.sessions) : 'no'],
-      ['Second step', u.mfa ? 'an app, since ' + stamp(u.mfa.at) : (US.d && US.d.mfa_on ? 'set up at the next sign-in' : '–')]
+      ['Second step', u.mfa ? (MFA_TAG[u.mfa.kind] || u.mfa.kind) + ', since ' + stamp(u.mfa.at)
+        + (u.mfa.dest ? ' (' + u.mfa.dest + ')' : '') : (US.d && US.d.mfa_on ? 'set up at the next sign-in' : '–')]
     ]));
     var g = el('div', 'formgrid');
     note = textBox(u.note || '', 'who it is, what it is for');
