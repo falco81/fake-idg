@@ -1,0 +1,50 @@
+; fake-igd - what SELinux needs for fake-igd that the system's policy does not say (1.7.7, as otp's
+; otp_server.cil). Installed by install.sh and by every upgrade (semodule -i fake_igd_server.cil), taken
+; away with semodule -r fake_igd_server. Labels first; a narrow rule only where no label or boolean does
+; it, each in a block of its own.
+;
+; fake-igd.service and fake-igd-api.service run as unconfined_service_t (a program of /opt started by
+; systemd): their own ports - 1900/udp, the SOAP port, the API on 127.0.0.1, SNMP - need no label. What is
+; confined is nginx and php-fpm (httpd_t): the pages ask the API on 127.0.0.1 (the boolean
+; httpd_can_network_connect, set by install.sh and Settings → SELinux) and read its token.
+;
+; /run/fake-igd-api holds the API's token and port. The pages (php-fpm, httpd_t) read them; made by
+; systemd as var_run_t, httpd_t may not read it. Labelled as the web server's own run files, which httpd_t
+; reads; the API (unconfined_service_t) writes it as before. The command line's key beside them
+; (cli-token) is 0600 the API's account's: the label lets the pages nothing the file's mode refuses.
+;
+; Both spellings: the policy reads a path through file_contexts.subs_dist first - on RHEL 8 "/run" is
+; looked up as "/var/run", on newer policies the other way round - so a rule for one of them alone may
+; never be matched. The one never looked up does nothing.
+(filecon "/run/fake-igd-api" dir (system_u object_r httpd_var_run_t ((s0) (s0))))
+(filecon "/run/fake-igd-api/.*" any (system_u object_r httpd_var_run_t ((s0) (s0))))
+(filecon "/var/run/fake-igd-api" dir (system_u object_r httpd_var_run_t ((s0) (s0))))
+(filecon "/var/run/fake-igd-api/.*" any (system_u object_r httpd_var_run_t ((s0) (s0))))
+
+; systemd hands /run/fake-igd-api back to the service's account before every command of the unit
+; (RuntimeDirectory=): it may change the owner and the mode of what is in it. Under enforcing that was
+; refused to otp as "init_t -> httpd_var_run_t file { setattr }". Only that: no read, no write. In a block
+; of its own, so that a policy without one of the types still takes the rest of the module.
+(optional fake_igd_server_systemd_runtime
+    (allow init_t httpd_var_run_t (dir (getattr setattr search open read)))
+    (allow init_t httpd_var_run_t (file (getattr setattr))))
+
+; fake-igd-api.service runs with NoNewPrivileges=yes (as otp's units). A program the API runs that has a
+; domain of its own is started in it by a transition - which NoNewPrivileges forbids unless the policy
+; says the transition may go (nnp_transition). Seen refused (1.7.10): "unconfined_service_t -> chronyc_t
+; process2 { nnp_transition }" - the clock read for Settings → Time and the alert "A clock that is off"
+; (chronyc -n tracking); under enforcing chronyc would not run at all. Only the transition, only into these
+; domains, each in a block of its own (a policy without one of the types still takes the rest).
+(optional fake_igd_server_nnp_chronyc
+    (allow unconfined_service_t chronyc_t (process2 (nnp_transition nosuid_transition))))
+(optional fake_igd_server_nnp_ifconfig
+    (allow unconfined_service_t ifconfig_t (process2 (nnp_transition nosuid_transition))))
+(optional fake_igd_server_nnp_hostname
+    (allow unconfined_service_t hostname_t (process2 (nnp_transition nosuid_transition))))
+(optional fake_igd_server_nnp_ssh_keygen
+    (allow unconfined_service_t ssh_keygen_t (process2 (nnp_transition nosuid_transition))))
+; Backups to SFTP / SCP destinations: the API runs ssh, sftp and scp (ssh_t).
+(optional fake_igd_server_nnp_ssh
+    (allow unconfined_service_t ssh_t (process2 (nnp_transition nosuid_transition))))
+(optional fake_igd_server_nnp_ping
+    (allow unconfined_service_t ping_t (process2 (nnp_transition nosuid_transition))))

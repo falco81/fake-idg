@@ -743,6 +743,17 @@ def se_report_parts():
     if not any(x.startswith("LABEL") for x in keep):
         keep = ["(ps did not give the table of processes:)"] + ps.splitlines()[:40]
     parts["processes.txt"] = "\n".join(x[:200] for x in keep) + "\n"
+    # The whole of SELinux on this machine as well (1.7.11) - not only what is fake-igd's: every process's
+    # domain, every boolean, every port type, every module, and what was changed locally (semanage -C).
+    parts["os/processes.txt"] = "\n".join(x[:300] for x in ps.splitlines()) + "\n"
+    parts["os/booleans.txt"] = _se_out(["getsebool", "-a"], 60, light=False)
+    parts["os/ports.txt"] = _se_out(["semanage", "port", "-l"], 300)
+    parts["os/modules.txt"] = _se_out(["semodule", "-lfull"], 300)
+    parts["os/local-changes.txt"] = "\n".join(
+        "==== semanage %s -l -C (changed on this machine)\n%s" % (what, _se_out(["semanage", what, "-l", "-C"], 300))
+        for what in ("boolean", "port", "fcontext", "login", "user", "module", "permissive"))
+    parts["os/semanage-export.txt"] = _se_out(["semanage", "export"], 300)
+    parts["os/listening.txt"] = _se_out(["ss", "-lntupZ"], 60, light=False)
     pl = _se_out(["semanage", "port", "-l"], 300)
     parts["ports.txt"] = "==== labelled\n" + "\n".join(
         x for x in pl.splitlines() if x.split()[:1] and x.split()[0] in SE_REPORT_PORT_TYPES) + \
@@ -762,7 +773,9 @@ def se_report_parts():
         "audit2why.txt   why; audit2allow.te: what would allow it - a hint, not to be loaded\n"
         "labels.txt      the labels of fake-igd's files and what the policy says they should be\n"
         "processes.txt   the domains the programs run in; ports.txt, booleans.txt, modules.txt\n"
-        "system.txt      the system, the policy and the packages; fake-igd.json: what fake-igd uses here\n\n"
+        "system.txt      the system, the policy and the packages; fake-igd.json: what fake-igd uses here\n"
+        "os/             the whole of SELinux on this machine: every process's domain, every boolean,\n"
+        "                every port type, every module, what was changed locally (semanage -C, export)\n\n"
         "No password, key or token of fake-igd is in it. The audit log holds the command lines of the\n"
         "programs refused something: fake-igd never puts a secret on one - other programs on this\n"
         "machine may. Look through avc*.txt before sending it on.\n" % time.strftime("%Y-%m-%d %H:%M:%S"))

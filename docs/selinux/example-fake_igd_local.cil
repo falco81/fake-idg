@@ -1,0 +1,11 @@
+; fake-igd's local rules (fake_igd_local) - put in from Settings → SELinux (Put in what is selected)
+; or `upnp selinux fix`, each exactly what SELinux refused here and nothing more. Taken away one by
+; one on the same card (or `upnp selinux rules --take-away ID`); the module goes with uninstall.sh.
+; Written by root; never edited by hand: the next change writes it again from its list.
+
+; 73f2d405a5f5 - nothing of the policy allows it: a rule of fake-igd's own local module allows exactly this (1970-01-01 00:00)
+(optional fake_igd_local_73f2d405a5f5
+    (allow unconfined_service_t chronyc_t (process2 (nnp_transition))))
+; 0330899ec3dc - nothing of the policy allows it: a rule of fake-igd's own local module allows exactly this (1970-01-01 00:00)
+(optional fake_igd_local_0330899ec3dc
+    (allow chronyc_t unconfined_service_t (fifo_file (write))))

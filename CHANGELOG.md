@@ -2,6 +2,16 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.7.11 (2026-11-17)
+
+- **SELinux → Download the report holds the whole of SELinux on the machine**, not only fake-igd's part:
+  `os/processes.txt` (every process with its domain), `os/booleans.txt` (every boolean), `os/ports.txt`
+  (every port type), `os/modules.txt` (every module), `os/local-changes.txt` (what was changed on this
+  machine: semanage boolean/port/fcontext/login/user/module/permissive -l -C), `os/semanage-export.txt`
+  and `os/listening.txt` (every listening socket with its label). The refusals in it were already the
+  whole machine's.
+- docs/selinux/: how fake-igd lives with SELinux, with screenshots - a kit for other applications.
+
 ## 1.7.10 (2026-11-17)
 
 **Settings → SELinux finds out everything SELinux refuses on the server - and puts right what it may.**
