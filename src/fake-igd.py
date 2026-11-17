@@ -58,6 +58,12 @@ DEFAULTS = {
     "ntfy_ca_file": "",            # CA bundle for a private server with its own certificate authority
     "notify_on_renew": False,
     "notify_other_router": True,   # notify when another UPnP router announces itself
+    "ntfy_events": {},             # what is sent: {kind: {on, priority, tags}} (igd_ntfy.EVENTS) - 1.8.2
+    "ntfy_quiet_from": "",         # quiet hours HH:MM - HH:MM: only ntfy_quiet_priority and above then
+    "ntfy_quiet_to": "",
+    "ntfy_quiet_priority": 4,
+    "ntfy_quiet_summary": True,    # what the quiet hours held back as one summary when they end
+    "ntfy_rate_per_hour": 30,      # of one kind an hour at most, then one "N more" (0 = no limit)
     "log_level": "INFO",
     "log_file": "/var/log/fake-igd/fake-igd.log",
     "request_log": "/var/log/fake-igd/requests.jsonl",
@@ -385,6 +391,8 @@ def purge_expired():
     dead = [k for k, m in mappings.items() if m.get("expires_at") and m["expires_at"] < t]
     for k in dead:
         log.info("port: %s %d of %s expired", k[2], k[1], mappings[k]["internal_client"])
+        notify("port_expired", "UPnP: %s %d ran out" % (k[2], k[1]), "the mapping %s %d -> %s:%s ran out (its lease "
+               "was not renewed)" % (k[2], k[1], mappings[k]["internal_client"], mappings[k].get("internal_port")))
         record({"action": "Expired", "protocol": k[2], "external_port": k[1],
                 "internal_client": mappings[k]["internal_client"]})
         del mappings[k]
@@ -392,61 +400,13 @@ def purge_expired():
         save_mappings()
 
 
-def _hdr(value):
-    """A header value: plain ASCII as it is, anything else as an RFC 2047 encoded word (ntfy reads it)."""
-    v = str(value)
-    try:
-        v.encode("ascii")
-        return v
-    except UnicodeEncodeError:
-        import base64
-        return "=?UTF-8?B?%s?=" % base64.b64encode(v.encode("utf-8")).decode()
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import igd_ntfy                                # noqa: E402 - shared with the pages' API (1.8.2)
 
 
 def ntfy_send(cfg, title, message, priority=None, tags=None, timeout=10):
     """One message to ntfy (ntfy.sh or a private server). Returns (ok, words)."""
-    import base64
-    import ssl
-    url = str(cfg.get("ntfy_url") or "").strip()
-    if not url:
-        return False, "ntfy_url is not set"
-    if not re.match(r"^https?://[^/\s]+/[^\s]+$", url):
-        return False, "ntfy_url must be http(s)://server/topic"
-    headers = {"Title": _hdr(title), "Priority": str(priority or cfg.get("ntfy_priority") or 3)}
-    t = tags if tags is not None else cfg.get("ntfy_tags")
-    if t:
-        headers["Tags"] = _hdr(t)
-    if cfg.get("ntfy_token"):
-        headers["Authorization"] = "Bearer %s" % str(cfg["ntfy_token"]).strip()
-    elif cfg.get("ntfy_user"):
-        pair = "%s:%s" % (cfg.get("ntfy_user"), cfg.get("ntfy_password") or "")
-        headers["Authorization"] = "Basic %s" % base64.b64encode(pair.encode("utf-8")).decode()
-    ctx = None
-    if url.startswith("https://"):
-        ctx = ssl.create_default_context(cafile=cfg.get("ntfy_ca_file") or None)
-    req = urllib.request.Request(url, data=str(message).encode("utf-8"), headers=headers, method="POST")
-    try:
-        proxy = ""
-        try:                                   # Settings → Proxy, switched on for ntfy (1.6.0)
-            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-            import igd_proxy
-            proxy = igd_proxy.url_for(None, "ntfy")
-        except Exception:                      # noqa: BLE001 - straight
-            proxy = ""
-        opener = (lambda: igd_proxy.open_url(None, "ntfy", req, timeout=timeout, context=ctx)) if proxy else \
-            (lambda: urllib.request.urlopen(req, timeout=timeout, context=ctx))
-        with opener() as r:
-            r.read()
-            return True, "HTTP %d" % r.status
-    except urllib.error.HTTPError as e:
-        why = {401: "unauthorized - check ntfy_token / ntfy_user / ntfy_password",
-               403: "forbidden - the token/user may not write to this topic",
-               429: "too many messages (rate limited)"}.get(e.code, e.reason)
-        return False, "HTTP %d %s" % (e.code, why)
-    except ssl.SSLError as e:
-        return False, "TLS: %s (a private CA? set ntfy_ca_file)" % e
-    except Exception as e:  # noqa: BLE001
-        return False, str(getattr(e, "reason", e))
+    return igd_ntfy.post(cfg, title, message, priority, tags, timeout)
 
 
 def ntfy_words(cfg):
@@ -458,22 +418,26 @@ def ntfy_words(cfg):
     return "ntfy %s (%s%s)" % (url, auth, ", own CA" if cfg.get("ntfy_ca_file") else "")
 
 
-def notify(title, message, priority=None, tags=None):
-    if not CFG.get("ntfy_url"):
-        return
-
-    def _send():
-        ok, words = ntfy_send(CFG, title, message, priority, tags)
-        host = urllib.parse.urlparse(CFG["ntfy_url"]).netloc
-        if ok:
-            log.info("notify: sent '%s' to %s (%s)", title, host, words)
-        else:
-            log.warning("notify: sending '%s' to %s failed: %s", title, host, words)
-
-    threading.Thread(target=_send, daemon=True).start()
+def _sent(kind, title, ok, words, why=""):
+    """Every message, in the log as the pages' "What was sent" reads it: its kind in brackets."""
+    host = urllib.parse.urlparse(str(CFG.get("ntfy_url") or "")).netloc
+    if ok:
+        log.info("notify: sent [%s] '%s' to %s (%s%s)", kind, title, host, words, (", " + why) if why else "")
+    else:
+        log.warning("notify: sending [%s] '%s' to %s failed: %s", kind, title, host, words)
 
 
-# ================================================================ XML descriptions
+NOTE = igd_ntfy.Notifier(lambda: CFG, _sent)
+
+
+def notify(kind, title, message):
+    """An event of a kind (igd_ntfy.EVENTS): sent when its kind is on, as quiet hours and the rate limit let it."""
+    try:
+        NOTE.send(kind, title, message)
+    except Exception as e:                     # noqa: BLE001 - a notification never stops the service
+        log.debug("notify: %s", e)
+
+
 def device_xml(local_ip):
     base = "http://%s:%d" % (local_ip, CFG["http_port"])
 
@@ -653,9 +617,13 @@ def _add(action, a, client):
         lease = int(a.get("NewLeaseDuration", "0") or 0)
         ic = str(ipaddress.IPv4Address(a.get("NewInternalClient", "") or client))
     except ValueError:
+        notify("port_refused", "UPnP: %s %d refused" % (key[2], key[1]), "%s asks for %s %d - refused: invalid "
+               "arguments (402)" % (client, key[2], key[1]))
         raise UPnPError(402, "Invalid Args")
     # the lease is a ui4; the internal client an IPv4 address (a name, or rubbish, is refused)
     if not (0 < iport < 65536) or not (0 <= lease <= 0xFFFFFFFF):
+        notify("port_refused", "UPnP: %s %d refused" % (key[2], key[1]), "%s asks for %s %d - refused: invalid "
+               "arguments (402)" % (client, key[2], key[1]))
         raise UPnPError(402, "Invalid Args")
     if IGD_V == 2 and (lease == 0 or lease > LEASE_V2):
         lease = LEASE_V2
@@ -675,20 +643,24 @@ def _add(action, a, client):
         log.info("port: %s %d -> %s:%d asked by %s (lease %s, '%s') - rejected (mapping_response reject)",
                  key[2], key[1], ic, iport, client, ("%ds" % lease) if lease else "unlimited", desc)
         record(dict(ev, result="rejected"))
-        notify("UPnP: %s %d" % (key[2], key[1]), "%s asks for %s %d -> %s:%d '%s' (rejected)" % (
-            client, key[2], key[1], ic, iport, desc))
+        notify("port_refused", "UPnP: %s %d refused" % (key[2], key[1]), "%s asks for %s %d -> %s:%d '%s' - refused "
+               "(mapping_response reject, 501)" % (client, key[2], key[1], ic, iport, desc))
         raise UPnPError(501, "ActionFailed")
     old = mappings.get(key)
     if old and old["internal_client"] != ic:
         log.warning("port: %s %d already belongs to %s, asked for %s by %s - refused (conflict)",
                     key[2], key[1], old["internal_client"], ic, client)
         record(dict(ev, result="conflict"))
+        notify("port_refused", "UPnP: %s %d refused" % (key[2], key[1]), "%s asks for %s %d -> %s:%d '%s' - refused: "
+               "it belongs to %s (conflict, 718)" % (client, key[2], key[1], ic, iport, desc, old["internal_client"]))
         raise UPnPError(718, "ConflictInMappingEntry")
     renew = old is not None
     if not renew and len(mappings) >= MAPPINGS_MOST:
         log.warning("port: %s %d asked by %s - refused, %d mappings are held already", key[2], key[1],
                     client, len(mappings))
         record(dict(ev, result="full"))
+        notify("port_refused", "UPnP: %s %d refused" % (key[2], key[1]), "%s asks for %s %d - refused: %d mappings are "
+               "held already (728)" % (client, key[2], key[1], len(mappings)))
         raise UPnPError(728, "NoPortMapsAvailable")
     mappings[key] = {"internal_client": ic, "internal_port": iport, "description": desc,
                      "enabled": a.get("NewEnabled", "1") in ("1", "true", "yes"), "lease": lease,
@@ -700,9 +672,9 @@ def _add(action, a, client):
     log.info("port: %s %d -> %s:%d asked by %s (lease %s, '%s') - accepted, %s%s",
              key[2], key[1], ic, iport, client, lw, desc, "renewed" if renew else "new",
              (" (port %d was taken)" % asked[1]) if key != asked else "")
-    if not renew or CFG.get("notify_on_renew"):
-        notify("UPnP: %s %d" % (key[2], key[1]), "%s asks for %s %d -> %s:%d '%s' (lease %s)%s" % (
-            client, key[2], key[1], ic, iport, desc, lw, " - renewed" if renew else ""))
+    notify("port_renew" if renew else "port_new", "UPnP: %s %d%s" % (key[2], key[1], " renewed" if renew else ""),
+           "%s asks for %s %d -> %s:%d '%s' (lease %s)%s" % (client, key[2], key[1], ic, iport, desc, lw,
+                                                             " - renewed" if renew else ""))
     if ic != client:
         log.warning("port: %s asks for a mapping to another IP (%s)", client, ic)
     return [("NewReservedPort", key[1])] if action == "AddAnyPortMapping" else []
@@ -765,9 +737,11 @@ def handle_ipc(action, a, client):
             if key not in mappings:
                 log.info("port: %s %d deleted by %s - there was none", key[2], key[1], client)
                 raise UPnPError(714, "NoSuchEntryInArray")
-            del mappings[key]
+            gone = mappings.pop(key)
             save_mappings()
             log.info("port: %s %d deleted by %s", key[2], key[1], client)
+            notify("port_deleted", "UPnP: %s %d taken away" % (key[2], key[1]), "%s took %s %d -> %s away "
+                   "(DeletePortMapping)" % (client, key[2], key[1], gone.get("internal_client")))
             return []
 
         if action == "DeletePortMappingRange":
@@ -783,6 +757,8 @@ def handle_ipc(action, a, client):
                 del mappings[k]
             save_mappings()
             log.info("port: %s %d-%d deleted by %s (%d mapping(s))", proto, lo, hi, client, len(gone))
+            notify("port_deleted", "UPnP: %s %d-%d taken away" % (proto, lo, hi), "%s took %d mapping(s) of %s %d-%d "
+                   "away (DeletePortMappingRange)" % (client, len(gone), proto, lo, hi))
             return []
 
         if action == "GetListOfPortMappings":
