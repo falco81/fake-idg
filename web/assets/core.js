@@ -2516,12 +2516,36 @@ function liveRun(fn) {
   LIVE_DRAW = true;
   try { return fn(); } finally { LIVE_DRAW = was; }
 }
+/* A refresh, not a press (1.9.3): what a timer started draws as a refresh until somebody presses a key or
+   the pointer - so the answers that come back later still keep the folds, the scroll and the focus. */
+var LIVE_REFRESH_UNTIL = 0;
+function liveRefreshing(ms) { LIVE_REFRESH_UNTIL = Date.now() + (ms || 10000); }
+['pointerdown', 'keydown'].forEach(function (k) { document.addEventListener(k, function () { LIVE_REFRESH_UNTIL = 0; }, true); });
+/* The boxes scrolled INSIDE a host (a table's rows that scroll in their card), by their path - put back on
+   their twins once it is drawn again: the host's own scrollers were new, and started at the top. */
+function scrollInner(host) {
+  var out = [];
+  Array.prototype.forEach.call(host.querySelectorAll('*'), function (n) {
+    if (n.scrollTop > 0 || n.scrollLeft > 0) out.push([livePath(host, n), n.scrollTop, n.scrollLeft, n.tagName]);
+  });
+  return out;
+}
+function scrollInnerBack(host, held) {
+  held.forEach(function (h) {
+    var n = h[0] && liveAt(host, h[0]);
+    if (!n || n.tagName !== h[3]) return;
+    if (n.scrollTop !== h[1]) n.scrollTop = h[1];
+    if (n.scrollLeft !== h[2]) n.scrollLeft = h[2];
+  });
+}
 function liveFill(host, build, live, after) {
   if (!host) return;
-  if (live === undefined) live = LIVE_DRAW;
+  if (live === undefined) live = LIVE_DRAW || Date.now() < LIVE_REFRESH_UNTIL;
   host._liveGen = (host._liveGen || 0) + 1;
   var box = document.createElement(host.tagName === 'TBODY' ? 'tbody' : 'div');
   build(box);
+  /* Nothing changed: nothing is touched (1.9.3) - not a node, not a pixel. */
+  if (live && host.innerHTML === box.innerHTML) { if (after) after(); return; }
   var keep = live ? liveWorkedIn(host) : null;
   if (!keep) {
     if (live) {
@@ -2532,9 +2556,11 @@ function liveFill(host, build, live, after) {
     /* Where the page was scrolled to, kept (1.0.190): emptied for a moment, the
        pane was short, and a switch changed half-way down sent it to the top. */
     var held = scrollHeld(host);
+    var inner = live ? scrollInner(host) : [];
     clear(host);
     while (box.firstChild) host.appendChild(box.firstChild);
     scrollBack(held);
+    scrollInnerBack(host, inner);
   } else {
     var path = livePath(host, keep);
     var twin = path && liveAt(box, path);

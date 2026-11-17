@@ -4787,3 +4787,122 @@ button.gx-hop:hover{border-color:var(--info)}
 .gx-path .gx-node{flex:1 1 150px;max-width:none}
 .gx-path .gx-arrow{flex:0 1 40px;min-width:22px}
 @media (max-width:900px){.gx-path .gx-node{flex-basis:100%}.gx-path .gx-arrow{display:none}}
+
+/* ==== 1.9.3: Gateway → MikroTik - IPv4 and IPv6 apart per port, the drops from the router's own log, the
+   interfaces explained, IPv6 addresses of a device; nothing jumps on a refresh ============================== */
+#gt-mt .mtv-top{display:flex;flex-direction:column;gap:16px}
+#gt-mt .mtv-top > .card{margin:0}
+#mtv-fw{margin-top:16px}
+#mtv-fw[hidden]{display:none}
+#mtv-fw > .card{margin:0}
+.gx-pgroup{display:grid;grid-template-columns:minmax(150px,210px) minmax(0,1fr);gap:10px 16px;padding:12px 14px;
+  border:1px solid var(--line);border-radius:12px;background:var(--panel);margin-top:10px;min-width:0}
+.gx-pgroup .gx-port-p{flex-direction:column;align-items:flex-start;gap:4px}
+.gx-pgroup .gx-port-p > .tag{align-self:flex-start}
+.gx-pgroup .gx-port-p b{font-size:16px}
+.gx-pgroup .gx-port-d{flex-basis:auto;white-space:normal}
+.gx-pgroup .gx-port-t{margin-top:4px}
+.gx-frows{display:flex;flex-direction:column;gap:8px;min-width:0}
+.gx-frow{display:grid;grid-template-columns:52px minmax(0,1fr) auto auto;grid-template-areas:"fam mini st t" ". why why why" ". src src src";
+  gap:6px 12px;align-items:center;padding:8px 12px;border-radius:10px;background:var(--bg);border:1px solid var(--line);
+  border-left:4px solid var(--ok);cursor:pointer;min-width:0}
+.gx-frow:hover{border-color:var(--info)}
+.gx-frow.crit{border-left-color:var(--crit)} .gx-frow.warn{border-left-color:var(--warn)} .gx-frow.dim{border-left-color:var(--tx-mut)}
+.gx-frow.none{border-left-color:var(--line)}
+.gx-fam{grid-area:fam;font:700 11px/1 var(--face);letter-spacing:.5px;color:var(--tx-dim);padding:5px 0;border-radius:6px;
+  background:var(--panel2);text-align:center;align-self:center}
+.gx-frow > .gx-mini{grid-area:mini}
+.gx-frow-st{grid-area:st;display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;align-items:center}
+.gx-frow-t{grid-area:t;display:flex;gap:4px}
+.gx-frow > .gx-port-why{grid-area:why;color:var(--tx-dim);overflow-wrap:anywhere}
+.gx-v6src{grid-area:src;display:flex;gap:4px 12px;align-items:center;flex-wrap:wrap}
+.gx-frow-calm{grid-column:2 / -1;display:flex;gap:6px 12px;align-items:center;flex-wrap:wrap;min-width:0}
+.gx-frow-calm > .muted{overflow-wrap:anywhere}
+.gx-or{font-size:11px;color:var(--tx-mut)}
+.gx-drop{font:600 11.5px/1.3 var(--face);padding:2px 9px;border-radius:999px;border:1px solid var(--line);white-space:nowrap}
+.gx-drop.warn{color:var(--warn);border-color:rgba(210,153,34,.5);background:var(--warn-bg)}
+.gx-drop.crit{color:var(--crit);border-color:rgba(248,81,73,.55);background:var(--crit-bg)}
+.gx-drops{margin-top:20px}
+.gx-drops-h{display:flex;align-items:baseline;gap:6px 14px;flex-wrap:wrap;margin:0 0 8px}
+.gx-drops-h h3.peek-h{margin:0}
+.gx-drops-two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+.gx-drops-f{padding:10px 14px;border:1px solid var(--line);border-left:3px solid var(--ok);border-radius:10px;background:var(--panel);min-width:0}
+.gx-drops-f.some{border-left-color:var(--warn)}
+.gx-drops-f p{margin:0}
+.gx-drops-top{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 8px}
+.gx-drops-top .gx-fam{padding:4px 8px}
+.gx-drops-chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px}
+.gx-dchip{font:600 12px/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;padding:2px 9px;border-radius:999px;border:1px solid var(--line);
+  background:var(--bg);color:var(--tx)}
+.gx-dchip.pre{font-family:var(--face);color:var(--tx-dim)}
+.gx-drops-note{margin:8px 0 0}
+.gx-peek-two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px;margin-top:14px}
+.gx-peek-f{padding:14px 16px;border:1px solid var(--line);border-radius:12px;min-width:0}
+.gx-peek-f.lit{border-color:rgba(88,166,255,.6);box-shadow:0 0 0 1px rgba(88,166,255,.25)}
+.gx-peek-f > h3.peek-h:first-child{margin-top:0;display:flex;gap:10px;align-items:center}
+.gx-h4{margin:16px 0 6px;font-size:13px;font-weight:650}
+td.gx-addr{overflow-wrap:anywhere;white-space:normal}
+.mt-if-legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin:0 0 8px;padding:0 0 8px;border-bottom:1px solid var(--line)}
+.mt-if-lg{display:inline-flex;gap:6px;align-items:center}
+.mt-if-legend .dot,.mt-if .dot{width:8px;height:8px;border-radius:50%;background:var(--tx-mut);flex:none}
+.mt-if-legend .dot.ok{background:var(--ok)} .mt-if-legend .dot.bad{background:var(--crit)}
+.mt-if .dot.dim{background:var(--tx-mut)}
+.tag.mt-if-list{text-transform:none;letter-spacing:0}
+.gw-v6{display:flex;flex-direction:column;align-items:stretch;gap:8px}
+.gw-v6 > .btn{align-self:flex-start}
+.gw-v6-chips{display:flex;flex-wrap:wrap;gap:6px}
+.gw-v6-chips:empty{display:none}
+.gw-v6-chip{appearance:none;margin:0;display:inline-flex;flex-direction:column;align-items:flex-start;gap:2px;padding:6px 10px;border-radius:10px;
+  border:1px solid var(--line);background:var(--bg);color:var(--tx);cursor:pointer;font:inherit;text-align:left;max-width:100%}
+.gw-v6-chip .mono{overflow-wrap:anywhere}
+.gw-v6-chip.ok{border-color:rgba(63,185,80,.5)} .gw-v6-chip.ok .small{color:var(--ok)}
+.gw-v6-chip.warn{border-color:rgba(210,153,34,.5)} .gw-v6-chip.warn .small{color:var(--warn)}
+.gw-v6-chip.taken{opacity:.5}
+.gw-ip6,.gt-ip6{overflow-wrap:anywhere}
+@media (max-width:1250px){
+  .gx-pgroup{grid-template-columns:minmax(0,1fr)}
+  .gx-pgroup .gx-port-p{flex-direction:row;flex-wrap:wrap;align-items:center}
+  .gx-frow{grid-template-columns:52px minmax(0,1fr) auto;grid-template-areas:"fam st t" "mini mini mini" "why why why" "src src src"}
+  .gx-frow-st{justify-content:flex-start}
+  .gx-frow-calm{grid-column:2 / -1}
+}
+@media (max-width:1000px){.gx-peek-two{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:700px){.gx-drops-two{grid-template-columns:minmax(0,1fr)}}
+.gx-pgroup > .gx-port-p{grid-area:auto;display:flex}
+.gx-pgroup .gx-port-t{grid-area:auto}
+.modal .box .gx-peek-f > h3.peek-h:first-child{margin-top:0}
+.gx-wrap td,.gx-peek-f td{white-space:normal;overflow-wrap:anywhere}
+td.gx-nw{white-space:nowrap !important}
+.gw-form > .set-item > :nth-child(2){align-self:start}
+.gx-dlines{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.gx-dline{display:grid;grid-template-columns:70px minmax(60px,110px) minmax(0,1fr) auto;gap:4px 12px;padding:7px 12px;
+  border-top:1px solid var(--line);align-items:baseline;min-width:0}
+.gx-dline:first-child{border-top:0}
+.gx-dline-h{font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--tx-mut);background:var(--panel2)}
+.gx-dl-a{overflow-wrap:anywhere;white-space:pre-wrap}
+.gx-dl-p{color:var(--tx-dim);overflow-wrap:anywhere}
+.gx-dl-i{white-space:nowrap;color:var(--tx-dim)}
+@media (max-width:1500px){.gx-peek-two{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:700px){
+  .gx-dline{grid-template-columns:70px minmax(0,1fr)}
+  .gx-dline-h{display:none}
+  .gx-dl-a,.gx-dl-i{grid-column:1 / -1}
+}
+.gx-mini .gx-hop{max-width:100%;white-space:normal;overflow-wrap:anywhere}
+@media (max-width:700px){.gwd-rule{flex-wrap:wrap}.gwd-rule-words{flex:1 1 100%;order:5}.gwd-hits{order:6}}
+@media (max-width:700px){.gx-frow{grid-template-columns:52px minmax(0,1fr) auto;grid-template-areas:"fam . t" "st st st" "mini mini mini" "why why why" "src src src"}.gx-frow-calm{grid-column:1 / -1}}
+@media (max-width:700px){.gx-frow > .gx-frow-calm{grid-row:2}}
+/* 1.9.3: the main tabs stay ONE line whatever counts arrive - a count that came a moment later wrapped the bar to
+   two lines and pushed every page down (a jump on a refresh); too narrow, it slides sideways as on a phone */
+@media (min-width:761px){
+  .tabs{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+  .tabs::-webkit-scrollbar{display:none}
+  .tabs button{flex:none;white-space:nowrap}
+}
+@media (min-width:761px) and (max-width:1440px){.tabs{gap:0}.tabs button{padding:10px 9px;font-size:14px}}
+@media (min-width:761px) and (max-width:1440px){.tabs button{padding:10px 8px}}
+@media (min-width:761px) and (max-width:1199px){.tabs button:not([aria-selected="true"]) span:not(.count){display:none}}
+/* 1.9.3: a log prefix (v6-drop, FW-DROP) never broken in two */
+.gx-dline{grid-template-columns:70px max-content minmax(0,1fr) auto}
+.gx-dl-p{white-space:nowrap;overflow-wrap:normal}
+@media (max-width:700px){.gx-dline{grid-template-columns:70px minmax(0,1fr)}}

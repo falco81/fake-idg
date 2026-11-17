@@ -115,19 +115,28 @@
     return box;
   }
 
-  /* ---- the whole sub-tab ---- */
+  /* ---- the whole sub-tab ----
+     Two parts that never empty: the router and the devices (liveFill: drawn in place, what was folded stays
+     folded, where the page was stays), and the firewall card, built once - its search box, its caret and its
+     suggestions stay - whose lanes are put in again only when they changed (1.9.3: nothing jumps). */
   function draw(quietly) {
     var h = MV.host;
     if (!h || !MV.d) return;
     var d = MV.d;
-    liveFill(h, function (box) {
+    var top = h.querySelector('.mtv-top'), fw = $('mtv-fw');
+    if (!top || !fw) {
+      clear(h);
+      top = el('div', 'mtv-top');
+      fw = el('div', 'mtv-fw'); fw.id = 'mtv-fw';
+      h.appendChild(top); h.appendChild(fw);
+    }
+    liveFill(top, function (box) {
       if (!d.on) { box.appendChild(emptyState(d)); return; }
       box.appendChild(strip(d));
       box.appendChild(waysCard(d));
-      var fw = el('div'); fw.id = 'mtv-fw';
-      box.appendChild(fw);
-    }, quietly, function () {
-      if ($('mtv-fw')) paintFirewall();
+    }, !!quietly, function () {
+      fw.hidden = !d.on;
+      if (d.on) paintFirewall();
       explainWhatWasDrawn(h);
       if (MV.focus) { var f = MV.focus; MV.focus = null; setTimeout(function () { showFocus(f); }, 60); }
     });
@@ -298,12 +307,81 @@
     if (rows.length) {
       var pl = el('div', 'gx-ports');
       var ph = el('div', 'gx-ports-h');
-      ph.appendChild(el('h3', 'peek-h', 'Its ports, from the internet' + (way && way.public ? ' to ' + way.public : '')));
+      ph.appendChild(el('h3', 'peek-h', 'Its ports from the internet - IPv4 and IPv6 apart'));
       pl.appendChild(ph);
-      rows.forEach(function (r) { pl.appendChild(portRow(r, way)); });
+      rows.forEach(function (r) { pl.appendChild(portGroup(r, way)); });
       blk.appendChild(pl);
     } else blk.appendChild(el('p', 'muted small gx-noports', 'It asked fake-igd for no port in the last 30 days.'));
+    blk.appendChild(dropsBlock(ip, way));
     return blk;
+  }
+  /* ---- what the router's own log says it dropped (1.9.3) ---- */
+  function hhmm(t) { var m = /(\d{1,2}:\d{2}:\d{2})/.exec(String(t || '')); return m ? m[1] : String(t || ''); }
+  function dropBadge(dr, open, fam) {
+    if (!dr || !dr.n) return null;
+    var b = el('span', 'gx-drop ' + (open ? 'crit' : 'warn'), 'dropped ' + num(dr.n) + '×' + (dr.last ? ' (last ' + hhmm(dr.last) + ')' : ''));
+    b.title = (open ? 'Open by the rules, yet the router\'s log shows drops of it (' + fam + ') - a rule before the one that lets it through, or another way in.'
+      : 'The router\'s log shows it dropped ' + num(dr.n) + ' time(s) (' + fam + ').') + ' Only rules with log=yes write lines; the router keeps the last ~1000 in memory.';
+    return b;
+  }
+  function logWords() {
+    var ch = (MV.d && MV.d.checks) || {};
+    return ch.log_read ? num(ch.log_lines || 0) + ' firewall line(s) of its log read' : 'its log was not read';
+  }
+  /* the last lines of its log: one line each, wrapping - never a table wider than its popup */
+  function dropsTable(dr) {
+    var box = el('div', 'gx-dlines');
+    var hd = el('div', 'gx-dline gx-dline-h');
+    ['Time', 'Prefix', 'From → to', 'In → out'].forEach(function (w) { hd.appendChild(el('span', '', w)); });
+    box.appendChild(hd);
+    (dr.lines || []).slice().reverse().forEach(function (e) {
+      var row = el('div', 'gx-dline');
+      var port = function (a, p) { return a + (p ? (e.family === 'ipv6' ? ' :' : ':') + p : ''); };
+      row.appendChild(noI18n(el('span', 'mono small gx-dl-t', hhmm(e.time))));
+      row.appendChild(noI18n(el('span', 'small gx-dl-p', e.prefix || '–')));
+      row.appendChild(noI18n(el('span', 'mono small gx-dl-a', port(e.src, e.sport) + '  →  ' + port(e.dst, e.dport) + ' ' + String(e.proto || '').toUpperCase())));
+      row.appendChild(noI18n(el('span', 'mono small gx-dl-i', (e.in || '?') + ' → ' + (e.out || '?'))));
+      box.appendChild(row);
+    });
+    if (!(dr.lines || []).length) box.appendChild(el('p', 'muted small', 'Nothing'));
+    return box;
+  }
+  function dropsBlock(ip, way) {
+    var box = el('div', 'gx-drops');
+    var h = el('div', 'gx-drops-h');
+    h.appendChild(el('h3', 'peek-h', 'What the router dropped of it (its log)'));
+    h.appendChild(el('span', 'muted small', logWords()));
+    box.appendChild(h);
+    var two = el('div', 'gx-drops-two');
+    [['IPv4', (way || {}).drops4], ['IPv6', (way || {}).drops6]].forEach(function (f) {
+      var dr = f[1] || {n: 0};
+      var c = el('div', 'gx-drops-f' + (dr.n ? ' some' : ''));
+      var top = el('div', 'gx-drops-top');
+      top.appendChild(el('span', 'gx-fam', f[0]));
+      top.appendChild(el('b', '', dr.n ? num(dr.n) + ' dropped' : 'nothing dropped'));
+      if (dr.last) top.appendChild(el('span', 'muted small', 'last ' + hhmm(dr.last)));
+      c.appendChild(top);
+      if (!dr.n) c.appendChild(el('p', 'muted small', 'Nothing dropped in the lines the router keeps.'));
+      else {
+        var chips = el('div', 'gx-drops-chips');
+        Object.keys(dr.ports || {}).forEach(function (k) { chips.appendChild(noI18n(el('span', 'gx-dchip', k + ' ×' + num(dr.ports[k])))); });
+        Object.keys(dr.by || {}).forEach(function (k) { var x = noI18n(el('span', 'gx-dchip pre', k + ' ×' + num(dr.by[k]))); x.title = 'the log prefix of the rule that wrote it'; chips.appendChild(x); });
+        c.appendChild(chips);
+        var more = el('button', 'gx-link', 'its last lines');
+        more.type = 'button';
+        more.onclick = function () {
+          modal('What the router dropped of ' + (nameOf(ip) || ip) + ' (' + f[0] + ')', function (body) {
+            body.appendChild(el('p', 'note', 'From the router\'s own log: only rules with log=yes write lines, and the router keeps the last ~1000 lines in memory - so this is the recent past, not everything. ' + logWords() + '.'));
+            body.appendChild(dropsTable(dr));
+          }, [{words: 'Close', close: true}], 'large');
+        };
+        c.appendChild(more);
+      }
+      two.appendChild(c);
+    });
+    box.appendChild(two);
+    box.appendChild(el('p', 'muted small gx-drops-note', 'Only rules with log=yes write lines, and the router keeps the last ~1000 lines in memory.'));
+    return box;
   }
   function node(label, title, sub, cls, go) {
     var n = el(go ? 'button' : 'div', 'gx-node ' + (cls || ''));
@@ -357,93 +435,191 @@
       body.appendChild(el('p', 'muted small', 'As the router said it at the last read.'));
     }, [{words: 'Close', close: true}], 'narrow');
   }
-  function portRow(r, way) {
+  function famRow(fam, cls, kids) {
+    var row = el('div', 'gx-frow ' + cls);
+    row.appendChild(el('span', 'gx-fam', fam));
+    kids.forEach(function (k) { if (k) row.appendChild(k); });
+    return row;
+  }
+  function hopper() {
+    var path = el('div', 'gx-mini');
+    return {
+      el: path,
+      hop: function (words, cls, title, go) {
+        if (path.childNodes.length) path.appendChild(el('span', 'gx-hop-a', '→'));
+        var h = el(go ? 'button' : 'span', 'gx-hop ' + cls, words);
+        if (go) { h.type = 'button'; h.onclick = function (ev) { ev.stopPropagation(); go(); }; }
+        if (title) h.title = title;
+        path.appendChild(noI18n(h));
+      }
+    };
+  }
+  function ruleGo(fam, table, x) {
+    return x ? function () { var full = findRule(fam, table, x.id); if (full) rulePeek(full, null, fam, table); } : null;
+  }
+  function copyBtn(cmds, words) {
+    if (!(cmds || []).length) return null;
+    var cp = iconButton('copy', words);
+    cp.onclick = function (ev) { ev.stopPropagation(); copyText(cmds.join('\n'), cp, 'the commands are on the clipboard - type them on the MikroTik yourself'); };
+    return cp;
+  }
+  function editV6(ip) {
+    if (!ADMIN || typeof window.GW_EDIT !== 'function') return null;
+    var a = el('button', 'gx-link', 'Set its DHCPv6 address');
+    a.type = 'button';
+    a.title = 'Gateway for devices: its IPv6 addresses - the one its DHCPv6 gives it does not change';
+    a.onclick = function (ev) { ev.stopPropagation(); window.GW_EDIT(ip); };
+    return a;
+  }
+  function portGroup(r, way) {
     var S = STATE[r.state] || STATE.unsure;
-    var row = el('div', 'gx-port ' + S[1]);
-    row.dataset.port = r.proto + '/' + r.port;
-    row.tabIndex = 0;
+    var g = el('div', 'gx-pgroup');
+    g.dataset.port = r.proto + '/' + r.port;
     var p = el('div', 'gx-port-p');
     p.appendChild(protoTag(r.proto));
     p.appendChild(noI18n(el('b', 'mono', r.port + (r.to_port && r.to_port !== r.port ? ' → ' + r.to_port : ''))));
     if (r.description) p.appendChild(noI18n(el('span', 'small muted gx-port-d', r.description)));
-    row.appendChild(p);
-    var path = el('div', 'gx-mini');
-    var nat = (r.rules || []).filter(function (x) { return x.table === 'nat' && x.family === 'ip'; })[0];
-    var flt = (r.rules || []).filter(function (x) { return x.table === 'filter' && x.family === 'ip'; })[0];
-    var hop = function (words, cls, title, go) {
-      var h = el(go ? 'button' : 'span', 'gx-hop ' + cls, words);
-      if (go) { h.type = 'button'; h.onclick = function (ev) { ev.stopPropagation(); go(); }; }
-      if (title) h.title = title;
-      path.appendChild(noI18n(h));
-    };
-    var sep = function () { path.appendChild(el('span', 'gx-hop-a', '→')); };
-    hop((way && way.public ? way.public : (r.way || {}).public || 'its public address') + ':' + r.port, 'dim', 'From the internet, to the router\'s public address');
-    sep();
-    hop(r.nat === 'dnat' ? 'dst-nat' + (nat ? ' #' + nat.n : '') : 'no dst-nat', r.nat === 'dnat' ? 'ok' : 'crit', r.nat_why,
-        nat ? function () { var full = findRule('ip', 'nat', nat.id); if (full) rulePeek(full, null, 'ip', 'nat'); } : null);
-    sep();
-    hop(r.forward === 'open' ? 'forward' + (flt ? ' #' + flt.n : '') : (r.forward === 'blocked' ? 'dropped in forward' + (flt ? ' #' + flt.n : '') : 'forward ?'),
-        r.forward === 'open' ? 'ok' : (r.forward === 'blocked' ? 'crit' : 'dim'), r.forward_why,
-        flt ? function () { var full = findRule('ip', 'filter', flt.id); if (full) rulePeek(full, null, 'ip', 'filter'); } : null);
-    sep();
-    hop(r.device + ':' + (r.to_port || r.port), r.state === 'ok' ? 'ok' : 'dim', 'The device');
-    row.appendChild(path);
-    var st = el('div', 'gx-port-st');
-    st.appendChild(tag(S[0], S[1]));
-    st.appendChild(tag((V6[r.v6] || V6.none)[0], (V6[r.v6] || V6.none)[1]));
-    row.appendChild(st);
+    p.appendChild(el('span', 'small muted gx-port-d', r.asked ? 'asked ' + num(r.asked) + '×' + (r.held ? ' · held now' : '') : (r.held ? 'held now' : '')));
     var tools = el('div', 'gx-port-t rowtools');
-    if ((r.commands || []).length || (r.v6_commands || []).length) {
-      var cp = iconButton('copy', 'Copy the commands that would add what is missing');
-      cp.onclick = function (ev) { ev.stopPropagation(); copyText((r.commands || []).concat(r.v6_commands || []).join('\n'), cp, 'the commands are on the clipboard'); };
-      tools.appendChild(cp);
-    }
-    var sh = iconButton('wall', 'Show its rules in the firewall below');
-    sh.onclick = function (ev) { ev.stopPropagation(); showRules(r); };
-    tools.appendChild(sh);
     var pt = iconButton('net', 'The Ports tab: this port');
     pt.onclick = function (ev) { ev.stopPropagation(); goTab('ports', {ip: r.device, port: r.port, proto: r.proto}); };
-    tools.appendChild(pt);
     var mp = iconButton('router', 'The Mappings tab: this port');
     mp.onclick = function (ev) { ev.stopPropagation(); goTab('mappings', {ip: r.device, port: r.port}); };
-    tools.appendChild(mp);
-    row.appendChild(tools);
-    row.onclick = function () { portPeek(r); };
-    row.onkeydown = function (ev) { if (ev.key === 'Enter') portPeek(r); };
-    if (r.state !== 'ok') {
-      var why = noI18n(el('div', 'gx-port-why small', r.nat_why + (r.forward === 'blocked' ? ' - ' + r.forward_why : '')));
-      row.appendChild(why);
+    tools.appendChild(pt); tools.appendChild(mp);
+    p.appendChild(tools);
+    g.appendChild(p);
+    var rows = el('div', 'gx-frows');
+    /* IPv4: its public address, the dst-nat, the filter's forward, the device */
+    var nat = (r.rules || []).filter(function (x) { return x.table === 'nat' && x.family === 'ip'; })[0];
+    var flt = (r.rules || []).filter(function (x) { return x.table === 'filter' && x.family === 'ip'; })[0];
+    var h4 = hopper();
+    h4.hop(((way && way.public) || (r.way || {}).public || 'its public address') + ':' + r.port, 'dim', 'From the internet, to its public address');
+    h4.hop(r.nat === 'dnat' ? 'dst-nat' + (nat ? ' #' + nat.n : '') : 'no dst-nat', r.nat === 'dnat' ? 'ok' : 'crit', r.nat_why, ruleGo('ip', 'nat', nat));
+    h4.hop(r.forward === 'open' ? 'forward' + (flt ? ' #' + flt.n : '') : (r.forward === 'blocked' ? 'dropped in forward' + (flt ? ' #' + flt.n : '') : 'forward ?'),
+           r.forward === 'open' ? 'ok' : (r.forward === 'blocked' ? 'crit' : 'dim'), r.forward_why, ruleGo('ip', 'filter', flt));
+    h4.hop(r.device + ':' + (r.to_port || r.port), r.state === 'ok' ? 'ok' : 'dim', 'The device');
+    var t4 = el('div', 'gx-frow-t');
+    var c4 = copyBtn(r.commands, 'Copy the IPv4 commands that would add what is missing');
+    if (c4) t4.appendChild(c4);
+    var sh = iconButton('wall', 'Show its IPv4 rules in the firewall below');
+    sh.onclick = function (ev) { ev.stopPropagation(); showRules(r, 'ip'); };
+    t4.appendChild(sh);
+    var st4 = el('div', 'gx-frow-st');
+    st4.appendChild(tag(S[0], S[1]));
+    var d4 = dropBadge(r.drops4, r.state === 'ok', 'IPv4');
+    if (d4) st4.appendChild(d4);
+    var row4 = famRow('IPv4', S[1], [h4.el, st4, t4]);
+    if (r.state !== 'ok') row4.appendChild(noI18n(el('div', 'gx-port-why small', r.nat_why + (r.forward === 'blocked' ? ' - ' + r.forward_why : ''))));
+    row4.onclick = function () { portPeek(r, 'ip'); };
+    rows.appendChild(row4);
+    /* IPv6: no NAT - from the internet on its IPv6 WAN, the forward rule, each of its addresses */
+    var V = V6[r.v6] || V6.none;
+    var row6;
+    if (r.v6 === 'none' || !(r.v6_each || []).length) {
+      var calm = el('div', 'gx-frow-calm');
+      calm.appendChild(noI18n(el('span', 'small muted', r.v6_why || 'no IPv6 address of it is known')));
+      calm.appendChild(editV6(r.device) || el('span'));
+      row6 = famRow('IPv6', 'none', [calm]);
+    } else {
+      var h6 = hopper();
+      h6.hop('the internet' + ((r.v6_wan || []).length ? ' on ' + r.v6_wan.join(', ') : ''), 'dim', 'IPv6 has no NAT: a connection comes in on its IPv6 WAN straight to the device\'s own address');
+      var many = (r.v6_each || []).length > 1;
+      (r.v6_each || []).forEach(function (e, i) {
+        var ok = e.state === 'open';
+        if (many && i) h6.el.appendChild(el('span', 'gx-hop-a gx-or', 'and'));
+        h6.hop((ok ? 'forward' : (e.state === 'blocked' ? 'dropped in forward' : 'forward ?')) + (e.rule && e.rule.n !== undefined && e.rule.n !== null ? ' #' + e.rule.n : ''),
+               ok ? 'ok' : (e.state === 'blocked' ? 'crit' : 'dim'), e.why, ruleGo('ipv6', 'filter', e.rule));
+        h6.hop('[' + e.addr + ']:' + (r.to_port || r.port), ok ? 'ok' : 'dim', e.why);
+      });
+      var t6 = el('div', 'gx-frow-t');
+      var c6 = copyBtn(r.v6_commands, 'Copy the IPv6 commands that would add what is missing');
+      if (c6) t6.appendChild(c6);
+      var sh6 = iconButton('wall', 'Show its IPv6 rules in the firewall below');
+      sh6.onclick = function (ev) { ev.stopPropagation(); showRules(r, 'ipv6'); };
+      t6.appendChild(sh6);
+      var st6 = el('div', 'gx-frow-st');
+      st6.appendChild(tag(V[0].replace(/^IPv6:? ?/, '') || V[0], V[1]));
+      var d6 = dropBadge(r.drops6, r.v6 === 'open', 'IPv6');
+      if (d6) st6.appendChild(d6);
+      row6 = famRow('IPv6', V[1], [h6.el, st6, t6]);
+      var src = el('div', 'gx-v6src small');
+      var neigh = /neighbour/.test(r.v6_source || '');
+      src.appendChild(el('span', 'muted', 'Its IPv6 address' + ((r.v6_each || []).length > 1 ? 'es' : '') + ': ' + (r.v6_source || '?')
+        + (neigh ? ' - these may be temporary (privacy) addresses that change; its DHCPv6 address does not.' : '.')));
+      if (neigh) { var ed = editV6(r.device); if (ed) src.appendChild(ed); }
+      row6.appendChild(src);
     }
-    return row;
+    row6.onclick = function () { portPeek(r, 'ipv6'); };
+    rows.appendChild(row6);
+    g.appendChild(rows);
+    return g;
   }
-  function portPeek(r) {
-    var S = STATE[r.state] || STATE.unsure;
+  function portPeek(r, fam) {
+    var S = STATE[r.state] || STATE.unsure, V = V6[r.v6] || V6.none;
     modal((r.name ? r.name + ' · ' : '') + r.device + ' ' + r.proto.toUpperCase() + ' ' + r.port, function (body) {
-      body.appendChild(peekFacts([['IPv4 on the MikroTik', S[0]], ['IPv6', (V6[r.v6] || V6.none)[0]], ['On', ((r.way || {}).public || '–') + ':' + r.port],
-        ['Asked', r.asked ? num(r.asked) + ' time(s)' : '–'], ['Last asked', r.last ? stamp(Date.parse(r.last) / 1000) : '–'], ['Held now', r.held ? 'yes' : 'no'],
-        ['What for', r.description || '–']]));
-      body.appendChild(el('p', 'note ' + ({ok: 'good', crit: 'bad', warn: 'warn'}[S[1]] || ''), S[2]));
-      body.appendChild(el('h3', 'peek-h', 'How the MikroTik takes it'));
-      body.appendChild(stepsOf([{what: 'The translation (nat dstnat)', ok: r.nat === 'dnat', said: r.nat_why},
-                                {what: 'The filter (forward)' + (r.nat === 'dnat' ? '' : ', once translated'), ok: r.forward === 'open', said: r.forward_why},
-                                {what: 'IPv6', ok: r.v6 === 'open' || r.v6 === 'none', said: r.v6_why}]));
-      (r.notes || []).forEach(function (n) { body.appendChild(noI18n(el('p', 'note warn', n))); });
-      var cmds = (r.commands || []).concat(r.v6_commands || []);
-      if (cmds.length) {
-        body.appendChild(el('h3', 'peek-h', 'What would put it right'));
-        body.appendChild(el('p', 'note', 'Commands for the MikroTik\'s terminal - fake-igd only reads, it never sends them. place-before puts a rule before the one that takes the packets first.'));
-        body.appendChild(codeBlock(cmds.join('\n')));
+      body.appendChild(peekFacts([['Asked', r.asked ? num(r.asked) + ' time(s)' : '–'], ['Last asked', r.last ? stamp(Date.parse(r.last) / 1000) : '–'],
+        ['Held now', r.held ? 'yes' : 'no'], ['What for', r.description || '–']]));
+      var two = el('div', 'gx-peek-two');
+      /* IPv4 */
+      var a = el('section', 'gx-peek-f' + (fam === 'ip' ? ' lit' : ''));
+      var ah = el('h3', 'peek-h');
+      ah.appendChild(document.createTextNode('IPv4 '));
+      ah.appendChild(tag(S[0], S[1]));
+      a.appendChild(ah);
+      a.appendChild(noI18n(el('p', 'small muted', 'On ' + (((r.way || {}).public) || 'its public address') + ':' + r.port + ', translated to ' + r.device + ':' + (r.to_port || r.port) + '.')));
+      a.appendChild(el('p', 'note ' + ({ok: 'good', crit: 'bad', warn: 'warn'}[S[1]] || ''), S[2]));
+      a.appendChild(stepsOf([{what: 'The translation (nat dstnat)', ok: r.nat === 'dnat', said: r.nat_why},
+                             {what: 'The filter (forward)' + (r.nat === 'dnat' ? '' : ', once translated'), ok: r.forward === 'open', said: r.forward_why}]));
+      (r.notes || []).forEach(function (n) { a.appendChild(noI18n(el('p', 'note warn', n))); });
+      if ((r.commands || []).length) {
+        a.appendChild(el('h4', 'gx-h4', 'What would put it right (IPv4)'));
+        a.appendChild(codeBlock(r.commands.join('\n')));
       }
+      a.appendChild(el('h4', 'gx-h4', 'Dropped, says its log'));
+      if ((r.drops4 || {}).n) {
+        if (r.state === 'ok') a.appendChild(el('p', 'note bad', 'Open by the rules, yet the router\'s log shows drops of it.'));
+        a.appendChild(dropsTable(r.drops4));
+      } else a.appendChild(el('p', 'muted small', 'Nothing dropped in the lines the router keeps (' + logWords() + ').'));
+      two.appendChild(a);
+      /* IPv6 */
+      var b = el('section', 'gx-peek-f' + (fam === 'ipv6' ? ' lit' : ''));
+      var bh = el('h3', 'peek-h');
+      bh.appendChild(document.createTextNode('IPv6 '));
+      bh.appendChild(tag(V[0].replace(/^IPv6:? ?/, '') || V[0], r.v6 === 'none' ? 'dim' : V[1]));
+      b.appendChild(bh);
+      if (r.v6 === 'none' || !(r.v6_each || []).length) {
+        b.appendChild(noI18n(el('p', 'note', r.v6_why || 'No IPv6 address of it is known.')));
+        var ed = editV6(r.device);
+        if (ed) b.appendChild(ed);
+      } else {
+        b.appendChild(noI18n(el('p', 'small muted', 'No NAT: from the internet' + ((r.v6_wan || []).length ? ' on ' + r.v6_wan.join(', ') : '') + ' straight to its own address' + (r.v6_each.length > 1 ? 'es' : '') + ', through the filter\'s forward chain.')));
+        b.appendChild(stepsOf((r.v6_each || []).map(function (e) { return {what: e.addr, ok: e.state === 'open', said: e.state + ' - ' + e.why}; })));
+        var neigh = /neighbour/.test(r.v6_source || '');
+        b.appendChild(el('p', 'note' + (neigh ? ' warn' : ''), 'Where the addresses came from: ' + (r.v6_source || '?') + (neigh ? '. These may be temporary (privacy) addresses that change daily; the one its DHCPv6 gives it stays - set it in Gateway for devices.' : '.')));
+        if (neigh) { var ed2 = editV6(r.device); if (ed2) b.appendChild(ed2); }
+        if ((r.v6_commands || []).length) {
+          b.appendChild(el('h4', 'gx-h4', 'What would put it right (IPv6)'));
+          b.appendChild(codeBlock(r.v6_commands.join('\n')));
+        }
+      }
+      b.appendChild(el('h4', 'gx-h4', 'Dropped, says its log'));
+      if ((r.drops6 || {}).n) {
+        if (r.v6 === 'open') b.appendChild(el('p', 'note bad', 'Open by the rules, yet the router\'s log shows drops of it.'));
+        b.appendChild(dropsTable(r.drops6));
+      } else b.appendChild(el('p', 'muted small', 'Nothing dropped in the lines the router keeps (' + logWords() + ').'));
+      two.appendChild(b);
+      body.appendChild(two);
+      body.appendChild(el('p', 'muted small', 'Commands for the MikroTik\'s terminal - fake-igd only reads, it never sends them. Only rules with log=yes write lines to its log, and it keeps the last ~1000 in memory.'));
       body.appendChild(el('h3', 'peek-h', 'Elsewhere'));
       body.appendChild(jumps(r.device, r.port, r.proto));
-    }, [{words: 'Show its rules', icon: 'wall', go: function () { showRules(r); }, close: true}, {words: 'Close', close: true}], 'medium');
+    }, [{words: 'Show its rules', icon: 'wall', go: function () { showRules(r, fam || 'ip'); }, close: true}, {words: 'Close', close: true}], 'large');
   }
-  function showRules(r) {
+  function showRules(r, fam) {
     MV.q = 'port:' + r.port;
-    MV.table = r.nat === 'dnat' && r.forward === 'blocked' ? 'filter' : 'nat';
-    MV.fam = 'ip';
+    MV.fam = fam === 'ipv6' ? 'ipv6' : 'ip';
+    MV.table = MV.fam === 'ipv6' ? 'filter' : (r.nat === 'dnat' && r.forward === 'blocked' ? 'filter' : 'nat');
     if (MV.qInput) MV.qInput.value = MV.q;
-    paintFirewall();
+    paintFirewall(true);
     var fw = $('mtv-fw');
     if (fw) fw.scrollIntoView({behavior: 'smooth', block: 'start'});
   }
@@ -453,8 +629,8 @@
     if (!blk) return;
     var target = blk;
     if (f.port) {
-      var pr = blk.querySelector('.gx-port[data-port="' + String(f.proto || '').toLowerCase() + '/' + f.port + '"]')
-        || blk.querySelector('.gx-port[data-port$="/' + f.port + '"]');
+      var pr = blk.querySelector('.gx-pgroup[data-port="' + String(f.proto || '').toLowerCase() + '/' + f.port + '"]')
+        || blk.querySelector('.gx-pgroup[data-port$="/' + f.port + '"]');
       if (pr) target = pr;
     }
     target.scrollIntoView({behavior: 'smooth', block: 'center'});
@@ -555,35 +731,50 @@
       return out;
     });
   }
-  function paintFirewall(fromSearch) {
+  /* The firewall card is built once; then only its parts that changed are put in again, in their places
+     (the search box with its caret and suggestions is never rebuilt; a fold opened stays open). */
+  function swapIn(card, sel, node, before) {
+    var old = card.querySelector(sel);
+    if (!old) { if (before && before.parentNode === card) card.insertBefore(node, before); else card.appendChild(node); return node; }
+    if (old.innerHTML === node.innerHTML && old.className === node.className) return old;
+    liveCarry(old, node);
+    old.parentNode.replaceChild(node, old);
+    return node;
+  }
+  function paintFirewall(byHand) {
     var host = $('mtv-fw');
     if (!host || !MV.d) return;
     var s = MV.r && MV.r.snap;
-    if (fromSearch && host.querySelector('.mt-view')) {     /* only the lanes again: the box keeps its caret */
-      var v = host.querySelector('.mt-view');
-      v.parentNode.replaceChild(view(s), v);
-      var segs = host.querySelector('.mt-bar');
-      if (segs) segs.parentNode.replaceChild(bar(s), segs);
-      explainWhatWasDrawn(host);
+    var card = host.querySelector('.mt-fw');
+    if (!card) {
+      card = el('div', 'card full mt-fw');
+      var h = el('h2', '', 'Its firewall');
+      h.appendChild(noI18n(el('span', 'right muted small mt-fw-said', '')));
+      card.appendChild(h);
+      card.appendChild(el('p', 'note', 'Every rule of its filter, NAT, mangle and raw tables, IPv4 and IPv6, in order - each table\'s chains side by side, the first rule at the top: the first that matches decides. Its action in colour, what it matches as chips, what it has counted since the router started (the bar: its share of its chain\'s bytes). What concerns the ports fake-igd was asked for is lit; a rule opens with all its fields.'));
+      host.appendChild(card);
+    }
+    var said = card.querySelector('.mt-fw-said');
+    var words = s ? (s.identity || '') + ' · read ' + ago(s.at) + (s.prev_at ? ' · hits since the read before, ' + ago(s.prev_at) : '') : '';
+    if (said.textContent !== words) said.textContent = words;
+    var none = card.querySelector('.mt-fw-none');
+    if (!s) {
+      if (!none) card.appendChild(el('p', 'muted mt-fw-none', 'Not read yet.'));
       return;
     }
-    clear(host);
-    var card = el('div', 'card full mt-fw');
-    var h = el('h2', '', 'Its firewall');
-    if (s) h.appendChild(noI18n(el('span', 'right muted small', (s.identity || '') + ' · read ' + ago(s.at) + (s.prev_at ? ' · hits since the read before, ' + ago(s.prev_at) : ''))));
-    card.appendChild(h);
-    card.appendChild(el('p', 'note', 'Every rule of its filter, NAT, mangle and raw tables, IPv4 and IPv6, in order - each table\'s chains side by side, the first rule at the top: the first that matches decides. Its action in colour, what it matches as chips, what it has counted since the router started (the bar: its share of its chain\'s bytes). What concerns the ports fake-igd was asked for is lit; a rule opens with all its fields.'));
-    host.appendChild(card);
-    if (!s) { card.appendChild(el('p', 'muted', 'Not read yet.')); return; }
-    var q = searchBox();
-    var qrow = el('div', 'mt-qrow');
-    qrow.appendChild(q);
-    card.appendChild(qrow);
-    wireSuggest(q);
-    card.appendChild(bar(s));
-    card.appendChild(view(s));
-    card.appendChild(legend());
-    explainWhatWasDrawn(host);
+    if (none) none.remove();
+    if (!card.querySelector('.mt-qrow')) {
+      var q = searchBox();
+      var qrow = el('div', 'mt-qrow');
+      qrow.appendChild(q);
+      card.appendChild(qrow);
+      wireSuggest(q);
+    }
+    var lg = card.querySelector('.mt-legend');
+    swapIn(card, '.mt-bar', bar(s), lg);
+    swapIn(card, '.mt-view', view(s), lg);
+    if (!lg) card.appendChild(legend());
+    if (byHand) explainWhatWasDrawn(card);
   }
   function bar(s) {
     var b0 = el('div', 'mt-bar');
@@ -703,7 +894,9 @@
         var ia = top.indexOf(a), ib = top.indexOf(b);
         return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || (a < b ? -1 : 1);
       });
-      body.appendChild(listTable(['Field', 'Value'], keys, function (k) {
+      var wrapT = el('div', 'gx-wrap');
+      body.appendChild(wrapT);
+      wrapT.appendChild(listTable(['Field', 'Value'], keys, function (k) {
         var tr = el('tr');
         tr.appendChild(noI18n(el('td', 'mono small', k)));
         var v = r[k];
@@ -717,6 +910,17 @@
     var box = el('div', 'mt-side');
     var ifs = el('div', 'mt-panel');
     ifs.appendChild(el('h3', 'peek-h', 'Interfaces'));
+    /* 1.9.3: what the dot and the chips are - "discover" was read as a state; it is one of the router's
+       interface lists the interface is a member of */
+    var lg = el('div', 'mt-if-legend small muted');
+    var lgDot = function (cls, words) { var x = el('span', 'mt-if-lg'); x.appendChild(el('span', 'dot ' + cls)); x.appendChild(document.createTextNode(words)); lg.appendChild(x); };
+    lgDot('ok', 'running');
+    lgDot('bad', 'not running (link down)');
+    var lgList = el('span', 'mt-if-lg');
+    lgList.appendChild(el('span', 'tag info mt-if-list', 'list: X'));
+    lgList.appendChild(document.createTextNode('member of interface list X'));
+    lg.appendChild(lgList);
+    ifs.appendChild(lg);
     var lists = s.iflists || {};
     var inList = function (n) { return Object.keys(lists).filter(function (l) { return ['all', 'none', 'dynamic', 'static'].indexOf(l) < 0 && (lists[l] || []).indexOf(n) >= 0; }); };
     var addrs = (s.addresses4 || []).concat(MV.fam === 'ipv6' ? (s.addresses6 || []) : []);
@@ -730,9 +934,16 @@
     var allIfs = s.interfaces || [];
     (MV.open.ifs || allIfs.length <= FOLD + 3 ? allIfs : allIfs.slice(0, FOLD)).forEach(function (i) {
       var row = el('div', 'mt-if' + (i.disabled ? ' off' : ''));
-      row.appendChild(el('span', 'dot ' + (i.running ? 'ok' : 'bad')));
+      var dot = el('span', 'dot ' + (i.disabled ? 'dim' : (i.running ? 'ok' : 'bad')));
+      dot.title = i.disabled ? 'disabled' : (i.running ? 'running' : 'not running (link down)');
+      row.appendChild(dot);
       row.appendChild(noI18n(el('b', 'mono', i.name)));
-      inList(i.name).forEach(function (l) { row.appendChild(noI18n(tag(l, l === 'WAN' ? 'warn' : (l === 'LAN' ? 'ok' : 'info')))); });
+      if (i.disabled) row.appendChild(tag('disabled', 'dim'));
+      inList(i.name).forEach(function (l) {
+        var c = noI18n(tag('list: ' + l, 'mt-if-list ' + (l === 'WAN' ? 'warn' : (l === 'LAN' ? 'ok' : 'info'))));
+        c.title = 'member of the interface list ' + l;
+        row.appendChild(c);
+      });
       var a = addrs.filter(function (x) { return x.interface === i.name; }).map(function (x) { return x.address; });
       if (a.length) row.appendChild(noI18n(el('div', 'mono small muted mt-if-a', a.join(' · '))));
       ifs.appendChild(row);

@@ -94,9 +94,17 @@
     loadSub(false);
     if (!GT.timer) GT.timer = setInterval(function () {
       if (TAB !== 'gateway' || document.hidden) return;
+      liveRefreshing();
       if (GT.sub === 'devices') load(true);
       else if (Date.now() - (GT.mtAt || 0) > 60000) { GT.mtAt = Date.now(); if (window.MTV) window.MTV.load(null, true); }
     }, 20000);
+  };
+  /* what the timer does, now (the no-jump test runs it) */
+  window.gtRefresh = function () {
+    if (TAB !== 'gateway') return;
+    liveRefreshing();
+    if (GT.sub === 'devices') load(true);
+    else if (window.MTV) window.MTV.load(null, true);
   };
   window.gtDeviceName = function (ip) {
     var x = ((GT.d && GT.d.devices) || []).filter(function (y) { return y.ip === ip; })[0]
@@ -198,6 +206,12 @@
     var tip = el('div', 'tip');
     box.appendChild(tip);
     var s = (x.chart || {}).series || [];
+    /* empty or not, said at once - not a moment later (its height changed under the page, 1.9.3) */
+    if (!s.some(function (p) { return p.bytes || p.dropped; })) {
+      box.classList.add('is-empty');
+      box.appendChild(el('div', 'empty', 'Nothing went through in this window'));
+      return box;
+    }
     setTimeout(function () { paintChart(box, tip, s, (x.chart || {}).step || 60, small); }, 0);
     return box;
   }
@@ -392,6 +406,11 @@
     t.appendChild(noI18n(el('b', '', x.name)));
     t.appendChild(noI18n(el('span', 'mono', x.ip)));
     if (big) t.appendChild(noI18n(el('span', 'mono small muted', x.mac || 'any MAC')));
+    if ((x.ip6 || []).length) {                 /* 1.9.3: its IPv6 addresses, as set (to find it on the MikroTik) */
+      var v6 = el('span', 'gt-ip6 mono small muted', x.ip6.join(' · '));
+      v6.title = 'Its IPv6 addresses, as set in Gateway for devices - only to find it on the MikroTik; IPv6 is never forwarded here';
+      t.appendChild(noI18n(v6));
+    }
     head.appendChild(t);
     var st = el('div', 'gt-dev-state');
     st.appendChild(el('span', 'tag ' + (x.applied ? 'ok' : (x.on ? 'warn' : 'dim')), x.applied ? 'forwarded' : (x.on ? 'not put in' : 'off')));

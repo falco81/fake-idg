@@ -157,7 +157,10 @@
         if (x.why) nm.appendChild(el('div', 'small bad', x.why));
         else if (d.applied && d.applied.on && x.on !== false && !x.applied) nm.appendChild(el('div', 'small warn', 'not put in yet'));
         tr.appendChild(nm);
-        tr.appendChild(noI18n(el('td', 'mono', x.ip)));
+        var ipc = el('td');
+        ipc.appendChild(noI18n(el('div', 'mono', x.ip)));
+        (x.ip6 || []).forEach(function (a) { ipc.appendChild(noI18n(el('div', 'mono small muted gw-ip6', a))); });
+        tr.appendChild(ipc);
         tr.appendChild(noI18n(el('td', 'mono small' + (x.mac ? '' : ' muted'), x.mac || 'any (the address only)')));
         var al = el('td', 'gw-allowed');
         var chip = el('a', 'gw-allow-link', 'Internet' + ((x.dns || []).length ? ' · DNS ' + x.dns.length : '')
@@ -217,6 +220,7 @@
     var name = textBox(x.name || '', 'PS5 Pro');
     var ip = textBox(x.ip || '', nv.network ? 'an address in ' + nv.network : '192.168.40.95', 'mono');
     var mac = textBox(x.mac || '', 'aa:bb:cc:dd:ee:ff - empty: the address only', 'mono');
+    var ip6 = textBox((x.ip6 || []).join(', '), '2a02:…:1::3 - empty: found by its MAC on the MikroTik', 'mono');
     var on = switchBox(x.on !== false);
     var said = el('div', 'muted small gw-mac-said');
     modal(x.id ? 'Edit ' + x.name : 'Add a device', function (body) {
@@ -238,6 +242,40 @@
       macBox.appendChild(seen);
       macBox.appendChild(said);
       grid.appendChild(formField('MAC address', macBox, 'With it the rule matches only this device\'s network card: another box that takes its address does not pass. From this server\'s neighbour table (ip neigh) - the device must have spoken lately.'));
+      /* 1.9.3: its IPv6 addresses - only to find it on the MikroTik; nothing here forwards IPv6 */
+      var v6Box = el('div', 'gw-v6');
+      v6Box.appendChild(ip6);
+      var v6Seen = cmdButton('Use what is seen', 'search', 'small');
+      var v6Said = el('div', 'muted small gw-v6-said');
+      var v6Chips = el('div', 'gw-v6-chips');
+      v6Seen.onclick = function () {
+        var m = mac.value.trim();
+        if (!m) { v6Said.textContent = 'Its MAC first - the IPv6 addresses are found by it.'; return; }
+        busy(v6Seen, true);
+        api('gateway', {action: 'v6_seen', mac: m}).then(function (r) {
+          v6Said.textContent = r.message || '';
+          clear(v6Chips);
+          (r.seen || []).forEach(function (a) {
+            var stable = /^stable/.test(a.kind || '');
+            var c = el('button', 'gw-v6-chip ' + (stable ? 'ok' : 'warn'));
+            c.type = 'button';
+            c.appendChild(noI18n(el('span', 'mono', a.ip)));
+            c.appendChild(el('span', 'small', stable ? 'stable (DHCPv6 or EUI-64)' : 'may be a temporary one'));
+            c.title = (a.kind || '') + ' · seen in ' + (a.where || '?') + ' - press to add it';
+            c.onclick = function () {
+              var have = ip6.value.split(/[\s,]+/).filter(Boolean);
+              if (have.indexOf(a.ip) < 0) have.push(a.ip);
+              ip6.value = have.join(', ');
+              c.classList.add('taken');
+            };
+            v6Chips.appendChild(c);
+          });
+        }).catch(oops).then(function () { busy(v6Seen, false); });
+      };
+      v6Box.appendChild(v6Seen);
+      v6Box.appendChild(v6Said);
+      v6Box.appendChild(v6Chips);
+      grid.appendChild(formField('IPv6 addresses', v6Box, 'Only to find it on the MikroTik (DHCPv6 address) - nothing in this server\'s firewall; IPv6 is never forwarded here. Comma or space between them. Empty: the router\'s IPv6 neighbour table is asked by its MAC - which may give temporary (privacy) addresses.'));
       grid.appendChild(formField('Forwarded', on, 'Off: kept in the list, not forwarded.'));
       body.appendChild(grid);
       body.appendChild(el('h3', 'peek-h', 'Seen here - press one to take it'));
@@ -279,7 +317,8 @@
     }, [{words: 'Cancel', close: true},
         {words: x.id ? 'Save' : 'Add it', cls: 'primary', icon: 'check', go: function (button) {
           busy(button, true);
-          api('gateway', {action: 'device_save', device: {id: x.id || '', name: name.value.trim(), ip: ip.value.trim(), mac: mac.value.trim(), on: !!on._get()}})
+          api('gateway', {action: 'device_save', device: {id: x.id || '', name: name.value.trim(), ip: ip.value.trim(), mac: mac.value.trim(),
+                                                          ip6: ip6.value.split(/[\s,]+/).filter(Boolean), on: !!on._get()}})
             .then(function (r) { closeModal(); toast(r.message, 'good'); setTimeout(quiet, 600); setTimeout(gwTrialsLoad, 2500); })
             .catch(oops).then(function () { busy(button, false); });
         }}], 'medium');
@@ -337,6 +376,15 @@
       box.appendChild(warnCard(GW.d));
     }, isQuiet, function () { explainWhatWasDrawn(host); });
   }
+  /* Edit a device from elsewhere (1.9.3: Gateway → MikroTik's "Set its DHCPv6 address") - full admins */
+  window.GW_EDIT = function (ip) {
+    return api('gateway').then(function (d) {
+      GW.d = d;
+      var x = (d.devices || []).filter(function (y) { return y.ip === ip || y.id === ip; })[0];
+      if (!x) { toast(ip + ' is not a device of Gateway for devices', 'bad'); return; }
+      deviceEdit(x);
+    }).catch(oops);
+  };
   function openDesigner(x) { window.GW_DESIGNER(x, GW.d, {saved: quiet}); }
 
   PANE_LOAD.gateway = load;

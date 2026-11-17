@@ -2,6 +2,48 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.9.3 (2026-11-17)
+
+- Autorefresh never scrolls or jerks a page any more. Every redraw a timer starts is drawn as a refresh
+  (`liveRefreshing()`, until somebody presses a key or the pointer): what did not change is not touched at all
+  (liveFill compares and leaves the page alone), what did is put in place in one step with the scroll of the
+  page AND of the boxes scrolled inside it (a table's rows) kept, folds kept open or shut, the box being typed
+  in kept with its caret and suggestions. The Ports, Requests, Clients, Mappings and Events tables, Overview's
+  facets and MikroTik card now redraw this way; the Gateway tab's empty chart is said at once (it collapsed a
+  moment later); Gateway → MikroTik's firewall card is built once and only its changed parts are put in again
+  (its search box, caret, open suggestions, "Show all" and opened address lists stay).
+  The main tab bar stays one line on a computer: a count that arrived a moment later (mDNS) wrapped it to two
+  lines at 1280 px and pushed every page down; under 1200 px the tabs not shown are icons with their counts.
+  A test walks every tab, both Gateway sub-tabs and every Settings pane, scrolled to the middle and to the
+  bottom, through three refreshes: scrollTop unchanged, layout shift 0.
+- Gateway → MikroTik: each port is two rows, IPv4 and IPv6, each with its own state, commands and drops.
+  IPv4: public:port → dst-nat → forward → device:port. IPv6 (no NAT): from the internet on its IPv6 WAN →
+  the forward rule → each of the device's IPv6 addresses. Where the IPv6 addresses came from is said: set in
+  Gateway for devices, or the router's IPv6 neighbour table by its MAC - then "these may be temporary (privacy)
+  addresses" and, for full admins, "Set its DHCPv6 address" (opens the device's edit dialog). No IPv6 address
+  known is said calmly, not in red. The port popup has an IPv4 and an IPv6 section side by side.
+- Drops from the router's own log: a badge "dropped N× (last HH:MM:SS)" on an IPv4 or IPv6 row - red when the
+  rules say open (the log contradicts them) - the last lines in the port popup (time, prefix, from, to,
+  in → out), and per device "What the router dropped of it (its log)": IPv4 and IPv6 apart, top ports and
+  prefixes, its last lines in a popup; "only rules with log=yes write lines, and the router keeps the last
+  ~1000 in memory"; "nothing dropped in the lines the router keeps" when so.
+- Interfaces in the firewall viewer explain themselves: a legend (green: running, red: not running - link
+  down, "list: X": member of interface list X), the dots with tooltips, the list memberships as "list: discover"
+  chips, disabled ones marked.
+- Gateway for devices: a device has "IPv6 addresses" (only to find it on the MikroTik - nothing in this
+  server's firewall; IPv6 is never forwarded here) with "Use what is seen" (its MAC in this server's and the
+  MikroTik's IPv6 neighbour tables: stable DHCPv6/EUI-64 ones vs ones that may be temporary, press one to add
+  it). Shown in the devices table and on the Gateway → Devices card.
+- Popups of the Gateway tab: a rule's fields and the log lines wrap - no horizontal scrollbar.
+- MikroTik: the device's IPv6 WAN is the interface of the router's default IPv6 route (/ipv6 route ::/0 -
+  its immediate-gw, the network that holds its gateway); the router's log is read as well (/log - only the
+  lines its firewall wrote kept) and each line laid to the device and port it was dropped toward, IPv4 and IPv6
+  apart; whether a prefix means a drop is told by the rules that log under it (log-prefix, action).
+- A device's IPv6 addresses changed alone put nothing of the firewall on trial (they are never in iptables).
+- The Gateway tab: its heading and every card under it 16 px apart on both sub-tabs; a device's way out fills
+  the width of its card; a line of code in a popup (an iptables line, a RouterOS command) wraps - no scrollbar
+  of its own; the line of FAKE-IGD-FWD opens in a wide popup.
+
 ## 1.9.2 (2026-11-17)
 
 **MikroTik: each device's own way out, and its ports on its own public address.** Nothing of the router is

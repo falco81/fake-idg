@@ -583,6 +583,7 @@ def tab(ctx):
             pp["bytes"] += c["bytes"]
         drops = _hits(bc, who + " dropped")
         devices.append({"id": d.get("id"), "name": d.get("name"), "ip": ip, "mac": d.get("mac") or "",
+                        "ip6": list(d.get("ip6") or []),
                         "on": d.get("on") is not False, "applied": d.get("applied"),
                         "neigh_mac": neigh.get(ip, ""), "seen": (seen.get(ip) or {}).get("changed") or 0,
                         "counters": d.get("counters") or {}, "internet": d.get("internet") or {},

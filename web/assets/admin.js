@@ -239,6 +239,7 @@ function tick() {
         && !document.querySelector('.modal:not([hidden])')
         && !userHolds(here) && !pointerBusy(here) && !paged && !apiLatestOut(TAB_LIST[TAB])) {
       REDRAW_OWED = false;
+      liveRefreshing();                 /* 1.9.3: drawn as a refresh - folds, scroll and focus stay */
       onTab(TAB);
     } else if (moved && TAB_LIST[TAB]) {
       REDRAW_OWED = true;
@@ -246,6 +247,7 @@ function tick() {
     if (TAB === 'overview') paintCards();
     if (TAB === 'log' && moved) loadLog(false);
     if (TAB === 'settings' && typeof PANE_TICK[PANE] === 'function') {
+      liveRefreshing();
       try { PANE_TICK[PANE](s); } catch (e) { /* the next tick */ }
     }
   }).catch(function (e) {
@@ -1067,9 +1069,8 @@ function drawMikrotikCard() {
   var host = $('card-mikrotik');
   if (!host || typeof window.MT_CHECKS !== 'function') return;
   window.MT_CHECKS().then(function (d) {
-    clear(host);
     host.hidden = !d.on;
-    if (!d.on) return;
+    if (!d.on) { clear(host); return; }
     var ch = d.checks || {}, sn = d.snap || {}, st = d.state || {}, S = window.MT_STATE || {};
     var k = st.ok === false ? 'crit' : (!ch.total ? 'info' : (ch.open === ch.total ? 'ok' : (ch.open ? 'warn' : 'crit')));
     host.className = 'card full mt-ov tappable ' + k;
@@ -1093,7 +1094,7 @@ function drawMikrotikCard() {
     });
     (ch.warnings || []).forEach(function (x) { if (/UPnP is ON/.test(x)) { var c = el('span', 'mt-chip crit alone'); c.appendChild(el('span', '', 'its own UPnP is ON')); chips.appendChild(c); } });
     top.appendChild(chips);
-    host.appendChild(top);
+    liveFill(host, function (box) { box.appendChild(top); });
     host.onclick = function () { goTab('gateway', {sub: 'mikrotik'}); };
     CARD_WHY['card-mikrotik'] = {level: k === 'ok' ? 'ok' : (k === 'crit' ? 'crit' : 'warn'), words: 'The real router, read: of the ports the devices asked for, how many it carries - a dst-nat to the device and nothing that drops it. Gateway → MikroTik shows each device\'s way out, its ports and the whole firewall.'};
   }).catch(function () { host.hidden = true; });
@@ -1119,7 +1120,9 @@ $('ov-hours').onchange = loadOverview;
 
 function facet(id, rows, tone, go) {
   var host = typeof id === 'string' ? $(id) : id;
-  clear(host);
+  liveFill(host, function (box) { facetInto(box, rows, tone, go); });
+}
+function facetInto(host, rows, tone, go) {
   if (!rows || !rows.length) { host.appendChild(el('p', 'muted small', 'Nothing in this window.')); return; }
   var top = rows[0].n || 1;
   /* Each one whole: the words on their own line, and under them the bar, the count and when it was last. */
@@ -1307,10 +1310,9 @@ function loadPorts() {
     $('pt-said').textContent = num(c.ports) + ' port(s) · ' + num(c.udp) + ' UDP · ' + num(c.tcp) + ' TCP · '
       + num(c.clients) + ' client(s)';
     var host = $('pt-table');
-    clear(host);
     var heads = ['Client', 'Protocol', {words: 'Port', cls: 'num'}, {words: 'Asked', cls: 'num'}, 'First', 'Last', 'Answered', 'What for', ''];
     if (MTC) heads.splice(7, 0, 'MikroTik');
-    host.appendChild(listTable(heads, d.ports, function (r) {
+    liveFill(host, function (box) { box.appendChild(listTable(heads, d.ports, function (r) {
       var tr = el('tr');
       tr.appendChild(addrCell(r.client, r.name));
       var tp = el('td'); tp.appendChild(protoTag(r.proto)); tr.appendChild(tp);
@@ -1328,7 +1330,7 @@ function loadPorts() {
       tr.appendChild(portTools(r));
       tr.onclick = function () { portPeek(r); };
       return tr;
-    }, 'rows|No port has been asked for in this window', {own: true}));
+    }, 'rows|No port has been asked for in this window', {own: true})); });
     pager('pt-pager', PAGE.ports, per, d.total, function (p) { PAGE.ports = p; loadPorts(); });
     explainWhatWasDrawn(host);
   }).catch(oops);
@@ -1544,8 +1546,7 @@ function loadRequests() {
     (d.actions || []).forEach(function (a) { ensureOption($('rq-action'), a); });
     (d.clients || []).forEach(function (c) { ensureOption($('rq-client'), c); });
     var host = $('rq-table');
-    clear(host);
-    host.appendChild(requestsTable(d.requests));
+    liveFill(host, function (box) { box.appendChild(requestsTable(d.requests)); });
     $('rq-said').textContent = num(d.total) + ' matching';
     pager('rq-pager', PAGE.requests, per, d.total, function (p) { PAGE.requests = p; loadRequests(); });
     explainWhatWasDrawn(host);
@@ -1677,8 +1678,7 @@ function loadClients() {
     QS.clients.said(d.q_error || '');
     $('cl-said').textContent = num(d.total) + ' client(s)';
     var host = $('cl-table');
-    clear(host);
-    host.appendChild(clientsTable(d.clients, false, CL.steps));
+    liveFill(host, function (box) { box.appendChild(clientsTable(d.clients, false, CL.steps)); });
     pager('cl-pager', PAGE.clients, per, d.total, function (p) { PAGE.clients = p; loadClients(); });
     explainWhatWasDrawn(host);
   }).catch(oops);
@@ -1774,8 +1774,7 @@ function drawMappings() {
   var rows = d.mappings.filter(function (m) { return (!pr || String(m.protocol).toUpperCase() === pr) && localMatches(m, q, MP_FIELDS); });
   $('mp-said').textContent = num(rows.length) + ' held';
   var host = $('mp-table');
-  clear(host);
-  host.appendChild(mappingsTable(rows, d.now));
+  liveFill(host, function (box) { box.appendChild(mappingsTable(rows, d.now)); });
   explainWhatWasDrawn(host);
 }
 /* The fields of the mappings' search (1.9.2): offered in the box, Ctrl+Space or its button */
@@ -1883,7 +1882,7 @@ $('lg-pause').onclick = function () {
   setButtonIcon($('lg-pause'), LOGV.paused ? 'play' : 'pause', LOGV.paused ? 'Follow again' : 'Pause');
   if (!LOGV.paused) loadLog(true);
 };
-setInterval(function () { if (TAB === 'log' && LIVE && !document.hidden) loadLog(false); }, 3000);
+setInterval(function () { if (TAB === 'log' && LIVE && !document.hidden) { liveRefreshing(); loadLog(false); } }, 3000);
 
 /* ==========================================================================
    Events
@@ -1896,8 +1895,7 @@ function loadEvents() {
     var sel = $('ev-kind');
     (d.kinds || []).forEach(function (k) { ensureOption(sel, k); });
     var host = $('ev-table');
-    clear(host);
-    host.appendChild(listTable(['When', 'Kind', 'Who', 'What'], d.events, function (r) {
+    liveFill(host, function (box) { box.appendChild(listTable(['When', 'Kind', 'Who', 'What'], d.events, function (r) {
       var tr = el('tr');
       tr.appendChild(stampCell(r.at));
       var k = el('td'); k.appendChild(el('span', 'tag ' + (r.level === 'warn' || r.level === 'bad' || r.level === 'error' ? 'warn' : 'dim'), r.kind));
@@ -1905,7 +1903,7 @@ function loadEvents() {
       tr.appendChild(noI18n(el('td', '', r.who || '')));
       tr.appendChild(noI18n(el('td', '', r.words)));
       return tr;
-    }, '', {own: true}));
+    }, '', {own: true})); });
     pager('ev-pager', PAGE.events, per, d.total, function (p) { PAGE.events = p; loadEvents(); });
   }).catch(oops);
 }
