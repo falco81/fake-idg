@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
-__version__ = '1.8.1'
+__version__ = '1.9.0'
 VERSION = __version__
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
 DEFAULTS = {
@@ -304,22 +304,99 @@ def location_url(local_ip):
 
 
 # ================================================================ external IP
-def resolve_external_ip():
+def resolve_external_ip(again=False):
+    """The public IP: external_ip, or looked up (auto) - at the start and every 30 minutes after (1.8.2).
+    A change from the one kept in state_dir is the event public_ip."""
     global EXTERNAL_IP
     val = str(CFG["external_ip"]).strip()
     if val and val.lower() != "auto":
         EXTERNAL_IP = val
-        return
-    for url in ("https://api.ipify.org", "https://ifconfig.me/ip"):
-        try:
-            with urllib.request.urlopen(url, timeout=5) as r:
-                EXTERNAL_IP = r.read().decode().strip()
-            log.info("net: the public IP is %s (from %s)", EXTERNAL_IP, url)
+    else:
+        for url in ("https://api.ipify.org", "https://ifconfig.me/ip"):
+            try:
+                with urllib.request.urlopen(url, timeout=5) as r:
+                    got = r.read().decode().strip()[:64]
+                if not re.match(r"^[0-9a-fA-F.:]+$", got):
+                    raise ValueError("not an address: %r" % got[:40])
+                if got != EXTERNAL_IP or not again:
+                    log.info("net: the public IP is %s (from %s)", got, url)
+                EXTERNAL_IP = got
+                break
+            except Exception as e:  # noqa: BLE001
+                (log.debug if again else log.warning)("net: looking up the public IP at %s failed: %s", url, e)
+        else:
+            if not again:
+                EXTERNAL_IP = ""
+                log.warning("net: the public IP could not be found - set external_ip in the config")
             return
-        except Exception as e:  # noqa: BLE001
-            log.warning("net: looking up the public IP at %s failed: %s", url, e)
-    EXTERNAL_IP = ""
-    log.warning("net: the public IP could not be found - set external_ip in the config")
+    path = os.path.join(CFG["state_dir"], "public-ip")
+    try:
+        with open(path, encoding="utf-8") as f:
+            before = f.read().strip()
+    except OSError:
+        before = ""
+    if EXTERNAL_IP and EXTERNAL_IP != before:
+        try:
+            with open(path + ".tmp", "w", encoding="utf-8") as f:
+                f.write(EXTERNAL_IP + "\n")
+            os.replace(path + ".tmp", path)
+        except OSError as e:
+            log.debug("net: %s: %s", path, e)
+        if before:
+            log.warning("net: the public IP changed: %s (it was %s)", EXTERNAL_IP, before)
+            notify("public_ip", "fake-igd: the public IP changed", "The public IP is %s now (it was %s)."
+                   % (EXTERNAL_IP, before))
+
+
+# ================================================================ who searched (1.8.2)
+_seen_lock = threading.Lock()
+ANSWERED = {}      # address -> when it was answered and has not fetched the description since
+STOPPED = {}       # address -> when "stopped after the answer" was last sent (once a day)
+DEVICES = None     # "address UA" seen searching, kept in state_dir/devices-seen.json
+
+
+def first_seen(src, ua, st):
+    """A device (its address and User-Agent) searching for the first time - the event device_new."""
+    global DEVICES
+    key = "%s %s" % (src, ua_words(ua))
+    path = os.path.join(CFG["state_dir"], "devices-seen.json")
+    with _seen_lock:
+        if DEVICES is None:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    DEVICES = {str(k): v for k, v in json.load(f).items()}
+            except (OSError, ValueError, AttributeError):
+                DEVICES = {}
+        if key in DEVICES:
+            return
+        DEVICES[key] = int(time.time())
+        if len(DEVICES) > 2000:                # the oldest out
+            for k in sorted(DEVICES, key=DEVICES.get)[:len(DEVICES) - 2000]:
+                del DEVICES[k]
+        try:
+            with open(path + ".tmp", "w", encoding="utf-8") as f:
+                json.dump(DEVICES, f)
+            os.replace(path + ".tmp", path)
+        except OSError as e:
+            log.debug("ssdp: %s: %s", path, e)
+    notify("device_new", "UPnP: a new device searching", "%s (%s) searches for a UPnP router for the first time "
+           "(ST=%s)" % (src, ua_words(ua), st))
+
+
+def stopped_check():
+    """Answered a minute ago and the description never fetched: the event device_stopped (once a day each)."""
+    now = time.time()
+    with _seen_lock:
+        late = [a for a, t in ANSWERED.items() if now - t >= 60]
+        for a in late:
+            del ANSWERED[a]
+        late = [a for a in late if now - STOPPED.get(a, 0) >= 86400]
+        for a in late:
+            STOPPED[a] = now
+    for a in late:
+        notify("device_stopped", "UPnP: %s stopped after the answer" % a, "%s was answered but did not fetch the "
+               "description within a minute. A PS5 asks only its default gateway: make this server its gateway "
+               "(Settings → Gateway for devices)." % a)
 
 
 # ================================================================ state and request log
@@ -611,7 +688,14 @@ def _free_port(key, ic):
 
 
 def _add(action, a, client):
-    key = _key(a)
+    try:
+        key = _key(a)
+    except UPnPError:
+        notify("port_refused", "UPnP: %s %s refused" % (str(a.get("NewProtocol", ""))[:8].upper() or "?",
+                                                       str(a.get("NewExternalPort", ""))[:8]),
+               "%s asks for %s %s - refused: invalid arguments (402)" % (
+                   client, str(a.get("NewProtocol", ""))[:8].upper() or "?", str(a.get("NewExternalPort", ""))[:8]))
+        raise
     try:
         iport = int(a.get("NewInternalPort", "0"))
         lease = int(a.get("NewLeaseDuration", "0") or 0)
@@ -854,6 +938,8 @@ class Handler(BaseHTTPRequestHandler):
         local_ip = self.connection.getsockname()[0]
         client, ua = self.client_address[0], ua_words(self.headers.get("User-Agent"))
         if path in ("/rootDesc.xml", "/WANIPCn.xml", "/WANCfg.xml"):
+            with _seen_lock:
+                ANSWERED.pop(client, None)
             # Each step of a device on its way to a port, at info (1.7.4) - once in 10 minutes for the
             # same client and file: where a console stopped is seen in the log and on the Clients tab.
             (log.info if once(("get", client, path), SEARCH_EVERY) else log.debug)(
@@ -981,6 +1067,7 @@ class SSDP:
         self.joined = {}  # interface name -> ip
         self.seen = {}
         self.lock = threading.Lock()
+        self.synced = False       # the first look at the interfaces is the start, not news
 
     # ---- multicast group membership on all interfaces
     def sync_interfaces(self):
@@ -995,6 +1082,9 @@ class SSDP:
                         pass
                     del self.joined[name]
                     log.info("net: %s (%s) is gone", name, ip)
+                    if self.synced:
+                        notify("iface", "fake-igd: %s is gone" % name, "%s (%s) is gone - fake-igd no longer answers "
+                               "there." % (name, ip))
             for name, ip in current.items():
                 if name in self.joined:
                     continue
@@ -1003,6 +1093,9 @@ class SSDP:
                                        struct.pack("4s4s", socket.inet_aton(SSDP_GROUP), socket.inet_aton(ip)))
                     self.joined[name] = ip
                     log.info("net: listening on %s (%s) - %s", name, ip, location_url(ip))
+                    if self.synced:
+                        notify("iface", "fake-igd: %s came" % name, "%s (%s) is up - fake-igd answers there now (%s)."
+                               % (name, ip, location_url(ip)))
                     if CFG["mode"] == "active":
                         self.send_notify(name, ip)
                 except OSError as e:
@@ -1104,9 +1197,8 @@ class SSDP:
                     self.seen[k] = time.time()
                     if router:
                         log.warning("ssdp: OTHER UPnP ROUTER on the network: %s announces NT=%s", src, nt)
-                        if CFG.get("notify_other_router", True):
-                            notify("UPnP: another router", "%s announces itself as a UPnP router (%s) - "
-                                   "the PS5 may use it instead of fake-igd" % (src, nt), priority=4, tags="warning")
+                        notify("other_router", "UPnP: another router", "%s announces itself as a UPnP router (%s) - "
+                               "the PS5 may use it instead of fake-igd" % (src, nt))
                     else:
                         log.info("ssdp: %s announces NT=%s", src, nt)
             return
@@ -1121,6 +1213,7 @@ class SSDP:
         if not client_allowed(src):
             log.debug("ssdp: M-SEARCH from %s (ST=%s) ignored - not in allowed_clients", src, st)
             return
+        first_seen(src, hdr.get("USER-AGENT"), st)
         k = (src, st)
         self._prune()
         # Each search written down (1.7.14) - once in 30 s per device and what it searched for (a device
@@ -1188,6 +1281,9 @@ class SSDP:
                     ("CACHE-CONTROL", "max-age=1800"), ("DATE", formatdate(usegmt=True)), ("EXT", ""),
                     ("LOCATION", location_url(local_ip)), ("SERVER", SERVER_HDR), ("ST", st), ("USN", usn),
                     ("BOOTID.UPNP.ORG", str(BOOTID)), ("CONFIGID.UPNP.ORG", str(IGD_V))]), (src, sport))
+            if loud:
+                with _seen_lock:
+                    ANSWERED.setdefault(src, time.time())
             (log.info if loud else log.debug)(
                 "ssdp: answered %s:%d - ST=%s USN=%s LOCATION=%s%s", src, sport, answers[0][0], answers[0][1],
                 location_url(local_ip), (" (and %d more)" % (len(answers) - 1)) if len(answers) > 1 else "")
@@ -1213,10 +1309,22 @@ def search_answers(st):
 
 
 def expiry_loop():
+    n = 0
     while True:
         time.sleep(30)
+        n += 1
         with _lock:
             purge_expired()
+        for job in (stopped_check, NOTE.tick):
+            try:
+                job()
+            except Exception as e:  # noqa: BLE001
+                log.debug("notify: %s", e)
+        if n % 60 == 0 and str(CFG["external_ip"]).strip().lower() in ("", "auto"):
+            try:
+                resolve_external_ip(again=True)
+            except Exception as e:  # noqa: BLE001
+                log.debug("net: %s", e)
 
 
 # ================================================================ --summary
@@ -1327,6 +1435,7 @@ def main():
         log.error("service: SSDP port %d/udp cannot be opened: %s", SSDP_PORT, e)
         sys.exit(1)
     ssdp.sync_interfaces()
+    ssdp.synced = True
 
     for target in (ssdp.listen, ssdp.rescan_loop, ssdp.notify_loop, expiry_loop):
         threading.Thread(target=target, daemon=True).start()
@@ -1342,7 +1451,27 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     log.info("service: running - HTTP on 0.0.0.0:%d, SSDP on %d/udp", CFG["http_port"], SSDP_PORT)
+    marker = os.path.join(CFG["state_dir"], "running")
+    if os.path.exists(marker):
+        log.warning("service: it had not stopped cleanly before (a crash, a kill or a power cut)")
+        notify("service_crash", "fake-igd: started after a crash", "fake-igd %s started on %s, and it had not stopped "
+               "cleanly before (a crash, a kill or a power cut)." % (VERSION, host))
+    else:
+        notify("service", "fake-igd: started", "fake-igd %s started on %s (mode %s)." % (VERSION, host, CFG["mode"]))
+    try:
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write("%d\n" % os.getpid())
+    except OSError as e:
+        log.debug("service: %s: %s", marker, e)
     httpd.serve_forever()
+    try:
+        NOTE.send("service", "fake-igd: stopped", "fake-igd %s on %s stopped." % (VERSION, host), wait=True)
+    except Exception as e:  # noqa: BLE001
+        log.debug("notify: %s", e)
+    try:
+        os.remove(marker)
+    except OSError:
+        pass
     log.info("service: stopped")
 
 

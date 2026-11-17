@@ -453,10 +453,18 @@ def _until_iso(s):
         return s
 
 
-SEND_RE = re.compile(r"notify: (sent|sending) '(.*)' to (\S+?)(?: \((.*)\))?(?: failed: (.*))?$")
+SEND_RE = re.compile(r"notify: (sent|sending) (?:\[([a-z_:]+)\] )?'(.*)' to (\S*?)(?: \((.*)\))?(?: failed: (.*))?$")
 
 
-def sends(cfg, most=60):
+def _old_kind(title):
+    """A send written before kinds were (1.8.2): its kind from its title."""
+    t = title.lower()
+    return "other_router" if "another router" in t else "test" if "test" in t else \
+        "port_renew" if "renewed" in t else "port_refused" if "rejected" in t or "refused" in t else "port_new"
+
+
+def sends(cfg, most=60, raw=False):
+    """fake-igd.service's sends, from its log: {at, kind, title, host, ok, said, by}."""
     out = []
     for ln in log_tail(cfg, 8 * 1024 * 1024):
         m = LOG_RE.match(ln)
@@ -465,12 +473,10 @@ def sends(cfg, most=60):
         x = SEND_RE.search(m.group(3))
         if not x:
             continue
-        title = x.group(2)
-        kind = ("another router" if "another router" in title else
-                "a test" if "test" in title.lower() else "a port")
-        out.append({"at": _when(m.group(1)), "title": title, "host": x.group(3), "ok": x.group(1) == "sent",
-                    "said": x.group(4) if x.group(1) == "sent" else (x.group(5) or ""), "kind": kind,
-                    "by": "fake-igd.service"})
+        title = x.group(3)
+        out.append({"at": _when(m.group(1)), "title": title, "host": x.group(4), "ok": x.group(1) == "sent",
+                    "said": x.group(5) if x.group(1) == "sent" else (x.group(6) or ""),
+                    "kind": x.group(2) or _old_kind(title), "by": "fake-igd.service"})
     return out[-most:]
 
 
@@ -480,8 +486,14 @@ def ntfy_view(ctx):
         tests = json.loads(ctx.store.get_meta("ntfy:tests") or "[]")
     except ValueError:
         tests = []
-    rows = sends(cfg) + [dict(t, kind="a test", by=t.get("by") or "") for t in tests if isinstance(t, dict)]
+    mine = sys.modules.get("api_ntfy")
+    rows = sends(cfg, 200) + [dict(t, kind="test", by=t.get("by") or "") for t in tests if isinstance(t, dict)] + \
+        (mine.sent_rows(ctx.store) if mine is not None else [])
     rows.sort(key=lambda r: r.get("at") or 0, reverse=True)
+    kinds = sorted({r.get("kind") or "" for r in rows} - {""})
+    want = (ctx.q.get("kind") or [""])[0]
+    if want:
+        rows = [r for r in rows if r.get("kind") == want]
     url = str(cfg.get("ntfy_url") or "")
     ca_file = str(cfg.get("ntfy_ca_file") or "")
     ca = []
@@ -503,7 +515,8 @@ def ntfy_view(ctx):
             "on_port": bool(url), "on_renew": bool(cfg.get("notify_on_renew")),
             "on_other": bool(cfg.get("notify_other_router")), "ca_file": ca_file,
             "ca_ours": bool(ca_file) and os.path.abspath(ca_file) == os.path.abspath(_ca_path()),
-            "ca_list": ca, "ca_said": ca_said, "sends": rows[:60], "at": time.time()}
+            "ca_list": ca, "ca_said": ca_said, "sends": rows[:120], "send_kinds": kinds, "kind": want,
+            "at": time.time()}
 
 
 def ntfy_test(ctx, me, b):

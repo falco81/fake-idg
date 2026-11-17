@@ -52,7 +52,43 @@ ALERT_KINDS = [("service", "fake-igd.service down"), ("avahi", "avahi-daemon dow
                ("selinux", "SELinux refusing"), ("gateway", "the gateway not forwarding"), ("mailq", "mails that do not go"),
                ("updates", "system updates waiting"), ("reboot", "a restart waiting"), ("siem", "the syslog servers"),
                ("snmp", "the SNMP agent"), ("dbcopy", "the copy of the database"), ("guard", "sign-in protection"),
-               ("mikrotik", "the MikroTik: a port missing")]
+               ("mikrotik", "the MikroTik (a port missing, not readable)")]
+# How a kind looks as it comes: (priority, tags) - 0 and "" are those of Settings above.
+LOOK = {"other_router": (4, "warning"), "service_crash": (4, "warning"), "gw_forward": (4, "warning"),
+        "port_refused": (0, "no_entry")}
+# Each kind's wording as fake-igd and the pages send it, with made-up values - "Send a sample".
+SAMPLES = {
+    "port_new": ("UPnP: UDP 3074", "192.168.40.50 asks for UDP 3074 -> 192.168.40.50:3074 'PS5 3074 UDP' (lease 3600s)"),
+    "port_renew": ("UPnP: UDP 3074 renewed", "192.168.40.50 asks for UDP 3074 -> 192.168.40.50:3074 'PS5 3074 UDP' "
+                   "(lease 3600s) - renewed"),
+    "port_refused": ("UPnP: UDP 3074 refused", "192.168.40.50 asks for UDP 3074 -> 192.168.40.50:3074 'PS5 3074 UDP' "
+                     "- refused: it belongs to 192.168.40.61 (conflict, 718)"),
+    "port_deleted": ("UPnP: UDP 3074 taken away", "192.168.40.50 took UDP 3074 -> 192.168.40.50 away (DeletePortMapping)"),
+    "port_expired": ("UPnP: UDP 3074 ran out", "the mapping UDP 3074 -> 192.168.40.50:3074 ran out (its lease was "
+                     "not renewed)"),
+    "device_new": ("UPnP: a new device searching", "192.168.40.50 (PS5/8.20 UPnP/1.1) searches for a UPnP router for "
+                   "the first time (ST=urn:schemas-upnp-org:device:InternetGatewayDevice:1)"),
+    "device_stopped": ("UPnP: 192.168.40.50 stopped after the answer", "192.168.40.50 was answered but did not fetch the "
+                       "description within a minute. A PS5 asks only its default gateway: make this server its "
+                       "gateway (Settings → Gateway for devices)."),
+    "other_router": ("UPnP: another router", "192.168.40.1 announces itself as a UPnP router "
+                     "(urn:schemas-upnp-org:device:InternetGatewayDevice:1) - the PS5 may use it instead of fake-igd"),
+    "public_ip": ("fake-igd: the public IP changed", "The public IP is 203.0.113.7 now (it was 203.0.113.5)."),
+    "iface": ("fake-igd: ens224 is gone", "ens224 (172.16.16.254) is gone - fake-igd no longer answers there."),
+    "service": ("fake-igd: started", "fake-igd 1.8.2 started on igd (mode active)."),
+    "service_crash": ("fake-igd: started after a crash", "fake-igd 1.8.2 started on igd, and it had not stopped "
+                      "cleanly before (a crash, a kill or a power cut)."),
+    "gw_online": ("Gateway: PS5 is online", "PS5 (192.168.40.50, 00:11:22:33:44:55) is online - in the neighbour "
+                  "table again."),
+    "gw_drops": ("Gateway: PS5 tried local networks", "PS5 (192.168.40.50) tried 240 times in the last hour to reach "
+                 "networks it may not (the limit is 100)."),
+    "gw_forward": ("Gateway: forwarding is off", "The gateway for devices is on, but net.ipv4.ip_forward was turned "
+                   "off by something else."),
+    "gw_rule_first": ("Gateway: PS5's rule used", "The rule 'allow TCP 443 to 10.0.0.5' of PS5 forwarded its first "
+                      "packet."),
+    "alerts": ("fake-igd: a disk is getting full", "/var is 93% full."),
+    "alerts_over": ("fake-igd: over - a disk is getting full", "It is all right again: /var is 93% full."),
+}
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d\Z")
 
 
@@ -107,7 +143,12 @@ def post(cfg, title, message, priority=None, tags=None, timeout=10):
     except ssl.SSLError as e:
         return False, "TLS: %s (a private CA? set ntfy_ca_file)" % e
     except Exception as e:  # noqa: BLE001
-        return False, str(getattr(e, "reason", e))
+        why = getattr(e, "reason", e)
+        if isinstance(why, ssl.SSLError):
+            vm = getattr(why, "verify_message", "")
+            return False, "TLS: %s (a private CA? set ntfy_ca_file)" % (("certificate verify failed: " + vm) if vm
+                                                                         else why)
+        return False, str(why)
 
 
 # ---- what is sent ---------------------------------------------------------------------------------
@@ -129,17 +170,19 @@ def events_checked(raw):
         if not isinstance(v, dict):
             raise ValueError("ntfy_events: %s is not an object" % k)
         one = {"on": v.get("on") is True}
-        if not k.startswith("alert:"):
+        if not k.startswith("alert:") and "priority" in v:
             try:
                 p = int(v.get("priority") or 0)
             except (TypeError, ValueError):
                 raise ValueError("ntfy_events: %s - a priority of 0 to 5" % k)
             if not 0 <= p <= 5:
                 raise ValueError("ntfy_events: %s - a priority of 0 to 5" % k)
+            one["priority"] = p
+        if not k.startswith("alert:") and "tags" in v:
             tags = str(v.get("tags") or "").strip()
             if len(tags) > 120 or re.search(r"[\x00-\x1f\x7f]", tags):
                 raise ValueError("ntfy_events: %s - tags: one line, 120 characters at most" % k)
-            one.update(priority=p, tags=tags)
+            one["tags"] = tags
         out[k] = one
     return out
 
@@ -156,7 +199,8 @@ def conf(cfg, kind):
         on = bool(cfg.get("notify_on_renew"))
     if kind == "other_router" and "notify_other_router" in cfg:
         on = bool(cfg.get("notify_other_router"))
-    got = {"on": on, "priority": 0, "tags": ""}
+    p, t = LOOK.get(kind, (0, ""))
+    got = {"on": on, "priority": p, "tags": t}
     got.update(ev.get(kind) or {})
     return got
 
@@ -190,6 +234,7 @@ class Notifier:
 
     def send(self, kind, title, message, sample=False, wait=False):
         """Send it as its kind says. sample: the kind's wording as a test - off or quiet, it goes all the same.
+        wait: sent before it returns (the service stopping).
         Returns what became of it: "sent", "off", "quiet", "held", "limited", "no url"."""
         cfg = self.cfg_of()
         if not cfg.get("ntfy_url"):
@@ -224,6 +269,10 @@ class Notifier:
                 return "limited"
             times.append(now)
             self.sent[kind] = times
+        if wait:                               # the service stopping: before the process is gone
+            ok, words = post(cfg, title, message, prio, tags, timeout=5)
+            self.record(kind, title, ok, words, "")
+            return "sent" if ok else "failed"
         self._go(cfg, kind, title, message, prio, tags)
         return "sent"
 

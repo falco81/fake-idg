@@ -2,6 +2,113 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.9.0 (2026-11-17)
+
+- **Gateway for devices: each device's own firewall** (the FW designer: the firewall button of a device, or its
+  "Allowed" column). By default - nothing set - a device reaches the internet only, exactly as before. Now:
+  - **DNS servers it may ask**: udp and tcp 53 (optionally DoT, tcp 853) to exactly those addresses, also in a
+    private network or another network of this server; one on its own network is reached directly ("no rule
+    needed"). Offered: this server's resolvers and the router.
+  - **Rules of its own**: destination (address or network), protocol (tcp/udp/icmp/any), ports (single, ranges,
+    lists - fifteen at most), comment, on/off, order (arrows). Toward another network of this server: -i
+    DEFIF -o THAT_IF for that device (+ its MAC) to that destination only, and the answers back (-m conntrack
+    --ctstate ESTABLISHED,RELATED). Never toward everything (/0-/7 refused - the internet is allowed already),
+    never this server itself, never the special ranges, never a network that only partly covers one of this
+    server's (split it); 64 rules at most; checked again by root - the pages are never trusted.
+  - Order in FAKE-IGD-FWD: each device's DNS lines → its own rules → its drops toward every local and private
+    network (counted for it) → the drops for everybody → its internet line → the final DROP.
+  - The designer: a flow (the device → this server → a lane for the internet, each DNS server, each rule, ✗
+    for the local networks, the private networks, everything else) with each line's packets; DNS chips with
+    DoT and offered servers; rules with arrows, switches and an inline editor (protocol segments, ports checked
+    as typed with examples, destination with "a network of this server" chips); **Try a packet** (destination,
+    protocol, port, "another box with its address") - the verdict and the line that decides, from root's own
+    evaluator run on the lines as they would be; "What root puts in"; Save on trial (Keep it / Put the old back).
+  - CLI: `upnp gateway dns IP add|del DNS [--dot]`, `upnp gateway rule IP list|add --to NET [--proto] [--ports]
+    [--comment]|del N`, `upnp gateway try IP DEST PROTO [PORT]`.
+
+- **The Gateway tab** (beside Mappings): cards with their "why this colour" (forwarding, devices on, sent today
+  and the rate now, dropped by FAKE-IGD-FWD and toward local networks today, the router, this server's
+  address there); a card for each device - online (neighbour table / last packet), its traffic over the time
+  picker's window (bytes per bucket, drops marked), what it may reach besides the internet with each line's
+  packets, its drops toward local networks by network, its UPnP steps and the ports it asked for, top
+  destinations and top ports now, its live connections (conntrack, the way out only) with a popup for each,
+  the MikroTik's word on its ports when Settings → MikroTik has read the router (hidden otherwise); and
+  FAKE-IGD-FWD line by line as a flow, grouped, with every line's counters. Read-only accounts see it all.
+  Refreshed every 20 s.
+- Root reads the chain's counters and the connection table once a minute while the gateway is on (an ask of
+  its own, kept apart from the pages' asks); the API samples them into the database (gw_samples, setting
+  `gateway_keep_days`, 7) - root never writes the database. Per device a counted drop line toward every local
+  and private network (before the drops for everybody).
+- CLI: `upnp gateway top`, `upnp gateway conns IP`.
+
+- **MikroTik, read-only** (Settings → MikroTik, in isemon's form): the real router read over its REST API
+  (RouterOS 7, HTTPS), its API (api-ssl or api) or ssh (a key made here - ed25519, sealed beside the database - or
+  a password). Only ever prints: anything else is refused in the code before it is sent. Its certificate trusted by
+  its fingerprint after Try reaching it shows it (or checked by an authority and its name), its ssh host key pinned
+  after Look at its host key - another one refused before anything, the password too, is sent. How to set it up on
+  the router gives the read-only group and account, step by step. Through the proxy only where switched on.
+- **Every port asked for, checked on the MikroTik**: first match wins, as RouterOS walks the first packet - raw,
+  the dst-nat (missing, shadowed by rule #N, disabled, forwarded elsewhere), the filter's forward chain after the
+  translation (RouterOS's default "drop all from WAN not DSTNATed" recognised), IPv6 to the device's own
+  addresses; "cannot tell" where it depends on what cannot be known. The RouterOS commands that would add what is
+  missing, with place-before, to copy - never sent. Its own UPnP on: a warning.
+- **Its whole firewall, IPv4 and IPv6**: filter, nat, mangle, raw - each table's chains as lanes, each rule a card
+  (its action in colour, its matchers as chips, disabled struck, dynamic marked, comments, counters and hits since
+  the read before), what concerns the ports asked for lit, a search (port:, action:, chain:, list:, if:, addr:),
+  a rule opened with all its fields; interfaces with their lists, the address lists.
+- Overview: the MikroTik's strip (N of M ports open); Ports tab: a column MikroTik and its state in the port's popup;
+  an alert "A port asked for not open on the MikroTik" (off by default); events; `upnp mikrotik
+  [status|check|rules [ipv4|ipv6] [--table T]|read|try]`; console items 26-30.
+- Notifications (ntfy): **What is sent** - every kind of event switched on or off, with a priority (1-5, or as
+  set above) and tags of its own, and "Send a sample" (that event's own wording, marked "[a sample]").
+  UPnP (fake-igd.service): a new port accepted, a port renewed, a port refused (reject 501, conflict 718, no
+  room 728, invalid 402), a port taken away (DeletePortMapping / Range), a mapping ran out, a new device
+  searching for a router (first time by address + User-Agent), a device that stopped after the answer (with
+  the "make this server its gateway" hint), another UPnP router, the public IP changed (looked up every 30
+  minutes when auto), an interface came or went, the service started/stopped, an unclean start after a crash.
+  Gateway for devices (the pages' API): a device online/offline (neighbour table, its traffic), drops toward
+  local networks over `ntfy_gw_drops_per_hour` (100), forwarding turned off by something else / FAKE-IGD-FWD
+  not first, a device's own rule used for the first time. System: every alert of Alerts and reports (each
+  alert kind can be left out) and its "over" message.
+  As it comes: new port, refused, another router, public IP on - the rest off (what 1.8.1 sent, plus the
+  refusals and the IP change). `notify_on_renew` / `notify_other_router` are kept and mapped.
+- Quiet hours (`ntfy_quiet_from` / `_to`, this machine's clock): only `ntfy_quiet_priority` (4) and above
+  go out; the rest are held and sent as one summary when they end (`ntfy_quiet_summary`), or dropped.
+  Rate limit `ntfy_rate_per_hour` (30) for each kind, then one "N more" summary.
+- What was sent: the kind of each, a filter by kind, the pages' own sends with fake-igd.service's; a send
+  that failed (either's) is written to Events.
+- `upnp notify list|on KIND|off KIND|test KIND` (`alert:KIND` too); console 10 → 4/5/6; completion.
+
+- Fake ntfy server (fakentfy.py): HTTP and HTTPS with a self-signed CA (ca.pem), every POST captured.
+- t_daemon.py - a running fake-igd.py, real SOAP and SSDP: 33/33 - as it comes (old config without
+  ntfy_events), every UPnP kind (402/718 refusals, DeletePortMapping, a 1 s lease running out, device_new
+  once, device_stopped after 60 s, other router, public IP change across a restart, crash marker, stop sent
+  before exit), own priority/tags, all off, rate limit 2/h, quiet hours live (priority 4 passes, 2 held ->
+  one summary at the end; dropped without summary), HTTPS with/without ntfy_ca_file, --notify-test.
+- t_units.py: 36/36 - rate-limit summary after the hour (clock patched), quiet summary, midnight span,
+  samples bypass off/quiet, legacy mapping, defaults, settings checks, the iface event (came/gone).
+- t_api.py (env 4): 20/20 - view as reader, 403 for reader on sample/save, sample wording, save mirrors the
+  legacy keys + restart, bad priority/tags refused, the grid keys, What was sent kinds + filter, a 401 sample
+  in Events.
+- t_bg.py (in process, env 4's database; fake neighbour table via FAKE_IGD_IP, fake ip_forward via
+  FAKE_IGD_PROC_SYS, fake gateway.json, fake alert problems): 21/21 - online/offline (5 s wait in the test,
+  180 s live), drops over the limit once an hour, forwarding off / not first, a rule's first packet, gateway
+  off, alerts with a kind left out, over on/off, alerts off, the daemon's failed send in Events once.
+- CLI: list/--json, on/off (alert:updates), test over HTTPS with the CA, a TLS failure explained, a priority 9
+  refused by config set, config validate.
+- Pages: shot.js (switch -> save bar -> Save -> saved; sample toast; kind filter), screenshots
+  $S/r4/ntfy/shots1920, shots1280; all2.js at 1920 and 1280 (admin and viewer) and pop.js both sizes: no page
+  errors, no DOUBLE.
+
+## To know
+- Every switch of a UPnP kind restarts fake-igd.service (config.json, SERVICE_KEYS); a gateway or alert kind
+  only needs the API to read config.json again (within a minute) - `upnp notify` says which.
+- Quiet-hours holdings and rate-limit counts live in each process's memory: a restart forgets them.
+- device_stopped is at most once a day per address; a "new device" is kept in state_dir/devices-seen.json
+  (2000 at most).
+- The alerts forwarded to ntfy follow alerts_delay_min like the mail, independent of whether mail is on.
+- Times shown as NaN-NaN-NaN (a mapping's time kept as an ISO date) are read either way now.
+
 ## 1.8.1 (2026-11-17)
 
 - Gateway for devices is in the menu's first group, fake-igd, below the mDNS reflector (it was under Server).

@@ -4540,3 +4540,25 @@ td.mt-why{max-width:520px;color:var(--tx-dim);white-space:normal}
 .gt-flow-d > summary.gt-flow-g{cursor:pointer;display:flex;justify-content:space-between;gap:12px;margin:10px 0 6px}
 .gt-flow-sum{text-transform:none;letter-spacing:0;color:var(--tx-mut)}
 .gt-flow-d[open] > summary{margin-bottom:6px}
+
+/* ==== 1.8.2: Settings → Notifications (ntfy) - What is sent (pane-ntfy.js) ========================= */
+#pane-ntfy h3.nte-group{margin:22px 0 8px}
+#pane-ntfy h3.nte-group:first-child{margin-top:4px}
+#pane-ntfy h3.nte-group .muted{text-transform:none;letter-spacing:0;font-weight:400}
+.nte-table td{vertical-align:top}
+.nte-table td.nte-sw{width:56px;padding-top:12px}
+.nte-table td.nte-what{min-width:260px}
+.nte-table .nte-name{font-weight:600;margin:0 0 2px}
+.nte-table .nte-dflt{margin-top:4px;color:var(--tx-dim)}
+.nte-table select{min-width:140px}
+.nte-table input.nte-tags{width:100%;min-width:140px;max-width:240px}
+.nte-table td.rowtools{white-space:nowrap;text-align:right}
+.nte-table tr.nte-off .nte-what .nte-name{color:var(--tx-mut);font-weight:500}
+.nte-alerts{margin:10px 0 0;padding:12px 14px;border:1px solid var(--line);border-radius:10px}
+.nte-alerts.nte-off{opacity:.6}
+.nte-chips{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px 16px;margin-top:10px}
+.nte-chip{display:flex;align-items:center;gap:10px;font-size:13px;min-width:0}
+.nte-chip span:last-child{overflow:hidden;text-overflow:ellipsis}
+.nt-filter{display:flex;align-items:center;gap:10px;margin:0 0 10px}
+.nt-filter select{min-width:200px}
+@media (max-width:900px){.nte-table td.nte-what{min-width:180px}.nte-table select{min-width:110px}}

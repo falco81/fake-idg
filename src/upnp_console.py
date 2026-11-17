@@ -2087,18 +2087,12 @@ class Console(object):
                 {"key": "ca", "label": "CA certificate", "value": cfg.get("ntfy_ca_file") or "",
                  "help": "PEM file of a private server's own certificate authority. Empty: the system's CAs.",
                  "check": lambda v, _: self.cli.check_value("ntfy_ca_file", v)[1]},
-                {"key": "renew", "label": "renewals too", "kind": "choice",
-                 "value": "on" if cfg.get("notify_on_renew") else "off", "options": [("off", "off"), ("on", "on")]},
-                {"key": "other", "label": "another router", "kind": "choice",
-                 "value": "on" if cfg.get("notify_other_router", True) else "off",
-                 "options": [("on", "on"), ("off", "off")]},
-            ], "Every new port a client asks for (and another UPnP router seen) goes to your phone. "
+            ], "Where notifications go. What is sent - each kind on or off - is item 5 of this menu. "
                "Each value is saved by upnp config set; the service is restarted once at the end.")
             if not got:
                 return
             plan = [("ntfy_url", got["url"], False), ("ntfy_priority", got["priority"], False),
-                    ("ntfy_tags", got["tags"], False), ("ntfy_ca_file", got["ca"], False),
-                    ("notify_on_renew", got["renew"], False), ("notify_other_router", got["other"], False)]
+                    ("ntfy_tags", got["tags"], False), ("ntfy_ca_file", got["ca"], False)]
             if got["auth"] == "none":
                 plan += [("ntfy_token", "", True), ("ntfy_user", "", False), ("ntfy_password", "", True)]
             elif got["auth"] == "token":
@@ -2119,10 +2113,32 @@ class Console(object):
                           quiet_ok="saved; the service was restarted")
             if got["url"] and self.confirm("Notifications (ntfy)", "Send a test notification now?", "Send"):
                 self.act("notify-test")
+        def kinds():
+            import igd_ntfy as N
+            cfg = self.cfg()
+            out = [(k, "%-3s  %s" % ("on" if N.conf(cfg, k)["on"] else "off", w)) for k, _g, w, _s, _d in N.EVENTS]
+            return out + [("alert:" + k, "%-3s  the alerts: %s" % ("on" if N.conf(cfg, "alert:" + k)["on"] else "off", w))
+                          for k, w in N.ALERT_KINDS]
+
+        def switch():
+            import igd_ntfy as N
+            k = self.choose("What is sent - on or off", kinds(), "Enter switches the kind picked. The UPnP events "
+                            "restart fake-igd.service; the gateway's and the alerts' are the pages' API's.")
+            if k:
+                self.act("notify", "off" if N.conf(self.cfg(), k)["on"] else "on", k)
+
+        def sample():
+            k = self.choose("Send a sample", [x for x in kinds() if not x[0].startswith("alert:")],
+                            "That kind's own wording sent now, marked as a sample.")
+            if k:
+                self.act("notify", "test", k)
         return self.sub("Notifications (ntfy)", [
             ("1", "Set up (ntfy.sh or a private server)", setup),
             ("2", "Send a test notification", lambda: self.act("notify-test")),
             ("3", "How it is set", lambda: self.act("status")),
+            ("4", "What is sent (every kind, on or off)", lambda: self.act("notify", "list")),
+            ("5", "Switch a kind on or off", switch),
+            ("6", "Send a sample of a kind", sample),
         ])
 
     # ---- 11 the service ---------------------------------------------------------------

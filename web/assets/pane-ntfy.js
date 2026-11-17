@@ -2,12 +2,140 @@
    with every step shown (otp's mailSteps), what was sent, the certificate authority (otp's mca-*). */
 (function () {
   'use strict';
-  var NT = {d: null};
-  var KIND_TAG = {'a port': 'info', 'another router': 'warn', 'a test': 'dim'};
+  var NT = {d: null, kind: ''};
+  var EV = {d: null, edit: null};
+  var KIND_TAG = {port_new: 'info', port_refused: 'warn', other_router: 'warn', public_ip: 'info',
+                  service_crash: 'warn', gw_forward: 'warn', gw_drops: 'warn', alerts: 'warn', alerts_over: 'ok',
+                  test: 'dim', summary: 'dim'};
+  var PRIO = [[1, '1 min'], [2, '2 low'], [3, '3 default'], [4, '4 high'], [5, '5 urgent']];
 
+  function sendsPath() { return 'upnp-ntfy' + (NT.kind ? '&kind=' + encodeURIComponent(NT.kind) : ''); }
   function load() {
-    return api('upnp-ntfy').then(function (d) { NT.d = d; draw(); return d; }).catch(oops);
+    return api(sendsPath()).then(function (d) { NT.d = d; draw(); return d; }).catch(oops);
   }
+  function kindWords(k) {
+    if (k === 'test') return 'a test';
+    if (k === 'summary') return 'a summary';
+    var e = EV.d && (EV.d.events || []).filter(function (x) { return x.kind === k; })[0];
+    return e ? e.words : k;
+  }
+
+  /* ---- What is sent: each kind on or off, its priority and tags, a sample (1.8.2) ---- */
+  function fromView(d) {
+    var o = {};
+    (d.events || []).forEach(function (e) { o[e.kind] = {on: !!e.on, priority: e.priority || 0, tags: e.tags || ''}; });
+    (d.alert_kinds || []).forEach(function (a) { o['alert:' + a.kind] = {on: !!a.on}; });
+    return o;
+  }
+  function loadEv() {
+    return api('ntfy').then(function (d) {
+      EV.d = d;
+      if (!PENDING.ntev) EV.edit = fromView(d);
+      drawEv();
+      return d;
+    }).catch(oops);
+  }
+  function changed() {
+    pendingSet('ntev', {save: function () {
+      return api('ntfy', {action: 'events', events: EV.edit}).then(function (r) {
+        toast(r.message, 'good'); delete PENDING.ntev; loadEv(); return true;
+      });
+    }, reset: function () { EV.edit = fromView(EV.d); drawEv(); }});
+  }
+  function sample(kind, b) {
+    busy(b, true);
+    api('ntfy', {action: 'sample', kind: kind}, 30).then(function (r) {
+      toast(r.message, r.ok ? 'good' : 'bad'); load();
+    }).catch(oops).then(function () { busy(b, false); });
+  }
+  function eventRow(e) {
+    var c = EV.edit[e.kind] || {on: e.on, priority: e.priority, tags: e.tags};
+    var tr = el('tr', c.on ? '' : 'nte-off');
+    var swc = el('td', 'nte-sw');
+    var sw = switchBox(c.on);
+    sw._input.disabled = !ADMIN;
+    var what = el('td', 'nte-what');
+    var name = el('div', 'nte-name', e.words);
+    swNamedBy(sw, name);
+    what.appendChild(name);
+    var says = e.says + (e.kind === 'gw_drops' && EV.d ? ' More than ' + num(EV.d.drops_per_hour) + ' an hour (the setting above).' : '');
+    what.appendChild(el('div', 'muted small', says));
+    var dflt = el('div', 'muted small nte-dflt', (e.default ? 'on' : 'off') + ' as it comes · ' + e.by);
+    what.appendChild(dflt);
+    sw._input.onchange = function () {
+      c.on = sw._input.checked; EV.edit[e.kind] = c; tr.className = c.on ? '' : 'nte-off';
+      changed(); if (e.kind === 'alerts') drawEv();
+    };
+    swc.appendChild(sw);
+    tr.appendChild(swc);
+    tr.appendChild(what);
+    var pc = el('td');
+    var prio = selectBox([[0, 'as set above']].concat(PRIO), c.priority || 0);
+    prio.disabled = !ADMIN;
+    prio.setAttribute('aria-label', 'Priority of ' + e.words);
+    prio.onchange = function () { c.priority = parseInt(prio.value, 10) || 0; EV.edit[e.kind] = c; changed(); };
+    pc.appendChild(prio);
+    tr.appendChild(pc);
+    var tc = el('td');
+    var tags = textBox(c.tags || '', 'as set above', 'nte-tags');
+    tags.disabled = !ADMIN;
+    tags.maxLength = 120;
+    tags.setAttribute('aria-label', 'Tags of ' + e.words);
+    tags.oninput = function () { c.tags = tags.value; EV.edit[e.kind] = c; changed(); };
+    tc.appendChild(tags);
+    tr.appendChild(tc);
+    var bc = el('td', 'rowtools');
+    var b = cmdButton('Send a sample', 'bell', 'small');
+    b.disabled = !ADMIN || !(EV.d && EV.d.url);
+    b.title = EV.d && EV.d.url ? 'Sends "' + e.words + '" in its own words now, marked as a sample' : 'No ntfy topic URL yet';
+    b.onclick = function () { sample(e.kind, b); };
+    bc.appendChild(b);
+    tr.appendChild(bc);
+    return tr;
+  }
+  function alertKinds() {
+    var on = EV.edit.alerts && EV.edit.alerts.on;
+    var box = el('div', 'nte-alerts' + (on ? '' : ' nte-off'));
+    box.appendChild(el('div', 'muted small', on ? 'The alerts sent - each kind can be left out:'
+      : 'Switch on "Every alert" above to send the alerts here - each kind can then be left out:'));
+    var grid = el('div', 'nte-chips');
+    (EV.d.alert_kinds || []).forEach(function (a) {
+      var k = 'alert:' + a.kind, c = EV.edit[k] || {on: a.on};
+      var chip = el('label', 'nte-chip');
+      var sw = switchBox(c.on);
+      sw._input.disabled = !ADMIN;
+      sw._input.onchange = function () { c.on = sw._input.checked; EV.edit[k] = c; changed(); };
+      chip.appendChild(sw);
+      chip.appendChild(el('span', '', a.words));
+      grid.appendChild(chip);
+    });
+    box.appendChild(grid);
+    return box;
+  }
+  function drawEv() {
+    var d = EV.d, host = $('nt-events');
+    if (!d || !host || !EV.edit) return;
+    var q = d.quiet || {}, bits = [];
+    if (q.from && q.to) bits.push('quiet hours ' + q.from + '-' + q.to + (q.now ? ' (now' + (q.held ? ', ' + num(q.held) + ' held' : '') + ')' : ''));
+    bits.push(d.rate ? 'at most ' + num(d.rate) + ' of a kind an hour' : 'no rate limit');
+    var over = Object.keys(d.limited || {});
+    if (over.length) bits.push(over.length + ' kind(s) held back by the rate limit');
+    $('nte-said').textContent = bits.join(' · ');
+    clear(host);
+    ['upnp', 'gateway', 'system'].forEach(function (g) {
+      var rows = (d.events || []).filter(function (e) { return e.group === g; });
+      if (!rows.length) return;
+      var n = rows.filter(function (e) { return (EV.edit[e.kind] || e).on; }).length;
+      var h = el('h3', 'peek-h nte-group', (d.groups || {})[g] || g);
+      h.appendChild(el('span', 'muted small', ' · ' + n + ' of ' + rows.length + ' on'));
+      host.appendChild(h);
+      host.appendChild(listTable(['On', 'What is sent', 'Priority', 'Tags', ''], rows, eventRow, 'plain nte-table', {own: true}));
+      if (g === 'system') host.appendChild(alertKinds());
+    });
+    if (!d.url) host.appendChild(el('p', 'note', 'Nothing goes out until the topic URL above is saved.'));
+    explainWhatWasDrawn($('pane-ntfy'));
+  }
+  $('nt-kind').onchange = function () { NT.kind = this.value; load(); };
   function whenOf(t) { var ms = Date.parse(t || ''); return isNaN(ms) ? (t || '–') : dayWords(new Date(ms)); }
   function certTable(list) {
     return listTable(['It is', 'Signed by', 'Good from', 'Good until', 'Fingerprint (SHA-256)', ''], list, function (c) {
@@ -53,19 +181,32 @@
     /* What was sent. */
     var rows = d.sends || [];
     $('nt-when').textContent = rows.length ? 'the last one ' + ago(rows[0].at) : '';
+    var ks = $('nt-kind'), kinds = (d.send_kinds || []).slice();
+    if (NT.kind && kinds.indexOf(NT.kind) < 0) kinds.push(NT.kind);
+    clear(ks);
+    [['', 'every kind']].concat(kinds.map(function (k) { return [k, kindWords(k)]; })).forEach(function (p) {
+      var o = el('option', '', p[1]); o.value = p[0]; ks.appendChild(o);
+    });
+    ks.value = NT.kind;
     var host = $('nt-sends');
     clear(host);
     host.appendChild(listTable(['When', 'What', 'Title', 'To', 'Sent', 'What the server said', 'By'], rows, function (r) {
       var tr = el('tr');
       tr.appendChild(stampCell(r.at));
-      var k = el('td'); k.appendChild(el('span', 'tag ' + (KIND_TAG[r.kind] || 'dim'), r.kind)); tr.appendChild(k);
+      var k = el('td');
+      var kt = el('span', 'tag ' + (KIND_TAG[r.kind] || 'dim'), kindWords(r.kind));
+      kt.title = r.kind + (r.why ? ' - ' + r.why : '');
+      kt.style.cursor = 'pointer';
+      kt.onclick = function () { NT.kind = NT.kind === r.kind ? '' : r.kind; load(); };
+      k.appendChild(kt);
+      tr.appendChild(k);
       tr.appendChild(noI18n(el('td', '', r.title || '')));
       tr.appendChild(noI18n(el('td', 'mono small', r.host || '')));
       var s = el('td'); s.appendChild(el('span', 'tag ' + (r.ok ? 'ok' : 'crit'), r.ok ? 'sent' : 'failed')); tr.appendChild(s);
       tr.appendChild(noI18n(el('td', 'small ' + (r.ok ? 'muted' : 'bad'), r.said || '')));
       tr.appendChild(noI18n(el('td', 'muted small', r.by || '')));
       return tr;
-    }, 'plain|Nothing has been sent yet' + (d.on ? '' : ' - notifications are switched off'), {own: true}));
+    }, 'plain|' + (NT.kind ? 'Nothing of this kind was sent' : 'Nothing has been sent yet' + (d.on ? '' : ' - notifications are switched off')), {own: true}));
     /* The certificate authority. */
     var list = d.ca_list || [];
     $('nca-when').textContent = list.length ? num(list.length) + ' certificate(s) kept' : (d.ca_file ? '' : 'none imported');
@@ -140,10 +281,18 @@
         api('upnp-ntfy', {action: 'ca', mode: 'drop'}).then(function (r) { toast(r.message, 'good'); load(); loadSettings(!Object.keys(DIRTY).length); }).catch(oops);
       });
   };
-  PANE_LOAD.ntfy = load;
+  PANE_LOAD.ntfy = function () { return loadEv().then(load); };
   PANE_TICK.ntfy = function () {
-    if (document.activeElement && $('pane-ntfy').contains(document.activeElement) && document.activeElement.tagName === 'TEXTAREA') return;
-    api('upnp-ntfy').then(function (d) {
+    if (document.activeElement && $('pane-ntfy').contains(document.activeElement) && /^(TEXTAREA|INPUT|SELECT)$/.test(document.activeElement.tagName)) return;
+    if (!PENDING.ntev) {
+      api('ntfy').then(function (d) {
+        var same = function (x) { return JSON.stringify(x, function (k, v) { return k === 'at' ? undefined : v; }); };
+        var was = same(EV.d);
+        EV.d = d;
+        if (was !== same(d)) { EV.edit = fromView(d); drawEv(); }
+      }).catch(function () {});
+    }
+    api(sendsPath()).then(function (d) {
       var was = JSON.stringify([NT.d && NT.d.sends, NT.d && NT.d.ca_list, NT.d && NT.d.url]);
       NT.d = d;
       if (was !== JSON.stringify([d.sends, d.ca_list, d.url])) draw();

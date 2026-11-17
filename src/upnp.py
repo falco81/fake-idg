@@ -17,7 +17,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from xml.etree import ElementTree as ET
 
-VERSION = "1.8.1"
+VERSION = "1.9.0"
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 APP = "fake-igd"
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
@@ -1495,6 +1495,84 @@ def cmd_notify_test(args, cfg):
         fail(out or "the test failed (exit %d)" % r.returncode, r.returncode or 1)
 
 
+def cmd_notify(args, cfg):
+    """upnp notify list | on KIND | off KIND | test KIND (1.8.2): what is sent to ntfy."""
+    import igd_ntfy as N
+    sub = args.notify_cmd or "list"
+    kinds = N.KINDS + ["alert:%s" % k for k, _w in N.ALERT_KINDS]
+    if sub == "list":
+        rows = []
+        for kind, group, words, _says, dflt in N.EVENTS:
+            c = N.conf(cfg, kind)
+            rows.append({"kind": kind, "group": group, "on": bool(c["on"]), "default": dflt,
+                         "priority": c.get("priority") or 0, "tags": c.get("tags") or "", "words": words})
+        for k, w in N.ALERT_KINDS:
+            rows.append({"kind": "alert:" + k, "group": "alerts", "on": bool(N.conf(cfg, "alert:" + k)["on"]),
+                         "default": True, "priority": "", "tags": "", "words": w})
+        if args.json:
+            print(json.dumps({"events": rows, "url": bool(cfg.get("ntfy_url")),
+                              "quiet": [cfg.get("ntfy_quiet_from"), cfg.get("ntfy_quiet_to"),
+                                        cfg.get("ntfy_quiet_priority"), cfg.get("ntfy_quiet_summary")],
+                              "rate_per_hour": cfg.get("ntfy_rate_per_hour")}, ensure_ascii=False, indent=2))
+            return
+        print(col("What is sent to ntfy", C.bold) + "  " + col(str(cfg.get("ntfy_url") or "ntfy_url not set - "
+                                                                     "nothing goes out"), C.dim))
+        group = None
+        for r in rows:
+            if r["group"] != group:
+                group = r["group"]
+                print()
+                print(col(N.GROUP_WORDS.get(group, "The alerts' kinds (with alerts on)"), C.bold))
+            mark = col("on ", C.green + C.bold) if r["on"] else col("off", C.dim)
+            look = []
+            if r["priority"]:
+                look.append("priority %s" % r["priority"])
+            if r["tags"]:
+                look.append("tags %s" % r["tags"])
+            print("  %s  %-16s %s%s" % (mark, r["kind"], r["words"], col(("  (" + ", ".join(look) + ")") if look
+                                                                         else "", C.dim)))
+        q = (cfg.get("ntfy_quiet_from"), cfg.get("ntfy_quiet_to"))
+        print()
+        print("  quiet hours: %s · rate limit: %s" % (
+            ("%s-%s, priority %s and above pass, the rest %s" % (q[0], q[1], cfg.get("ntfy_quiet_priority"),
+             "held for one summary" if cfg.get("ntfy_quiet_summary", True) else "dropped")) if q[0] and q[1]
+            else "none", ("%s of a kind an hour" % cfg.get("ntfy_rate_per_hour")) if cfg.get("ntfy_rate_per_hour")
+            else "none"))
+        return
+    kind = args.kind
+    if kind not in kinds:
+        fail("Unknown kind %s. Kinds: %s" % (kind, ", ".join(kinds)))
+    if sub == "test":
+        if kind.startswith("alert:"):
+            kind = "alerts"
+        if not cfg.get("ntfy_url"):
+            fail("ntfy_url is not set. Set it: sudo upnp config set ntfy_url https://ntfy.example.com/topic")
+        title, words = N.SAMPLES[kind]
+        got = {}
+        said = N.Notifier(lambda: cfg, lambda *a: got.update(a=a)).send(kind, title, words, sample=True, wait=True)
+        (ok if said.startswith("sent") else fail)("a sample of %s: %s" % (kind, said))
+        return
+    require_root("Changing the config")
+    raw = load_config(args.config, strict=True)
+    ev = N.events_checked(raw.get("ntfy_events") or {})
+    one = dict(N.conf(dict(raw, ntfy_events=ev), kind))
+    one["on"] = sub == "on"
+    if kind.startswith("alert:"):
+        one = {"on": one["on"]}
+    ev[kind] = one
+    raw["ntfy_events"] = N.events_checked(ev)
+    if kind == "port_renew":
+        raw["notify_on_renew"] = one["on"]
+    if kind == "other_router":
+        raw["notify_other_router"] = one["on"]
+    write_config(args.config, raw)
+    ok("%s: %s" % (kind, "on" if one["on"] else "off"))
+    if kind.split(":")[0] in ("alert", "alerts", "alerts_over") or kind.startswith("gw_"):
+        info("Sent by the pages' API (fake-igd-api) - it reads config.json again within a minute.")
+    else:
+        restart_service(args.no_restart)
+
+
 # ================================================================ mDNS / Avahi
 def cmd_mdns(args, cfg):
     import upnp_mdns as M
@@ -1663,7 +1741,7 @@ commands by purpose:
   settings        config, mode, response
   service         start, stop, restart, enable, disable, test
   firewall        firewall
-  notifications   notify-test
+  notifications   notify (list, on, off, test), notify-test
   mDNS reflector  mdns (status, services, browse, reflector, interfaces, filters, log)
   maintenance     check, events, db, backup, export-config, import-config, clear, version
   upgrades        upgrade (check, online, file, status, follow, log, after), updates (the system's)
@@ -2012,6 +2090,28 @@ def build_parser():
             "  sudo upnp config set ntfy_token -          # asked for, not shown\n"
             "  sudo upnp config set ntfy_ca_file /etc/pki/tls/certs/my-ca.pem", aliases=("nt",))
     s.set_defaults(func=cmd_notify_test)
+
+    s = add("notify", "what is sent to ntfy: list, on KIND, off KIND, test KIND",
+            "Each kind of event sent to ntfy switched on or off (config.json's ntfy_events, the\n"
+            "card \"What is sent\" of Settings → Notifications (ntfy)). The UPnP events are sent by\n"
+            "fake-igd.service (restarted after a change), the gateway's and the alerts' by the pages'\n"
+            "API. test sends that kind's own wording now, marked as a sample.",
+            "examples:\n"
+            "  upnp notify list\n"
+            "  sudo upnp notify on port_renew\n"
+            "  sudo upnp notify off other_router\n"
+            "  sudo upnp notify off alert:updates    # the alerts sent, but not this kind\n"
+            "  upnp notify test port_refused\n"
+            "  sudo upnp config set ntfy_quiet_from 22:00; sudo upnp config set ntfy_quiet_to 07:00")
+    nsp = s.add_subparsers(dest="notify_cmd", metavar="list|on|off|test")
+    c = nsp.add_parser("list", help="every kind: on or off, its priority and tags", parents=[common])
+    c.add_argument("--json", action="store_true", help="as JSON")
+    for name, h in (("on", "send this kind"), ("off", "do not send this kind"), ("test", "send a sample of it now")):
+        c = nsp.add_parser(name, help=h, parents=[common])
+        c.add_argument("kind", metavar="KIND", help="port_new, port_renew, ... gw_online, alerts, alert:disk ...")
+        if name != "test":
+            c.add_argument("--no-restart", action="store_true", help="do not restart the service")
+    s.set_defaults(func=cmd_notify, notify_cmd=None, json=False, no_restart=False)
 
     for name, h in (("start", "start the service"), ("stop", "stop the service"), ("restart", "restart the service"),
                     ("enable", "enable start on boot"), ("disable", "disable start on boot")):

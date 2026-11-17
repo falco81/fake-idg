@@ -1,4 +1,4 @@
-# fake-igd 1.8.1
+# fake-igd 1.9.0
 
 A fake UPnP router (IGD) for reconnaissance: it finds out **which ports a PS5 (or any other device) wants to open**, without enabling UPnP on your real router. Everything is logged to `/var/log/fake-igd/` and controlled with the **`upnp`** command - or by its menus with **`upnp --console`**. It also shows and controls the **mDNS reflector (avahi-daemon)** running on the same server, and sends notifications to **ntfy** (ntfy.sh or your private server).
 
@@ -20,8 +20,8 @@ packages only, checked and put in by root, exactly as otp does it.
 ## Installation (AlmaLinux 9)
 
 ```bash
-tar xzf fake-igd-1.8.1.tar.gz
-cd fake-igd-1.8.1
+tar xzf fake-igd-1.9.0.tar.gz
+cd fake-igd-1.9.0
 sudo ./install.sh
 ```
 
@@ -92,7 +92,7 @@ Or on the pages: *Settings → Upgrades* - *Look now*, *Upgrade to X now*, or dr
 console: menu **14 Upgrades**. Or by hand, as before:
 
 ```bash
-tar xzf fake-igd-1.8.1.tar.gz && cd fake-igd-1.8.1
+tar xzf fake-igd-1.9.0.tar.gz && cd fake-igd-1.9.0
 sudo ./install.sh --upgrade
 ```
 
@@ -372,7 +372,7 @@ The console has the same in **17 Certificates, updates, time, tests** (17 - 22).
 
 ## Notifications (ntfy - public or private server)
 
-Every new port a client asks for - and another UPnP router seen on the network - can go to your phone through [ntfy](https://ntfy.sh): the public ntfy.sh or **your own ntfy server**.
+Every new port a client asks for, one refused, another UPnP router seen on the network, a device of the gateway going offline, an alert - each kind switched on or off - can go to your phone through [ntfy](https://ntfy.sh): the public ntfy.sh or **your own ntfy server**.
 
 ```bash
 sudo upnp config set ntfy_url https://ntfy.example.com/ps5      # your server + topic
@@ -395,10 +395,50 @@ Or in the console: **10 Notifications (ntfy) → Set up**, one form for all of i
 | `ntfy_priority` | 1-5 (default 3) |
 | `ntfy_tags` | tags / emoji names (default `video_game`) |
 | `ntfy_ca_file` | PEM of your own certificate authority (self-hosted TLS) |
-| `notify_on_renew` | notify renewals too (default off) |
-| `notify_other_router` | notify when another UPnP router announces itself (default on, priority 4) |
+| `ntfy_events` | what is sent: each kind of event on or off, with a priority and tags of its own (below) |
+| `ntfy_quiet_from` / `ntfy_quiet_to` | quiet hours, `HH:MM` on this machine's clock (`22:00` to `07:00` spans midnight); empty = none |
+| `ntfy_quiet_priority` | in the quiet hours only this priority and above goes out (default 4) |
+| `ntfy_quiet_summary` | what the quiet hours held back is sent as one summary when they end (default on; off: dropped) |
+| `ntfy_rate_per_hour` | at most this many of one kind an hour, then one "N more" summary (default 30; 0 = no limit) |
+| `notify_on_renew` / `notify_other_router` | the older switches - kept, and the same as the kinds `port_renew` / `other_router` (unless `ntfy_events` says otherwise) |
 
-Secrets are passed to `config set` as `-` (asked for) or `@env` (the `UPNP_VALUE` variable, what the console uses) so they never appear on a command line; `config show` and `config get` print `(hidden)`. `/etc/fake-igd/config.json` is readable by root and the `fake-igd` group only. 401 / 403 / TLS errors are explained (`check ntfy_token`, `set ntfy_ca_file`). Each sent notification is logged (`notify: sent ...`), a failed one is a warning.
+Secrets are passed to `config set` as `-` (asked for) or `@env` (the `UPNP_VALUE` variable, what the console uses) so they never appear on a command line; `config show` and `config get` print `(hidden)`. `/etc/fake-igd/config.json` is readable by root and the `fake-igd` group only. 401 / 403 / TLS errors are explained (`check ntfy_token`, `set ntfy_ca_file`). Each sent notification is logged with its kind (`notify: sent [port_new] ...`), a failed one is a warning - and in *Events*.
+
+### What is sent - each kind on or off
+
+*Settings → Notifications (ntfy) → What is sent*: every kind of event with a switch, a priority (1-5, or as set above), tags of its own and **Send a sample** - that event's own wording sent now, marked `[a sample]`. Changes wait for *Save the changes*. As it comes, only the four marked **on** are sent - what fake-igd sent before 1.8.2.
+
+| Kind | When | As it comes |
+|---|---|---|
+| `port_new` | a device asks for a port (AddPortMapping) and fake-igd confirms it | **on** |
+| `port_renew` | a device asks again for a port it holds | off |
+| `port_refused` | refused: reject mode (501), a conflict with another device (718), no room (728), invalid (402) | **on** (tag `no_entry`) |
+| `port_deleted` | DeletePortMapping, DeletePortMappingRange | off |
+| `port_expired` | a mapping's lease ran out | off |
+| `device_new` | a device (address + User-Agent) searches for a router for the first time | off |
+| `device_stopped` | answered, but it did not fetch the description within a minute - with the hint: make this server its gateway | off |
+| `other_router` | another UPnP router announces itself | **on** (priority 4, `warning`) |
+| `public_ip` | the public IP changed (`external_ip auto`: looked up every 30 minutes) | **on** |
+| `iface` | an interface fake-igd answers on came up or went away | off |
+| `service` / `service_crash` | fake-igd.service started or stopped / started after it had not stopped cleanly | off |
+| `gw_online` | a device of *Gateway for devices* came online / went offline (the neighbour table, its traffic) | off |
+| `gw_drops` | a device tried networks it may not reach more than `ntfy_gw_drops_per_hour` times in an hour (a setting of the pane, default 100) | off |
+| `gw_forward` | the gateway is on, but `ip_forward` was turned off or FAKE-IGD-FWD is no longer first in FORWARD | off |
+| `gw_rule_first` | a device's own rule forwarded its first packet | off |
+| `alerts` / `alerts_over` | every alert of *Settings → Alerts and reports* (each alert kind can be left out: `alert:disk`, `alert:updates` ...) / its "over" message | off |
+
+The UPnP kinds are sent by fake-igd.service itself (a change restarts it); the gateway's and the alerts' by the pages' API, once a minute - through the same ntfy client, with the same token or password (sealed as ever) and CA. *What was sent* shows the kind of each and filters by it.
+
+```bash
+upnp notify list                       # every kind: on or off, its priority and tags (--json)
+sudo upnp notify on port_renew
+sudo upnp notify off other_router
+sudo upnp notify off alert:updates     # the alerts sent - but not this one
+upnp notify test device_stopped        # a sample of its wording, now
+sudo upnp config set ntfy_quiet_from 22:00; sudo upnp config set ntfy_quiet_to 07:00
+```
+
+Console: **10 Notifications (ntfy) → 4 What is sent**, **5 Switch a kind on or off**, **6 Send a sample of a kind**.
 
 ---
 

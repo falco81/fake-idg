@@ -2,10 +2,19 @@
    what was sent, and the certificate authority of a server of your own). */ ?>
   <div class="ctl-pane" id="pane-ntfy" hidden>
     <div class="ctl-head"><h2 class="ctl-title">Notifications (ntfy)</h2>
-      <p class="ctl-lede">Every new port a client asks for - and another UPnP router heard on the network - can
-        be sent to your phone as it happens. It goes to a topic of ntfy.sh, or of an ntfy server of your own,
+      <p class="ctl-lede">What happens - a new port a client asks for, one refused, another UPnP router heard on
+        the network, a device of the gateway going offline, an alert - can be sent to your phone as it happens,
+        each kind switched on or off below. It goes to a topic of ntfy.sh, or of an ntfy server of your own,
         signed in with a token or a user and password; the phone subscribes to the same topic in the ntfy app.</p></div>
     <div class="card full"><div id="sect-ntfy"></div></div>
+    <div class="card full">
+      <h2>What is sent <span class="right muted small" id="nte-said"></span></h2>
+      <p class="note">Each kind of event on or off, with a priority and tags of its own (empty: as set above).
+        Send a sample sends that event's own wording now, marked as a sample - on or off, quiet hours or not, as
+        it is saved. The UPnP events are sent by fake-igd.service (a change restarts it); the gateway's and the
+        alerts' by the pages' API, once a minute. Changes wait for Save the changes below.</p>
+      <div id="nt-events"></div>
+    </div>
     <div class="card full">
       <h2>Try it <span class="right muted small" id="nt-said"></span></h2>
       <p class="note">Sends one test notification the way every notification goes, and shows every step: the
@@ -18,8 +27,10 @@
     </div>
     <div class="card full">
       <h2>What was sent <span class="right muted small" id="nt-when"></span></h2>
-      <p class="note">The last notifications fake-igd.service sent - or could not send - as its log says, and the
-        tests sent from here. Newest first.</p>
+      <p class="note">The last notifications fake-igd.service sent - or could not send - as its log says, what
+        the pages' API sent (the gateway, the alerts, the samples) and the tests sent from here. Newest first; one
+        that failed is in Events as well.</p>
+      <div class="filters nt-filter"><label for="nt-kind">Kind</label> <select id="nt-kind"></select></div>
       <div id="nt-sends"></div>
     </div>
     <div class="card full">
