@@ -2,6 +2,42 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.8.0 (2026-11-17)
+
+**Gateway for devices** (Settings → Server → Gateway for devices). A PS5 asks UPnP only of its *default
+gateway*: with the real router as its gateway it searched, heard fake-igd's answer and went no further; with
+its gateway set to the fake-igd server it fetched the description at once and asked for UDP 9308. This
+server can now be the gateway of the devices chosen - and of nothing else:
+- **Devices, not networks**: each by its IPv4 address, a name ("PS5 Pro") and best its MAC (offered from the
+  neighbour table - "Use the MAC seen now"); a rule per device, its name in the rule's comment, with
+  `--mac-source` so a box that takes its address does not pass. Picked from the devices fake-igd has seen
+  (the Clients tab) or typed; switched on/off, edited, removed.
+- **Only toward the internet**: forwarded only in and out of the interface of the server's default route,
+  toward the router - never to another network of this server (it stays no bridge between the networks it
+  reflects mDNS between), never to its own LAN, link-local, multicast, reserved, nor to any private network
+  (10/8, 172.16/12, 192.168/16, 100.64/10) behind the router.
+- **FAKE-IGD-FWD** first in FORWARD, ending in a DROP of its own whatever the system's FORWARD policy says, kept
+  in /etc/sysconfig/iptables between fake-igd's marks; no conntrack state (the way back goes router → device).
+- **Forwarding only while needed**: net.ipv4.ip_forward is turned on only after the chain is in place and
+  checked, and only while a device is on; /etc/sysctl.d/90-fake-igd-gateway.conf (ip_forward, send_redirects
+  0 for all, default and each interface - an ICMP redirect would send the device to the router directly)
+  only while so; off, or the last device taken away: forwarding back to what it was, the file and the chain
+  gone. Refused with fake-igd's firewall off or firewalld in charge (said why); fake-igd's firewall switched
+  off switches it off. IPv6 forwarding never.
+- **On trial** as the firewall's (Keep it / Put the old back now, on every page); back by itself after a
+  restart of the machine.
+- The pane: the state (forwarding, the chain, the interface, the router, the firewall, why off), the devices
+  with the packets forwarded, when last through and how far they got on the Clients tab, the exact values to
+  type on the PS5 (its IP, mask, gateway = this server, DNS), the warnings (a single point of failure).
+- **The Clients tab**: a device stopped at "answered" is told why ("a PS5 asks only its default gateway") with
+  "Make this server its gateway", opening the pane with it filled in.
+- `upnp gateway [status|on|off|add IP --name N [--mac M|--mac-seen]|del IP|keep|back]`, in the console too;
+  an alert when forwarding was turned off by something else or the chain is no longer first in FORWARD.
+
+Also:
+- A mapping's "Added" showed "NaN-NaN-NaN NaN:NaN:NaN": the service writes it as ISO words; every time on the
+  pages now takes either.
+
 ## 1.7.14 (2026-11-17)
 
 - **Every search of a device is written down** - once in 30 s per device and what it searched for (a device

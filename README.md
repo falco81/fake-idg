@@ -1,4 +1,4 @@
-# fake-igd 1.7.14
+# fake-igd 1.8.0
 
 A fake UPnP router (IGD) for reconnaissance: it finds out **which ports a PS5 (or any other device) wants to open**, without enabling UPnP on your real router. Everything is logged to `/var/log/fake-igd/` and controlled with the **`upnp`** command - or by its menus with **`upnp --console`**. It also shows and controls the **mDNS reflector (avahi-daemon)** running on the same server, and sends notifications to **ntfy** (ntfy.sh or your private server).
 
@@ -20,8 +20,8 @@ packages only, checked and put in by root, exactly as otp does it.
 ## Installation (AlmaLinux 9)
 
 ```bash
-tar xzf fake-igd-1.7.14.tar.gz
-cd fake-igd-1.7.14
+tar xzf fake-igd-1.8.0.tar.gz
+cd fake-igd-1.8.0
 sudo ./install.sh
 ```
 
@@ -92,7 +92,7 @@ Or on the pages: *Settings → Upgrades* - *Look now*, *Upgrade to X now*, or dr
 console: menu **14 Upgrades**. Or by hand, as before:
 
 ```bash
-tar xzf fake-igd-1.7.14.tar.gz && cd fake-igd-1.7.14
+tar xzf fake-igd-1.8.0.tar.gz && cd fake-igd-1.8.0
 sudo ./install.sh --upgrade
 ```
 

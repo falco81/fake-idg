@@ -64,8 +64,11 @@ IFACE_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,15}\Z")
 MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}\Z")
 NAME_BAD = re.compile(r"[^A-Za-z0-9 ._()+,:/-]")
 MOST_DEVICES = 32
-# Never forwarded to, whatever the routes say: this network ("0"), loopback, link-local, multicast, reserved.
-NEVER = ("0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "224.0.0.0/4", "240.0.0.0/4")
+# Never forwarded to, whatever the routes say: this network ("0"), loopback, link-local, multicast, reserved -
+# and every private network (RFC 1918, the carrier's 100.64/10): through this server a device reaches the
+# internet only, never a network behind the router either (1.8.0). Its own LAN it reaches directly.
+NEVER = ("0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "224.0.0.0/4", "240.0.0.0/4",
+         "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10")
 HELPER = os.path.join(os.path.dirname(os.path.abspath(W.__file__)), "fake_igd_web.py")
 
 
