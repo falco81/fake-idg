@@ -1447,6 +1447,9 @@ def cmd_selinux(M, args, cfg):
         M.fail("root's helper (fake_igd_web.py) is not installed - ./install.sh --upgrade")
     py = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else sys.executable
     step = args.what or "check"
+    args.file = (args.args or [None])[0]
+    if step in ("look", "fix", "rules"):
+        return _se_findings_cli(M, args, py, helper, step)
     if step == "report":
         node = (os.uname()[1].split(".")[0] or "server")
         out = args.file or "/root/fake-igd-selinux-report-%s-%s.tar.gz" % (node, time.strftime("%Y%m%d-%H%M"))
@@ -1500,3 +1503,131 @@ def cmd_selinux(M, args, cfg):
         except SystemExit:
             pass
     return got.returncode
+
+
+SE_KIND_WORDS = (("boolean", "A boolean", "a switch of the policy allows it"),
+                 ("label", "A label", "the file is not labelled as the policy says"),
+                 ("port", "A port", "a port with no type of its own"),
+                 ("rule", "A rule of fake-igd's", "nothing of the policy allows it - exactly this, in fake_igd_local"),
+                 ("unsafe", "Not for a button", "fake-igd's, but too much to allow from here"),
+                 ("foreign", "Not fake-igd's", "other programs of this machine - never put right here"))
+
+
+def _se_json(M, py, helper, argv):
+    got = subprocess.run([py, "-I", helper] + argv + ["--json"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         universal_newlines=True, timeout=1200)
+    if got.returncode not in (0, 1):
+        M.fail((got.stderr or got.stdout).strip()[-400:] or "root's helper ended with %d" % got.returncode)
+    try:
+        return json.loads(got.stdout or "{}")
+    except ValueError:
+        M.fail("root's helper said nothing readable: %s" % (got.stdout or got.stderr)[:300])
+
+
+def _se_findings_print(M, c):
+    found = c.get("findings") or []
+    d = c.get("denials") or {}
+    print(M.col("What SELinux refuses on this server (%s) - %s" % (
+        c.get("mode"), "since fake-igd's needs were put in" if d.get("since") else "since the machine started"),
+        M.C.bold))
+    if not d.get("tool", True) or c.get("mode") not in ("Enforcing", "Permissive"):
+        print(M.col("  SELinux is %s - nothing it refuses is read" % (c.get("mode") or "?").lower(), M.C.dim)
+              if c.get("mode") not in ("Enforcing", "Permissive") else
+              M.col("  ausearch is not on this machine (dnf install audit)", M.C.yellow))
+        return
+    if not found:
+        M.ok("SELinux refused nothing on this server")
+        return
+    tone = {"boolean": M.C.green, "label": M.C.green, "port": M.C.green, "rule": M.C.yellow, "unsafe": M.C.red,
+            "foreign": M.C.dim}
+    for kind, name, says in SE_KIND_WORDS:
+        items = [f for f in found if f["kind"] == kind]
+        if not items:
+            continue
+        print()
+        print(M.col("%s (%d)" % (name, len(items)), tone[kind], M.C.bold) + M.col("  - " + says, M.C.dim))
+        for f in items:
+            what = f.get("path") or ("port %s/%s" % (f["port"], f.get("proto") or "tcp") if f.get("port") else "")
+            print("  %s %s %s %s" % (M.col(f["id"], M.C.cyan), M.col("%3dx" % f["count"], M.C.dim),
+                                     M.col(f.get("comm") or "?", M.C.bold),
+                                     "%s -> %s %s { %s }" % (f["source"], f["target"], f["class"], " ".join(f["perms"]))))
+            if what:
+                print("                    " + M.col(what, M.C.magenta))
+            fx = (f.get("fix") or {}).get("cmd")
+            print("                    " + (M.col("-> " + fx, M.C.green) if fx else M.col(f.get("says") or "", tone[kind])))
+    fixable = [f["id"] for f in found if f["kind"] in ("boolean", "label", "port", "rule")]
+    print()
+    if fixable:
+        print(M.col("  %d can be put right here: sudo upnp selinux fix --all (or fix ID ...)" % len(fixable), M.C.cyan))
+
+
+def _se_findings_cli(M, args, py, helper, step):
+    if step == "look":
+        c = _se_json(M, py, helper, ["--selinux-check"])
+        if args.json:
+            print(json.dumps({"findings": c.get("findings") or [], "local": c.get("local") or {},
+                              "denials": c.get("denials") or {}}, indent=1))
+            return 0
+        _se_findings_print(M, c)
+        return 0
+    if step == "rules":
+        if args.take_away:
+            if not args.yes and not _ask("Take the rule %s out of fake-igd's local SELinux module?" % args.take_away):
+                print("  nothing done")
+                return 1
+            c = _se_json(M, py, helper, ["--selinux-rule-drop", args.take_away])
+            for x in c.get("said") or []:
+                M.ok(x)
+            return 0
+        c = _se_json(M, py, helper, ["--selinux-check"])
+        rules = (c.get("local") or {}).get("rules") or []
+        if args.json:
+            print(json.dumps(c.get("local") or {}, indent=1))
+            return 0
+        if not rules:
+            print(M.col("fake-igd's local module (fake_igd_local) has no rule - nothing was put in from the card", M.C.dim))
+            return 0
+        print(M.col("fake-igd's local rules (fake_igd_local): %d%s" % (
+            len(rules), "" if (c.get("local") or {}).get("in_policy") is not False else " - NOT in the policy"), M.C.bold))
+        for r in rules:
+            print("  %s (allow %s %s (%s (%s)))" % (M.col(r["id"], M.C.cyan), r["source"], r["target"], r["class"],
+                                                   " ".join(r["perms"])))
+            print(M.col("               %s%s" % (r.get("why") or "", (" - by %s" % r["by"]) if r.get("by") else ""), M.C.dim))
+        print(M.col("  take one away: sudo upnp selinux rules --take-away ID", M.C.dim))
+        return 0
+    # fix
+    c = _se_json(M, py, helper, ["--selinux-check"])
+    found = {f["id"]: f for f in c.get("findings") or []}
+    fixable = [i for i, f in found.items() if f["kind"] in ("boolean", "label", "port", "rule")]
+    ids = fixable if args.all else list(args.args or [])
+    if not ids:
+        M.fail("which? sudo upnp selinux fix ID ... (upnp selinux look shows them) or --all")
+    bad = [i for i in ids if i not in found]
+    if bad:
+        M.warn("not refused now (or not an id of look): %s" % ", ".join(bad))
+    todo = [found[i] for i in ids if i in found and found[i]["kind"] in ("boolean", "label", "port", "rule")]
+    for i in ids:
+        if i in found and found[i] not in todo:
+            M.warn("%s is not put right here: %s" % (i, found[i].get("says")))
+    if not todo:
+        M.fail("nothing of it can be put right here")
+    print(M.col("Root does exactly this - nothing else:", M.C.bold))
+    for f in todo:
+        print("  %s %s" % (M.col(f["id"], M.C.cyan), f["fix"]["cmd"]))
+    if not args.yes:
+        if not sys.stdin.isatty():
+            M.fail("add --yes to do it without a terminal")
+        if not _ask("Put it in?"):
+            print("  nothing done")
+            return 1
+    got = _se_json(M, py, helper, ["--selinux-fix"] + [f["id"] for f in todo])
+    for x in got.get("said") or []:
+        (M.warn if "not there" in x or "not put right" in x else M.ok)(x)
+    try:
+        if os.path.exists(os.path.join(RUN_DIR, "cli-token")):
+            api(M, "POST", "/api/selinux", {"action": "check"}, timeout=10, quiet=True)
+    except SystemExit:
+        pass
+    left = [f for f in got.get("findings") or [] if f["kind"] in ("boolean", "label", "port", "rule")]
+    print(M.col("  %d left that can be put right here" % len(left), M.C.dim) if left else M.col("  nothing left that can be put right here", M.C.green))
+    return 0

@@ -23,7 +23,8 @@ import time
 NAME = "selinux"
 SETTINGS = []
 
-ACTIONS = ("check", "prepare", "enforce", "permissive", "report")
+ACTIONS = ("check", "prepare", "enforce", "permissive", "report", "fix", "rule_drop")
+ID_RE = __import__("re").compile(r"^[0-9a-f]{12}\Z")
 EVERY = 1800                    # looked at every half hour
 FIRST_AFTER = 120               # the first look two minutes after the start (otp 1.0.234)
 STEP_STALE_S = 3600             # a step asked and not answered for an hour is said, and left (otp 1.0.270)
@@ -34,7 +35,9 @@ WORDS = {"check": "asked: %s looks within seconds",
          "prepare": "asked: %s makes SELinux ready and permissive within seconds",
          "enforce": "asked: %s switches SELinux to enforcing within seconds",
          "permissive": "asked: %s switches SELinux to permissive within seconds",
-         "report": "asked: %s makes its report within a minute"}
+         "report": "asked: %s makes its report within a minute",
+         "fix": "asked: %s puts right what was selected within seconds",
+         "rule_drop": "asked: %s takes the rule out of fake-igd's local module within seconds"}
 
 
 def node_name():
@@ -81,7 +84,18 @@ def take_answer(ctx):
     said = [str(x)[:300] for x in (got.get("said") or [])] if ok else []
     now.update(seen=got["id"], at=float(got.get("at") or time.time()), error=err, said=said, action=do)
     if isinstance(got.get("data"), dict):
-        now["data"] = got["data"]          # what was known kept when a look fails (otp 1.0.270)
+        data = dict(got["data"])                 # what was known kept when a look fails (otp 1.0.270)
+        fixed_ids = [str(i) for i in (data.pop("fixed", None) or [])][:200]
+        now["data"] = data
+        # What the last Put in put right, for the card to show green until the next look (1.7.10); the
+        # rows themselves: what the card showed of them before.
+        if do == "fix":
+            before = {f.get("id"): f for f in (now.get("shown") or [])}
+            now["fixed"] = {"ids": fixed_ids, "at": time.time(),
+                            "rows": [before[i] for i in fixed_ids if i in before]}
+        elif do != "rule_drop":
+            now["fixed"] = {}
+        now["shown"] = [f for f in (data.get("findings") or []) if f.get("kind") != "foreign"][:200]
     if want.get("id") and want.get("id") == got.get("ask_id", got.get("id")):
         now["done"] = want["id"]
     if do == "report":
@@ -94,7 +108,7 @@ def take_answer(ctx):
     return now
 
 
-def ask(ctx, action, by):
+def ask(ctx, action, by, extra=None):
     S = ctx.store
     was = _meta(S, "selinux:want")
     now = _meta(S, "selinux:now")
@@ -105,10 +119,16 @@ def ask(ctx, action, by):
             return was.get("id")
         raise ValueError("%s has not done the step asked of it yet (%s) - ask for the report after it"
                          % (node_name(), was.get("do")))
-    ident = ctx.ask_root({"do": action})
+    ident = ctx.ask_root(dict(extra or {}, do=action))
     _put(S, "selinux:want", {"id": ident, "do": action, "by": by, "at": time.time()})
     if action == "report":
         ctx.event("%s asked for the SELinux report of %s" % (by, node_name()), "info", kind="settings")
+    elif action == "fix":
+        ctx.event("%s asked root to put right %d thing(s) SELinux refused on %s: %s" % (
+            by, len(extra["ids"]), node_name(), ", ".join(extra["ids"][:20])), "warn", kind="settings")
+    elif action == "rule_drop":
+        ctx.event("%s asked root to take the rule %s out of fake-igd's local SELinux module on %s"
+                  % (by, extra["rule"], node_name()), "warn", kind="settings")
     elif action != "check":
         ctx.event("%s asked SELinux on %s: %s" % (by, node_name(), {
             "prepare": "made ready, permissive", "enforce": "enforcing", "permissive": "permissive again"}[action]),
@@ -137,7 +157,8 @@ def view(ctx):
         reports[node_name()] = {k: rep.get(k) for k in ("at", "bytes", "error", "id")}
     return {"nodes": [{"name": node_name(), "me": True, "state": now.get("data") or {}, "at": now.get("at"),
                        "error": now.get("error") or "", "said": now.get("said") or [],
-                       "action": now.get("action") or "", "pending": pending(ctx, now)}],
+                       "action": now.get("action") or "", "pending": pending(ctx, now),
+                       "fixed": (now.get("fixed") or {}).get("rows") or []}],
             "reports": reports}
 
 
@@ -154,7 +175,7 @@ def problems(store, data=None):
 
 
 def get(ctx):
-    ctx.need("fulladmin")
+    ctx.need("readonly")                # read-only accounts see the card, and change nothing (1.7.10)
     return view(ctx)
 
 
@@ -185,7 +206,21 @@ def post(ctx):
         raise ValueError("check, prepare, enforce, permissive or report")
     if node not in ("*", node_name()):
         raise ValueError("there is no node %s" % node[:60])
-    ask(ctx, action, me["name"])
+    extra = None
+    if action == "fix":
+        ids = b.get("ids")
+        if not isinstance(ids, list) or not ids or len(ids) > 200 or \
+                not all(isinstance(i, str) and ID_RE.match(i) for i in ids):
+            raise ValueError("which of the findings? (their ids)")
+        extra = {"ids": sorted(set(ids))}
+    if action == "rule_drop":
+        rid = str(b.get("rule") or "")
+        if not ID_RE.match(rid):
+            raise ValueError("which rule?")
+        extra = {"rule": rid}
+    if action in ("fix", "rule_drop") and pending(ctx):
+        raise ValueError("root has not done what was asked before yet - a moment")
+    ask(ctx, action, me["name"], extra)
     if action == "report" and node == "*":
         return {"message": "asked: every node makes its report within a minute", "busy": []}
     return {"message": WORDS[action] % node_name()}

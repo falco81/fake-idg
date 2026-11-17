@@ -103,12 +103,12 @@ function drawSelinux() {
     Promise.all((SE.d.nodes || []).map(function (n) { return api('selinux', {node: n.name, action: 'check'}); }))
       .then(function () { setTimeout(loadSelinux, 800); }).catch(oops).then(function () { busy(look, false); });
   };
-  tl.appendChild(look);
+  if (ADMIN) tl.appendChild(look);
   /* The report, made by root and taken as one file (otp 1.0.236): what whoever writes fake-igd's
      module needs - nothing is changed to make it. */
   var rep = cmdButton('Download the report', 'download', 'small');
   rep.onclick = function () { seReport(rep); };
-  tl.appendChild(rep);
+  if (ADMIN) tl.appendChild(rep);
   h.appendChild(tl);
   c.appendChild(h);
   if (SE.rep) c.appendChild(el('p', 'note small se-rep' + (SE.rep.bad ? ' bad' : ''), SE.rep.words));
@@ -117,6 +117,206 @@ function drawSelinux() {
   (SE.d.nodes || []).forEach(function (n) { grid.appendChild(seNode(n)); });
   c.appendChild(grid);
   host.appendChild(c);
+}
+/* ---- What SELinux refuses, found out and put right (1.7.10) ------------------------------------
+   Every refusal since the machine started, grouped by what puts it right - a boolean, a label, a port,
+   a rule of fake-igd's own local module - or why it is not put right here (not for a button, not
+   fake-igd's). Root finds them; the page only names which of root's findings to put right. */
+var SE_FIXABLE = ['boolean', 'label', 'port', 'rule'];
+var SE_KINDS = [
+  ['boolean', 'A boolean', 'A switch of the policy allows it - setsebool, as the policy itself offers it.', 'ok'],
+  ['label', 'A label', 'The file is not labelled as the policy says it should be - restorecon puts it right.', 'ok'],
+  ['port', 'A port', 'A port with no type of its own - given the type of the program that uses it.', 'ok'],
+  ['rule', 'A rule of fake-igd\'s', 'Nothing of the policy allows it: exactly this, and nothing more, goes into fake-igd\'s own local module (fake_igd_local).', 'warn'],
+  ['unsafe', 'Not for a button', 'fake-igd\'s, but what it would take is too much to allow from here - each says why, and what an admin could look at.', 'bad'],
+  ['foreign', 'Not fake-igd\'s', 'Other programs of this machine - shown, never put right here.', 'muted']
+];
+SE.sel = SE.sel || {};
+function seWhat(f) {
+  return f.path || (f.port ? 'port ' + f.port + '/' + (f.proto || 'tcp') : '') || f.name || '';
+}
+function seFindingRow(f, n, fixed) {
+  var fixable = SE_FIXABLE.indexOf(f.kind) >= 0 && ADMIN && !fixed;
+  var row = el(fixable ? 'label' : 'div', 'se-f se-f-' + f.kind + (fixed ? ' se-f-fixed' : ''));
+  if (fixable) {
+    var cb = el('input');
+    cb.type = 'checkbox';
+    cb.checked = SE.sel[f.id] !== false;
+    cb.disabled = !!n.pending;
+    cb.onchange = function () { SE.sel[f.id] = cb.checked; seCount(); };
+    cb.dataset.fid = f.id;
+    row.appendChild(cb);
+  } else {
+    var mark = el('span', 'se-f-mark');
+    mark.innerHTML = iconMarkup(fixed ? 'check' : (f.kind === 'foreign' ? 'ban' : (SE_FIXABLE.indexOf(f.kind) >= 0 ? 'shield' : 'cancel')), 16);
+    row.appendChild(mark);
+  }
+  var main = el('div', 'se-f-main');
+  var top = el('div', 'se-f-top');
+  top.appendChild(noI18n(el('b', 'se-f-prog', f.comm || '?')));
+  top.appendChild(noI18n(el('span', 'mono se-f-rule', f.source + ' → ' + f.target + '  ' + f['class'] + ' { ' + (f.perms || []).join(' ') + ' }')));
+  main.appendChild(top);
+  var sub = el('div', 'se-f-sub');
+  var w = seWhat(f);
+  if (w) sub.appendChild(noI18n(el('span', 'mono', w)));
+  sub.appendChild(el('span', '', (f.count > 1 ? num(f.count) + ' times' : 'once') + ', last ' + ago(f.last) + (f.permissive ? ' (permissive: let through, written down)' : '')));
+  main.appendChild(sub);
+  if (fixed) main.appendChild(el('div', 'se-f-done', 'Put right just now - it goes at the next look'));
+  else if (f.fix && f.fix.cmd) {
+    var fx = el('div', 'se-f-fix');
+    fx.appendChild(el('span', 'se-f-arrow', '→'));
+    fx.appendChild(noI18n(el('code', '', f.fix.cmd)));
+    main.appendChild(fx);
+    if (f.says) main.appendChild(el('div', 'se-f-says', f.says));
+  } else if (f.says) main.appendChild(el('div', 'se-f-says', f.says));
+  row.appendChild(main);
+  var cnt = el('span', 'se-f-count', num(f.count) + '×');
+  row.appendChild(cnt);
+  return row;
+}
+function seSelected() {
+  var s = (SE.d && SE.d.nodes && SE.d.nodes[0] && SE.d.nodes[0].state) || {};
+  return (s.findings || []).filter(function (f) { return SE_FIXABLE.indexOf(f.kind) >= 0 && SE.sel[f.id] !== false; });
+}
+function seCount() {
+  var b = $('se-fix-go');
+  if (!b) return;
+  var k = seSelected().length;
+  b.querySelector('span:last-child').textContent = 'Put in what is selected (' + k + ')';
+  b.disabled = !k || b.dataset.pending === '1';
+  document.querySelectorAll('.se-kind').forEach(function (g) {
+    var all = g.querySelector('.se-kind-all');
+    if (!all) return;
+    var boxes = g.querySelectorAll('input[data-fid]');
+    var on = Array.prototype.filter.call(boxes, function (x) { return x.checked; }).length;
+    all.checked = on === boxes.length && on > 0;
+    all.indeterminate = on > 0 && on < boxes.length;
+  });
+}
+function seFix(n, btn) {
+  var sel = seSelected();
+  if (!sel.length) return;
+  var list = sel.map(function (f) {
+    return '<li><b>' + htmlText({boolean: 'boolean', label: 'label', port: 'port', rule: 'rule'}[f.kind]) + '</b> <code>'
+      + htmlText(f.fix.cmd) + '</code><br><span class="muted small">' + htmlText((f.comm || '?') + ': ' + f.source + ' → ' + f.target + ' ' + f['class'] + ' { ' + f.perms.join(' ') + ' }') + '</span></li>';
+  }).join('');
+  var rules = sel.filter(function (f) { return f.kind === 'rule'; }).length;
+  confirmThen('Put in what is selected on ' + n.name + '?',
+    'Root does exactly this - nothing else - and looks again at once:<ul class="se-confirm">' + list + '</ul>'
+    + (rules ? 'The rules go into fake-igd\'s own local module <code>fake_igd_local</code> - each can be taken away again below. ' : '')
+    + 'Every step is written in Events. It works under enforcing too.',
+    'Put it in', function () {
+      busy(btn, true);
+      api('selinux', {node: n.name, action: 'fix', ids: sel.map(function (f) { return f.id; })}).then(function (r) {
+        toast(r.message, 'good');
+        setTimeout(loadSelinux, 800);
+      }).catch(oops).then(function () { busy(btn, false); });
+    }, false);
+}
+function seRuleDrop(n, r, btn) {
+  confirmThen('Take the rule away?', 'This rule goes out of fake-igd\'s local module, and the module is put into the policy again:<br><code>'
+    + htmlText('(allow ' + r.source + ' ' + r.target + ' (' + r['class'] + ' (' + r.perms.join(' ') + ')))') + '</code><br>What it allowed is refused again from now on (under enforcing) - and shown here again when it is.',
+    'Take it away', function () {
+      busy(btn, true);
+      api('selinux', {node: n.name, action: 'rule_drop', rule: r.id}).then(function (x) {
+        toast(x.message, 'good');
+        setTimeout(loadSelinux, 800);
+      }).catch(oops).then(function () { busy(btn, false); });
+    });
+}
+function seFindings(n, s) {
+  var wrap = el('div', 'se-find');
+  var all = s.findings || [];
+  var fixed = n.fixed || [];
+  var head = el('div', 'se-find-head');
+  head.appendChild(el('h3', '', 'What SELinux refuses'));
+  var d = s.denials || {};
+  head.appendChild(el('span', 'muted small', d.since ? 'since fake-igd\'s needs were put in, ' + new Date(d.since * 1000).toLocaleString()
+    : 'since the machine started'));
+  wrap.appendChild(head);
+  if (!all.length && !fixed.length) {
+    var calm = el('div', 'se-calm');
+    var ic = el('span', 'se-calm-ic');
+    ic.innerHTML = iconMarkup('check', 20);
+    calm.appendChild(ic);
+    var cw = el('div', '');
+    cw.appendChild(el('b', '', 'SELinux refused nothing on this server'));
+    cw.appendChild(el('span', 'small', d.since ? 'Nothing since fake-igd\'s needs were put in (' + new Date(d.since * 1000).toLocaleString() + ').'
+      : 'Nothing since the machine started.' + (d.settled ? ' ' + num(d.settled) + ' refused before is allowed now (a module or a boolean put in since).' : '')));
+    calm.appendChild(cw);
+    wrap.appendChild(calm);
+  }
+  if (fixed.length) {
+    var gf = el('section', 'se-kind se-kind-fixed');
+    var hf = el('div', 'se-kind-head');
+    hf.appendChild(el('span', 'dot ok'));
+    hf.appendChild(el('b', '', 'Put right just now'));
+    hf.appendChild(el('span', 'count', num(fixed.length)));
+    gf.appendChild(hf);
+    fixed.forEach(function (f) { gf.appendChild(seFindingRow(f, n, true)); });
+    wrap.appendChild(gf);
+  }
+  SE_KINDS.forEach(function (k) {
+    var items = all.filter(function (f) { return f.kind === k[0]; });
+    if (!items.length) return;
+    var g = el(k[0] === 'foreign' ? 'details' : 'section', 'se-kind se-kind-' + k[0]);
+    var h = el(k[0] === 'foreign' ? 'summary' : 'div', 'se-kind-head');
+    var fixable = SE_FIXABLE.indexOf(k[0]) >= 0 && ADMIN;
+    if (fixable) {
+      var allBox = el('input', 'se-kind-all');
+      allBox.type = 'checkbox';
+      allBox.title = 'Select all of them';
+      allBox.disabled = !!n.pending;
+      allBox.onchange = function () {
+        items.forEach(function (f) { SE.sel[f.id] = allBox.checked; });
+        g.querySelectorAll('input[data-fid]').forEach(function (x) { x.checked = allBox.checked; });
+        seCount();
+      };
+      h.appendChild(allBox);
+    } else h.appendChild(el('span', 'dot ' + (k[3] === 'muted' ? '' : k[3])));
+    h.appendChild(el('b', '', k[1]));
+    h.appendChild(el('span', 'count', num(items.length)));
+    h.appendChild(el('span', 'se-kind-says', k[2]));
+    g.appendChild(h);
+    items.forEach(function (f) { g.appendChild(seFindingRow(f, n, false)); });
+    wrap.appendChild(g);
+  });
+  if (ADMIN && all.some(function (f) { return SE_FIXABLE.indexOf(f.kind) >= 0; })) {
+    var bar = el('div', 'se-fix-bar');
+    var go = cmdButton('Put in what is selected (0)', 'shield', 'primary');
+    go.id = 'se-fix-go';
+    if (n.pending) go.dataset.pending = '1';
+    go.onclick = function () { seFix(n, go); };
+    bar.appendChild(go);
+    bar.appendChild(el('span', 'muted small', n.pending === 'fix' ? 'root is putting it right…' : 'Under enforcing too - nothing has to be switched off for it. What was put right is looked at again at once.'));
+    wrap.appendChild(bar);
+    setTimeout(seCount, 0);
+  }
+  var rules = ((s.local || {}).rules) || [];
+  if (rules.length) {
+    var det = el('details', 'se-local');
+    var sm = el('summary', '');
+    sm.appendChild(el('b', '', 'fake-igd\'s local rules'));
+    sm.appendChild(el('span', 'count', num(rules.length)));
+    sm.appendChild(el('span', 'muted small', (s.local.in_policy === false ? ' - the module is NOT in the policy' : ' fake_igd_local, in the policy')));
+    det.appendChild(sm);
+    rules.forEach(function (r) {
+      var row = el('div', 'se-rule');
+      var t = el('div', 'se-rule-t');
+      t.appendChild(noI18n(el('code', '', '(allow ' + r.source + ' ' + r.target + ' (' + r['class'] + ' (' + r.perms.join(' ') + ')))')));
+      t.appendChild(el('span', 'muted small', (r.why || '') + (r.at ? ' - put in ' + new Date(r.at * 1000).toLocaleString() : '') + (r.by ? ' by ' + r.by : '')));
+      row.appendChild(t);
+      if (ADMIN) {
+        var tk = cmdButton('Take it away', 'cancel', 'small');
+        tk.disabled = !!n.pending;
+        tk.onclick = function () { seRuleDrop(n, r, tk); };
+        row.appendChild(tk);
+      }
+      det.appendChild(row);
+    });
+    wrap.appendChild(det);
+  }
+  return wrap;
 }
 function seNode(n) {
   var s = n.state || {};
@@ -181,36 +381,19 @@ function seNode(n) {
     if (d.tool && d.settled) seRow(list, true, num(d.settled) + ' refused before, allowed now - by a newer fake_igd_server or a boolean put in since; not counted');
     if (s.auditd === false) seRow(list, false, 'auditd does not run - what SELinux refuses is not written down (systemctl enable --now auditd)');
     box.appendChild(list);
-    if ((d.groups || []).length) {
-      var det = el('details', 'se-avc');
-      det.appendChild(el('summary', '', 'What was refused (' + num(d.groups.length) + ')'));
-      var t = el('table', 'se-avc-t');
-      d.groups.forEach(function (g) {
-        var tr = el('tr', '');
-        tr.appendChild(el('td', 'num', num(g.count) + '×'));
-        tr.appendChild(noI18n(el('td', 'mono small', g.source + ' → ' + g.target + ' ' + g['class'] + ' { ' + g.perms + ' }')));
-        tr.appendChild(noI18n(el('td', 'mono small muted', g.what || '')));
-        t.appendChild(tr);
-      });
-      det.appendChild(t);
-      box.appendChild(det);
-    }
     var probs = s.problems || [];
-    /* Refused, and nothing fake-igd knows to put in (1.0.237): "Put in what fake-igd needs" changes
-       nothing then - the report is what tells how. */
-    var known = s.module !== false && !(s.labels || []).some(function (x) { return x.ok === false; }) &&
-      !(s.booleans || []).some(function (x) { return x.on === false; }) &&
-      !(s.ports || []).some(function (x) { return x.labelled === false; });
-    if (d.total && known) {
-      var hint = el('div', 'se-verdict bad');
-      hint.appendChild(el('b', '', 'fake-igd does not know this one yet'));
-      hint.appendChild(el('span', 'small', 'Everything fake-igd knows it needs is in place - what was refused is something its module does not cover yet. "Put in what fake-igd needs" changes nothing for it: download the report (top right) and send it, so that the module learns it.'));
-      box.appendChild(hint);
-    }
+    if (d.tool) box.appendChild(seFindings(n, s));
+    var block = (s.findings || []).filter(function (f) { return f.kind !== 'foreign'; });
     var verdict = el('div', 'se-verdict ' + (m === 'Enforcing' && !probs.length ? 'good' : s.ready ? 'ready' : probs.length ? 'bad' : ''));
     verdict.appendChild(el('b', '', m === 'Enforcing' ? (probs.length ? 'Enforcing - but something is not as fake-igd needs it' : 'Enforcing - and everything fake-igd needs is there')
       : s.ready ? 'Ready for enforcing' : 'Not ready for enforcing yet'));
-    if (m === 'Permissive' && !s.ready) verdict.appendChild(el('span', 'small', 'Let it run a day or two as it is used - sign-ins, the pages, the PS5 asking for ports, an upgrade - then look again.'));
+    if (m === 'Permissive' && !s.ready) {
+      var fixable = block.filter(function (f) { return SE_FIXABLE.indexOf(f.kind) >= 0; }).length;
+      var unsafe = block.filter(function (f) { return f.kind === 'unsafe'; }).length;
+      verdict.appendChild(el('span', 'small', (fixable ? fixable + ' thing(s) SELinux refused can be put right here - "Put in what is selected" below. ' : '')
+        + (unsafe ? unsafe + ' thing(s) are not for a button - each says why; the report is for whoever looks after fake-igd\'s module. ' : '')
+        + 'Let it run a day or two as it is used - sign-ins, the pages, the PS5 asking for ports, an upgrade - then look again.'));
+    }
     box.appendChild(verdict);
   }
   if (n.error) box.appendChild(el('p', 'note bad', n.error));
@@ -252,7 +435,7 @@ function seNode(n) {
     };
     row.appendChild(back);
   }
-  if (row.childNodes.length) box.appendChild(row);
+  if (row.childNodes.length && ADMIN) box.appendChild(row);
   return box;
 }
 

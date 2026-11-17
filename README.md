@@ -1,4 +1,4 @@
-# fake-igd 1.7.9
+# fake-igd 1.7.10
 
 A fake UPnP router (IGD) for reconnaissance: it finds out **which ports a PS5 (or any other device) wants to open**, without enabling UPnP on your real router. Everything is logged to `/var/log/fake-igd/` and controlled with the **`upnp`** command - or by its menus with **`upnp --console`**. It also shows and controls the **mDNS reflector (avahi-daemon)** running on the same server, and sends notifications to **ntfy** (ntfy.sh or your private server).
 
@@ -20,8 +20,8 @@ packages only, checked and put in by root, exactly as otp does it.
 ## Installation (AlmaLinux 9)
 
 ```bash
-tar xzf fake-igd-1.7.9.tar.gz
-cd fake-igd-1.7.9
+tar xzf fake-igd-1.7.10.tar.gz
+cd fake-igd-1.7.10
 sudo ./install.sh
 ```
 
@@ -92,7 +92,7 @@ Or on the pages: *Settings → Upgrades* - *Look now*, *Upgrade to X now*, or dr
 console: menu **14 Upgrades**. Or by hand, as before:
 
 ```bash
-tar xzf fake-igd-1.7.9.tar.gz && cd fake-igd-1.7.9
+tar xzf fake-igd-1.7.10.tar.gz && cd fake-igd-1.7.10
 sudo ./install.sh --upgrade
 ```
 
@@ -324,6 +324,35 @@ Every step is written in Events with who asked. *Settings → Alerts and reports
 it comes) mails what the card finds; *Settings → Upgrades → To be done by hand* says when fake-igd's module in
 the policy is not this version's, or SELinux refuses something while enforcing.
 
+### What SELinux refuses - and Put in what is selected (1.7.10)
+
+*Look again* finds out **everything SELinux refused on this server** since the machine started (every AVC,
+USER_AVC and SELINUX_ERR, with the program and the whole path or the port of each), grouped, each put to
+`audit2why`, and sorted by what puts it right:
+
+| Kind | What puts it right |
+|---|---|
+| **A boolean** | the boolean `audit2why` names (`setsebool -P NAME 1`) - not one that allows far more (exec, unconfined, manage all ...) |
+| **A label** | the file is not labelled as the policy says (`matchpathcon`): `restorecon -R` |
+| **A port** | a confined program fake-igd runs (nginx, sshd, chronyd, avahi, ssh) binds or connects to a port of no type of its own: `semanage port -a -t TYPE` - never taken from another service |
+| **A rule of fake-igd's** | nothing else allows it: exactly that rule - `(allow SRC TGT (CLASS (PERMS)))`, in an optional block of its own - goes into fake-igd's own **local module `fake_igd_local`** (`/opt/fake-igd/fake_igd_local.cil`) |
+| **Not for a button** | fake-igd's, but too much to allow from a button: a security-sensitive target (shadow, the policy, the kernel, keys, audit ...), running a program, writing where everything lives (`etc_t`, `usr_t` ...), sshd's or another system service's own rules - each says why |
+| **Not fake-igd's** | other programs of this machine - shown, never put right here |
+
+Every row has the program, `SRC → TGT class { perms }`, the path or port, how many times and when last, and
+the command root would run. **Put in what is selected** (everything that can be put right is selected) asks
+root to do exactly that - the page names only *which* of root's own findings (their ids); root finds them
+again and works out what to do itself - then looks again at once. It works under enforcing too. What was put
+right no longer counts from then on (finding by finding); refused again later, it comes back. *fake-igd's
+local rules* lists what is in `fake_igd_local`, each with *Take it away*; `uninstall.sh` takes the module out.
+Switching to enforcing waits until nothing that can be put right, or is not for a button, is left.
+
+```bash
+sudo upnp selinux look                 # the findings, grouped, with their ids and what puts each right
+sudo upnp selinux fix --all            # everything that can be put right here (or: fix ID ...)
+sudo upnp selinux rules                # fake-igd's local rules;  --take-away ID
+```
+
 **The report** (*Download the report*, or `sudo upnp selinux report`): what SELinux refused (raw, readable,
 `audit2why`, `audit2allow`'s suggestion - a hint, never loaded), the card's state, the labels of fake-igd's
 files and what the policy says they should be, the domains the programs run in, the ports, the booleans, the
@@ -337,7 +366,7 @@ sudo upnp selinux prepare         # check | prepare | apply | enforce | permissi
 sudo upnp selinux report          # /root/fake-igd-selinux-report-NODE-DATE.tar.gz
 ```
 
-The console has the same in **17 Certificates, updates, time, tests**.
+The console has the same in **17 Certificates, updates, time, tests** (17 - 22).
 
 ---
 
@@ -484,7 +513,7 @@ reached over SSH only, or whose pages are down while the API runs:
 | `mail-test ADDRESS` · `siem-test` · `proxy-test [URL]` · `snmp-trap` | the tests of their panes, every step said |
 | `export-config FILE [--with-secrets]` · `import-config FILE [--replace]` | everything of this installation as one file, and back (*Export and import*); with the secrets it is locked with a passphrase printed once |
 | `power` | `status`, `reboot` / `poweroff` `[--in MIN]`, `cancel` |
-| `selinux` | SELinux on this server: `check`, `prepare`, `apply`, `enforce`, `permissive`, `report [FILE]` (see *SELinux*) |
+| `selinux` | SELinux on this server: `check`, `look`, `fix ID...\|--all`, `rules [--take-away ID]`, `prepare`, `apply`, `enforce`, `permissive`, `report [FILE]` (see *SELinux*) |
 
 Most of them take `--json`.
 

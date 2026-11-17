@@ -509,7 +509,12 @@ def _ck_se_refused(ctx, f):
         n = 0
     if n <= 0:
         return "done"
-    return ("needed", {"sig": str(n), "grows": True, "args": {"n": n}})
+    fx = int((d.get("denials") or {}).get("fixable") or 0)
+    return ("needed", {"sig": str(n), "grows": True, "args": {
+        "n": n, "fixable": ("%d of them can be put right on Settings → SELinux at once (Put in what is selected) - a "
+                            "boolean, a label, a port or a rule of fake-igd's own local module, exactly what was "
+                            "refused" % fx) if fx else "none of them is for a button: Settings → SELinux says why, "
+                                                    "each"}})
 
 
 def _ck_php(ctx, f):
@@ -613,13 +618,14 @@ after_entry(
     title="SELinux refuses fake-igd something on this server",
     why="SELinux is enforcing and refused {n} thing(s) to fake-igd or to the programs it works with (since "
         "fake-igd's needs were last put in, or since the machine started): what was refused does not work - the "
-        "pages, root's helper, the SSH server on its port. Do not switch SELinux off for it: see what it is, put in "
-        "what fake-igd needs, or send the report to whoever looks after fake-igd's module.",
-    steps=[{"where": "root", "lead": "As root, on the server - what is refused:", "cmd": "upnp selinux check"},
+        "pages, root's helper, the SSH server on its port. {fixable}. Do not switch SELinux off for it.",
+    steps=[{"where": "pages", "pane": "selinux",
+            "words": "Settings → SELinux: What SELinux refuses - select, then Put in what is selected."},
+           {"where": "root", "lead": "Or as root, on the server - what is refused, and what puts it right:",
+            "cmd": "upnp selinux look"},
+           {"where": "root", "lead": "Everything that can be put right here:", "cmd": "upnp selinux fix --all"},
            {"where": "root", "lead": "The report, for whoever looks after fake-igd's module:",
-            "cmd": "upnp selinux report"},
-           {"where": "pages", "pane": "selinux",
-            "words": "Settings → SELinux says the same, with what fake-igd needs."}],
+            "cmd": "upnp selinux report"}],
     foot="This band goes by itself once nothing is refused any more (put right, or after the next start of the "
          "machine). Done takes it away until something more is refused.")
 

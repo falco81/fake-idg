@@ -17,7 +17,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from xml.etree import ElementTree as ET
 
-VERSION = "1.7.9"
+VERSION = "1.7.10"
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 APP = "fake-igd"
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
@@ -2248,14 +2248,23 @@ def build_parser():
             "  enforce           permissive -> enforcing, now and after a restart - only when nothing is missing\n"
             "                    and nothing was refused\n"
             "  permissive        enforcing -> permissive, now and after a restart\n"
+            "  look              everything SELinux refused, found out and sorted by what puts it right: a boolean,\n"
+            "                    a label, a port, a rule of fake-igd's own local module - or why not from here\n"
+            "  fix ID ... | --all  put right what look found (root finds it again first): setsebool, restorecon,\n"
+            "                    semanage port, or a rule into fake-igd's local module fake_igd_local\n"
+            "  rules [--take-away ID]  fake-igd's local rules - and one taken away again\n"
             "  report [FILE]     what SELinux says here, for whoever writes fake-igd's module, as one file\n"
             "                    (/root/fake-igd-selinux-report-NODE-DATE.tar.gz unless named); nothing changed\n"
             "As root; root's helper does it, the same as Settings → SELinux on the pages.",
-            "examples:\n  sudo upnp selinux\n  sudo upnp selinux prepare --yes\n  sudo upnp selinux enforce\n"
-            "  sudo upnp selinux report")
-    s.add_argument("what", nargs="?", choices=("check", "prepare", "apply", "enforce", "permissive", "report"),
-                   metavar="check|prepare|apply|enforce|permissive|report")
-    s.add_argument("file", nargs="?", metavar="FILE", help="report: where to write it")
+            "examples:\n  sudo upnp selinux\n  sudo upnp selinux look\n  sudo upnp selinux fix --all\n"
+            "  sudo upnp selinux fix 73f2d405a5f5\n  sudo upnp selinux rules --take-away 73f2d405a5f5\n"
+            "  sudo upnp selinux prepare --yes\n  sudo upnp selinux enforce\n  sudo upnp selinux report")
+    s.add_argument("what", nargs="?", choices=("check", "look", "fix", "rules", "prepare", "apply", "enforce",
+                                               "permissive", "report"),
+                   metavar="check|look|fix|rules|prepare|apply|enforce|permissive|report")
+    s.add_argument("args", nargs="*", metavar="ID|FILE", help="fix: the findings' ids (look shows them); report: the file")
+    s.add_argument("--all", action="store_true", help="fix: everything that can be put right here")
+    s.add_argument("--take-away", metavar="ID", help="rules: take this rule out of fake-igd's local module")
     s.add_argument("--yes", "-y", action="store_true", help="do not ask")
     s.add_argument("--json", action="store_true", help="JSON output (check and the steps)")
     s.set_defaults(func=admin("cmd_selinux"))

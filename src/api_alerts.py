@@ -328,6 +328,7 @@ def problems(ctx, c=None):
             probs = [p for p in SEL.problems(ctx.store) if "ready for enforcing" not in p]
             if probs:
                 n = SEL.node_name()
+                # The card's words say how many can be put right there (Put in what is selected).
                 out["selinux:" + n] = {"level": "warn", "title": "SELinux on %s: something is not as fake-igd needs it"
                                        % n, "pane": "selinux", "said": "; ".join(probs)[:300]}
         except Exception:                               # noqa: BLE001

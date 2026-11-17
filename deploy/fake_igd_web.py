@@ -1069,7 +1069,8 @@ def main(argv):
     if os.geteuid() != 0:
         print("fake_igd_web.py: run as root")
         return 1
-    if argv[:1] in (["--selinux-check"], ["--selinux-do"], ["--selinux-report"]):
+    if argv[:1] in (["--selinux-check"], ["--selinux-do"], ["--selinux-report"], ["--selinux-fix"],
+                    ["--selinux-rule-drop"]):
         # `sudo upnp selinux ...` (1.7.7, otp's otp_web.py --selinux-check / --selinux-do / --selinux-report):
         # this machine's SELinux, worked out and done here - what fake-igd needs is read by root itself.
         here = os.path.dirname(os.path.abspath(__file__))
@@ -1084,6 +1085,25 @@ def main(argv):
                 node = re.sub(r"[^A-Za-z0-9._-]", "", os.uname()[1].split(".")[0])[:60] or "server"
                 SE.se_report_write(SE.se_report_bytes(node), argv[1])
                 print(argv[1])
+                return 0
+            if argv[0] == "--selinux-fix":
+                # `upnp selinux fix ID ... | --all` (1.7.10): root's own findings, found again here.
+                ids = [a for a in argv[1:] if not a.startswith("--")]
+                if "--all" in argv:
+                    FIND = SE._here()
+                    ids = [f["id"] for f in (SE.se_findings(SE.se_applied_at()) or []) if f["kind"] in FIND.FIXABLE]
+                    if not ids:
+                        print("nothing here can be put right - nothing fixable was refused")
+                        return 0
+                said, done = SE.se_fix(ids, os.environ.get("SUDO_USER") or "root (command line)")
+                c = SE.se_check()
+                print(json.dumps(dict(c, said=said, fixed=done)) if "--json" in argv else
+                      "\n".join(["done: " + x for x in said] + [SE.se_text(c)]))
+                return 0
+            if argv[0] == "--selinux-rule-drop":
+                said = SE.se_rule_drop(argv[1] if len(argv) > 1 else "")
+                c = SE.se_check()
+                print(json.dumps(dict(c, said=said)) if "--json" in argv else "\n".join(["done: " + x for x in said]))
                 return 0
             if argv[0] == "--selinux-do":
                 step = {"apply": "prepare"}.get(argv[1] if len(argv) > 1 else "", argv[1] if len(argv) > 1 else "")

@@ -55,6 +55,11 @@ systemctl daemon-reload
 rm -rf "/opt/${APP:?}"
 # SELinux (otp's): fake-igd's module (only labels) goes with it - and the local rule of before 1.7.7. The mode
 # SELinux is in, its booleans and the ports labelled are the machine's, left as they are.
+# fake-igd's local rules (1.7.10: put in from Settings → SELinux) go with it too.
+if command -v semodule >/dev/null 2>&1 && semodule -l 2>/dev/null | awk '$1=="fake_igd_local"{f=1} END{exit !f}'; then
+  semodule -r fake_igd_local 2>/dev/null && echo "    SELinux: fake-igd's local rules (fake_igd_local) taken out of the policy" \
+    || echo "    SELinux: semodule -r fake_igd_local did not go"
+fi
 if command -v semodule >/dev/null 2>&1 && semodule -l 2>/dev/null | awk '$1=="fake_igd_server"{f=1} END{exit !f}'; then
   semodule -r fake_igd_server 2>/dev/null && echo "    SELinux: fake-igd's module (fake_igd_server) taken out of the policy" \
     || echo "    SELinux: semodule -r fake_igd_server did not go"
@@ -62,7 +67,8 @@ fi
 if command -v semanage >/dev/null 2>&1; then
   semanage fcontext -d '/run/fake-igd-api(/.*)?' 2>/dev/null || true
 fi
-rm -rf /var/lib/fake-igd-root/selinux-applied 2>/dev/null || true
+rm -rf /var/lib/fake-igd-root/selinux-applied /var/lib/fake-igd-root/selinux-fixed.json \
+       /var/lib/fake-igd-root/selinux-local.json 2>/dev/null || true
 rm -rf /run/fake-igd-api /run/fake-igd-osup-proxy.json /run/fake-igd-osup.lock
 
 if [[ $PURGE -eq 1 ]]; then

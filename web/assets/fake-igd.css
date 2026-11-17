@@ -4179,3 +4179,56 @@ td.step-tl-said{white-space:normal;word-break:break-all;overflow-wrap:anywhere}
 #pane-about .set-item[data-key="api_port"]{order:3}
 #pane-about .set-item[data-key="debug"]{order:4}
 #pane-about .set-item[data-key="debug_api"]{order:5;grid-column-start:1}
+
+/* ---- Settings → SELinux: what SELinux refuses, found out and put right (1.7.10) ---------------------- */
+.se-find{display:flex;flex-direction:column;gap:10px;min-width:0}
+.se-find-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.se-find-head h3{margin:0;font-size:14px;letter-spacing:.2px}
+.se-calm{display:flex;gap:12px;align-items:center;padding:14px 16px;border-radius:12px;border:1px solid rgba(63,185,80,.45);background:var(--ok-bg)}
+.se-calm-ic{display:inline-flex;width:34px;height:34px;border-radius:50%;align-items:center;justify-content:center;background:rgba(63,185,80,.18);color:var(--ok);flex:0 0 auto}
+.se-calm div{display:flex;flex-direction:column;gap:2px}
+.se-kind{border:1px solid var(--line);border-radius:12px;background:var(--panel);overflow:hidden;min-width:0}
+.se-kind-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 12px;background:var(--panel2);border-bottom:1px solid var(--line);font-size:13px}
+details.se-kind:not([open]) .se-kind-head{border-bottom:0}
+details.se-kind > summary{cursor:pointer;list-style:none}
+details.se-kind > summary::-webkit-details-marker{display:none}
+.se-kind-head .count{font-size:11.5px;font-weight:700;padding:1px 8px;border-radius:999px;background:var(--panel);border:1px solid var(--line);color:var(--tx-dim)}
+.se-kind-says{flex:1 1 260px;min-width:0;color:var(--tx-dim);font-size:12px}
+.se-kind-head input[type=checkbox],.se-f input[type=checkbox]{width:16px;height:16px;margin:0;accent-color:var(--info);flex:0 0 auto;cursor:pointer}
+.se-kind-boolean,.se-kind-label,.se-kind-port{border-left:3px solid var(--ok)}
+.se-kind-rule{border-left:3px solid var(--warn)}
+.se-kind-unsafe{border-left:3px solid var(--crit)}
+.se-kind-foreign{border-left:3px solid var(--line)}
+.se-kind-fixed{border-left:3px solid var(--ok);background:var(--ok-bg)}
+.se-f{display:flex;gap:10px;align-items:flex-start;padding:9px 12px;border-bottom:1px solid var(--line);min-width:0}
+.se-f:last-child{border-bottom:0}
+label.se-f{cursor:pointer}
+label.se-f:hover{background:var(--panel2)}
+.se-f input[type=checkbox]{margin-top:2px}
+.se-f-mark{display:inline-flex;margin-top:1px;color:var(--tx-dim);flex:0 0 auto}
+.se-f-unsafe .se-f-mark{color:var(--crit)}
+.se-f-fixed .se-f-mark{color:var(--ok)}
+.se-f-main{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1 1 auto}
+.se-f-top{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;min-width:0}
+.se-f-prog{font-size:13px}
+.se-f-rule{font-size:12px;color:var(--tx);overflow-wrap:anywhere;min-width:0}
+.se-f-sub{display:flex;gap:10px;flex-wrap:wrap;font-size:12px;color:var(--tx-dim);min-width:0}
+.se-f-sub .mono{overflow-wrap:anywhere;min-width:0}
+.se-f-fix{display:flex;gap:6px;align-items:baseline;min-width:0}
+.se-f-fix code{font-size:12px;padding:2px 7px;border-radius:6px;background:var(--panel2);border:1px solid var(--line);color:var(--info);overflow-wrap:anywhere;white-space:normal;min-width:0}
+.se-f-arrow{color:var(--tx-dim);font-size:12px}
+.se-f-says{font-size:12px;color:var(--tx-dim)}
+.se-f-unsafe .se-f-says{color:var(--crit)}
+.se-f-done{font-size:12px;color:var(--ok);font-weight:600}
+.se-f-fixed .se-f-rule{text-decoration:line-through;text-decoration-color:rgba(63,185,80,.6)}
+.se-f-count{flex:0 0 auto;font-size:12px;font-weight:700;color:var(--tx-dim);font-variant-numeric:tabular-nums}
+.se-fix-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.se-local{border:1px solid var(--line);border-radius:12px;background:var(--panel);min-width:0}
+.se-local > summary{cursor:pointer;padding:9px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px}
+.se-local > summary .count{font-size:11.5px;font-weight:700;padding:1px 8px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);color:var(--tx-dim)}
+.se-rule{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:9px 12px;border-top:1px solid var(--line);min-width:0}
+.se-rule-t{display:flex;flex-direction:column;gap:3px;min-width:0}
+.se-rule-t code{font-size:12px;overflow-wrap:anywhere;white-space:normal}
+ul.se-confirm{margin:8px 0 10px;padding-left:18px;display:flex;flex-direction:column;gap:6px;max-height:42vh;overflow:auto}
+ul.se-confirm code{font-size:12px;overflow-wrap:anywhere;white-space:normal}
+@media (max-width:640px){.se-f{padding:8px 10px}.se-kind-says{flex-basis:100%}.se-rule{flex-direction:column;align-items:flex-start}}

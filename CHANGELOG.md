@@ -2,6 +2,32 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.7.10 (2026-11-17)
+
+**Settings → SELinux finds out everything SELinux refuses on the server - and puts right what it may.**
+- **Look again** reads every refusal since the machine started (AVC, USER_AVC, SELINUX_ERR), with its
+  program and whole path or port, asks audit2why about each and sorts it by what puts it right:
+  *a boolean* (the one audit2why names; never one that allows far more), *a label* (restorecon where the
+  policy says another type), *a port* (semanage port for nginx, sshd, chronyd, avahi on a port with no type
+  of its own; never taken from another service), *a rule of fake-igd's* (exactly the refused access, in a
+  local module of its own, `fake_igd_local`, each rule in an optional block of its own), *not for a button*
+  (security-sensitive targets - shadow, policy, kernel, keys, audit -, running a program, writes to
+  generic types: shown with why, never allowed from here) and *not fake-igd's* (other programs: shown).
+- **Put in what is selected (N)**: the page sends only which findings - root finds them again and works out
+  every fix itself; a confirm lists exactly what root will do; under enforcing too; every fix in the
+  events; the rows put right show green and are looked at again at once; a rule of fake-igd's can be
+  taken away from the card (the last one takes the local module away). Enforcing unlocks when nothing
+  fixable or not-for-a-button is left.
+- The card drawn anew: findings grouped by kind with counts, select-all, the program, `SRC → TGT class
+  { perms }`, the path or port, how often and when, the command root would run; fake-igd's local rules;
+  a calm green "refused nothing" when so. Read-only accounts see it without buttons.
+- `sudo upnp selinux look`, `fix ID...|--all`, `rules [--take-away ID]`; in the console too.
+- **fake_igd_server** lets fake-igd-api.service (NoNewPrivileges) start the tools it runs in their own
+  domains: chronyc (the clock - refused on a real server: "unconfined_service_t → chronyc_t process2
+  { nnp_transition }", under enforcing chronyc would not run), ip, hostname, ssh/sftp/scp (backups),
+  ssh-keygen, ping.
+- "To be done by hand" says how many refusals the card can put right.
+
 ## 1.7.9 (2026-11-17)
 
 - **"To be done by hand" stayed after SELinux was put right.** "SELinux: the pages may not reach fake-igd's

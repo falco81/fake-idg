@@ -15,7 +15,7 @@ if (PHP_SAPI !== 'cli' && isset($_SERVER['SCRIPT_FILENAME'])
     exit;
 }
 
-const IGD_VERSION = '1.7.9';
+const IGD_VERSION = '1.7.10';
 
 header('Cache-Control: no-cache, no-store, must-revalidate');
 header('Pragma: no-cache');

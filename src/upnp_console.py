@@ -2487,6 +2487,9 @@ class Console(object):
             ("17", "SELinux: how it stands on this machine", lambda: self.act("selinux", "check")),
             ("18", "SELinux: a step on this machine", self.se_step),
             ("19", "SELinux: the report for fake-igd's module (a file)", lambda: self.run_here("selinux", "report")),
+            ("20", "SELinux: what it refuses, and what puts it right", lambda: self.act("selinux", "look")),
+            ("21", "SELinux: put right everything that can be", self.se_fix_all),
+            ("22", "SELinux: fake-igd's local rules", lambda: self.act("selinux", "rules")),
         ])
 
     def se_step(self):
@@ -2506,6 +2509,13 @@ class Console(object):
                 "permissive": "SELinux no longer refuses anything, now and after a restart."}[st],
                 "Do it", danger=st in ("enforce", "prepare")):
             self.act("selinux", st, "--yes")
+
+    def se_fix_all(self):
+        if self.confirm("SELinux: put right what can be", "Every refusal of SELinux that can be put right here is: a "
+                        "boolean, a label, a port, or a rule of fake-igd's own local module (fake_igd_local) - exactly "
+                        "what was refused, nothing more. What is not for a button, or not fake-igd's, is left as it is. "
+                        "upnp selinux look shows each first.", "Put it in"):
+            self.act("selinux", "fix", "--all", "--yes")
 
     def reboot_now(self):
         if self.confirm("Restart this machine", "fake-igd, the pages and every other service on it are away "

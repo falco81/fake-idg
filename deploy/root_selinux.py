@@ -60,6 +60,11 @@ SE_PORT_TYPES = ("ssh_port_t",)
 SE_DOMAINS = ("httpd_t", "sshd_t", "chronyd_t", "avahi_t", "logrotate_t", "unconfined_service_t",
               "init_t", "NetworkManager_t", "syslogd_t", "rpm_t", "iptables_t", "firewalld_t")
 SE_APPLIED = "selinux-applied"      # when fake-igd's needs were last put in (root's own folder)
+# What was put right from the card, finding by finding (1.7.10): {id: when} - and fake-igd's local rules.
+SE_FIXED = "selinux-fixed.json"
+SE_LOCAL_STATE = "selinux-local.json"
+SE_LOCAL = "fake_igd_local"
+SE_LOCAL_CIL = os.environ.get("FAKE_IGD_SELINUX_LOCAL_CIL", "/opt/fake-igd/fake_igd_local.cil")
 SE_REPORT_FILE = "selinux-report.tar.gz"
 SE_REPORT_MOST = 2 * 1024 * 1024        # each part at most, before it is packed
 SE_REPORT_PATHS = (RUN_DIR, os.path.join(RUN_DIR, "api-token"), "/var/lib/fake-igd", "/var/lib/fake-igd/web",
@@ -285,73 +290,193 @@ def se_facts(cfg):
     return out
 
 
-def se_denials(since=0.0):
-    """What SELinux refused since the machine started - or since fake-igd's needs were last put in (what was
-    refused before that is what they put right) - for the programs fake-igd works with."""
-    got = _se_run(["ausearch", "-m", "AVC,USER_AVC", "-ts", "boot"], 120, light=True)
+def _here():
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    import root_selinux_find as FIND
+    return FIND
+
+
+def se_matchpathcon():
+    cache = {}
+
+    def look(path):
+        if path not in cache:
+            got = _se_run(["matchpathcon", "-n", path], 20)
+            ctx = (got.stdout or "").strip() if got is not None and got.returncode == 0 else ""
+            parts = ctx.split(":")
+            cache[path] = parts[2] if len(parts) >= 3 else ""
+        return cache[path]
+    return look
+
+
+def se_fixed():
+    got = _here().state_read(os.path.join(ROOT_STATE, SE_FIXED))
+    return {k: float(v) for k, v in (got.get("fixed") or {}).items()
+            if isinstance(k, str) and re.match(r"^[0-9a-f]{12}\Z", k) and isinstance(v, (int, float))}
+
+
+def se_local_rules():
+    FIND = _here()
+    got = FIND.state_read(os.path.join(ROOT_STATE, SE_LOCAL_STATE))
+    return [r for r in (FIND.rule_checked(x) for x in (got.get("rules") or [])[:500]) if r]
+
+
+def se_findings(since=0.0):
+    """Look again (1.7.10): everything SELinux refused since the machine started, found out and sorted by
+    what puts it right - root_selinux_find.py says how."""
+    FIND = _here()
+    got = _se_run(["ausearch", "-m", "AVC,USER_AVC,SELINUX_ERR,USER_SELINUX_ERR", "-ts", "boot"], 120, light=True)
     if got is None:
-        return {"tool": False, "total": 0, "groups": [], "since": since}
-    groups, lines, total = {}, {}, 0
-    for line in (got.stdout or "").splitlines():
-        if "avc:" not in line or "denied" not in line:
-            continue
-        when = re.search(r"msg=audit\((\d+)(?:\.\d+)?:", line)
-        if since and when and int(when.group(1)) < since:
-            continue
-        perms = re.search(r"denied\s+\{([^}]*)\}", line)
-        sc = re.search(r"scontext=(\S+)", line)
-        tc = re.search(r"tcontext=(\S+)", line)
-        cl = re.search(r"tclass=(\S+)", line)
-        comm = re.search(r"comm=(\S+)", line)
-        name = re.search(r"\bname=(\S+)", line)
-        if not (perms and sc and tc and cl):
-            continue
-        st = (sc.group(1).split(":") + ["", "", ""])[2]
-        tt = (tc.group(1).split(":") + ["", "", ""])[2]
-        what = " ".join(x for x in (comm.group(1) if comm else "", name.group(1) if name else "") if x)
-        if st not in SE_DOMAINS and "fake-igd" not in line and "fake_igd" not in line:
-            continue
-        total += 1
-        key = (st, tt, cl.group(1), perms.group(1).strip())
-        lines[key] = line
-        g = groups.setdefault(key, {"source": st, "target": tt, "class": cl.group(1),
-                                    "perms": perms.group(1).strip(), "count": 0, "what": ""})
-        g["count"] += 1
-        g["what"] = what.replace('"', "")[:120] or g["what"]
-        g["permissive"] = "permissive=1" in line
-    # Refused once, allowed now (otp 1.0.238): a module or a boolean that came after it settles it.
-    settled = 0
-    for key in se_allowed_now(lines):
-        settled += groups[key]["count"]
-        total -= groups.pop(key)["count"]
-    out = sorted(groups.values(), key=lambda g: -g["count"])[:30]
-    return {"tool": True, "total": total, "groups": out, "since": since, "settled": settled}
+        return None
+    try:
+        api_port = int((W.read_config() or {}).get("api_port") or 9862)
+    except Exception:                                   # noqa: BLE001
+        api_port = 9862
+
+    def why(lines):
+        w = _se_run(["audit2why"], 300, light=True, data="".join(x + "\n" for x in lines))
+        return (w.stdout or "") if w is not None and w.returncode == 0 else ""
+    return FIND.findings(got.stdout or "", why, se_matchpathcon(), se_ports(), se_fixed(), since, api_port)
 
 
-def se_allowed_now(lines):
-    """Which of the refusals (one line for each kind) the policy loaded now allows, as audit2why tells:
-    "would be allowed by active policy". Nothing when audit2why is not there."""
-    if not lines:
-        return []
-    by_id = {}
-    for key, line in lines.items():
-        m = re.search(r"msg=audit\(([0-9.]+:\d+)\)", line)
-        if m:
-            by_id[m.group(1)] = key
-    if not by_id:
-        return []
-    got = _se_run(["audit2why"], 300, light=True, data="".join(lines[k] + "\n" for k in by_id.values()))
+def se_local_write(rules, said):
+    """fake-igd's local module written again from its list and put into the policy - or taken out of it
+    when the list is empty."""
+    FIND = _here()
+    root_state_write(SE_LOCAL_STATE, json.dumps({"rules": rules, "at": time.time()}, indent=1))
+    if not rules:
+        if se_local_in():
+            got = _se_run(["semodule", "-r", SE_LOCAL], 300)
+            if got is None or got.returncode != 0:
+                raise Refused("semodule -r %s: %s" % (SE_LOCAL, ((got.stderr or "") if got else "").strip()[-200:]))
+            said.append("fake-igd's local module (%s) taken out of the policy - no rule is left in it" % SE_LOCAL)
+        for p in (SE_LOCAL_CIL, SE_LOCAL_CIL + ".in-policy"):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+        return
+    text = FIND.local_cil(rules)
+    folder = os.path.dirname(SE_LOCAL_CIL) or "."
+    os.makedirs(folder, mode=0o755, exist_ok=True)
+    tmp = SE_LOCAL_CIL + ".new"
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.replace(tmp, SE_LOCAL_CIL)
+    if not shutil.which("semodule"):
+        raise Refused("semodule is not on this machine (dnf install policycoreutils)")
+    got = _se_run(["semodule", "-i", SE_LOCAL_CIL], 300)
     if got is None or got.returncode != 0:
-        return []
-    now, cur = set(), None
-    for line in (got.stdout or "").splitlines():
-        m = re.search(r"msg=audit\(([0-9.]+:\d+)\)", line)
-        if m and "avc:" in line:
-            cur = by_id.get(m.group(1))
+        raise Refused("semodule -i %s: %s" % (SE_LOCAL_CIL, ((got.stderr or got.stdout) if got else "").strip()[-300:]))
+    try:
+        shutil.copyfile(SE_LOCAL_CIL, SE_LOCAL_CIL + ".in-policy")
+    except OSError:
+        pass
+
+
+def se_local_in():
+    got = _se_run(["semodule", "-l"], 120, light=True)
+    if got is None or got.returncode != 0:
+        return None
+    return any(line.split()[:1] == [SE_LOCAL] for line in got.stdout.splitlines())
+
+
+def se_fix(ids, by=""):
+    """Put in what is selected (1.7.10): the findings named - root's own, found again now - each put right as
+    its kind says. The names are only ids; what is done is worked out here."""
+    FIND = _here()
+    want = [i for i in (ids or []) if isinstance(i, str) and FIND.ID_RE.match(i)][:200]
+    if not want:
+        raise Refused("nothing selected")
+    if se_mode() not in ("Enforcing", "Permissive"):
+        raise Refused("SELinux is not on - there is nothing it refuses")
+    found = {f["id"]: f for f in (se_findings(se_applied_at()) or [])}
+    said, done, rules = [], [], se_local_rules()
+    rules_before = len(rules)
+    for i in want:
+        f = found.get(i)
+        if f is None:
+            said.append("%s: not refused any more - nothing to do" % i)
+            done.append(i)
             continue
-        if cur is not None and "would be allowed by active policy" in line:
-            now.add(cur)
-    return sorted(now)
+        fix = f.get("fix") or {}
+        if f["kind"] not in FIND.FIXABLE or not fix:
+            said.append("%s: not put right here (%s)" % (i, f.get("says") or f["kind"]))
+            continue
+        if fix["do"] == "boolean":
+            if se_bool(fix["name"]) is not True:
+                got = _se_run(["setsebool", "-P", fix["name"], "on"], 300)
+                if got is None or got.returncode != 0:
+                    raise Refused("setsebool -P %s on: %s" % (fix["name"], ((got.stderr or "") if got else "").strip()[-200:]))
+            said.append("%s on" % fix["name"])
+        elif fix["do"] == "label":
+            path = fix["path"]
+            if not path.startswith("/") or "\n" in path or not os.path.lexists(path):
+                said.append("%s: %s is not there any more" % (i, path[:200]))
+                continue
+            got = _se_run(["restorecon", "-R", "-v", "--", path], 300)
+            if got is None or got.returncode != 0:
+                raise Refused("restorecon %s: %s" % (path, ((got.stderr or "") if got else "").strip()[-200:]))
+            said.append("%s labelled again (%s)" % (path, fix.get("want")))
+        elif fix["do"] == "port":
+            known = se_ports()
+            if known is None:
+                raise Refused("semanage is not on this machine (dnf install policycoreutils-python-utils)")
+            if not se_port_has(known, fix["type"], fix["proto"], int(fix["port"])):
+                got = _se_run(["semanage", "port", "-a", "-t", fix["type"], "-p", fix["proto"], str(int(fix["port"]))], 300)
+                if got is not None and got.returncode != 0 and "already defined" in (got.stderr or ""):
+                    raise Refused("port %d/%s is another service's in the SELinux policy - choose another port"
+                                  % (int(fix["port"]), fix["proto"]))
+                if got is None or got.returncode != 0:
+                    raise Refused("semanage port %s/%s: %s" % (fix["port"], fix["proto"], ((got.stderr or "") if got else "").strip()[-200:]))
+            said.append("port %d/%s labelled %s" % (int(fix["port"]), fix["proto"], fix["type"]))
+        elif fix["do"] == "rule":
+            r = FIND.rule_checked({"id": i, "source": fix["source"], "target": fix["target"], "class": fix["class"],
+                                   "perms": fix["perms"], "why": "%s: %s" % (f.get("comm") or "?", f.get("says") or ""),
+                                   "at": time.time(), "by": by, "comm": f.get("comm") or ""})
+            if r is None:
+                said.append("%s: the rule is not one put in from here" % i)
+                continue
+            old = next((x for x in rules if x["id"] == i), None)
+            if old:
+                old["perms"] = sorted(set(old["perms"]) | set(r["perms"]))
+            else:
+                rules.append(r)
+            said.append("rule %s: (allow %s %s (%s (%s)))" % (i, r["source"], r["target"], r["class"], " ".join(r["perms"])))
+        done.append(i)
+    if len(rules) != rules_before or any(s.startswith("rule ") for s in said):
+        se_local_write(rules, said)
+        said.append("fake-igd's local module (%s) put into the policy - %d rule(s) in it" % (SE_LOCAL, len(rules)))
+    fixed = se_fixed()
+    for i in done:
+        fixed[i] = time.time()
+    root_state_write(SE_FIXED, json.dumps({"fixed": fixed}))
+    return said, done
+
+
+def se_rule_drop(rid):
+    FIND = _here()
+    if not FIND.ID_RE.match(str(rid or "")):
+        raise Refused("which rule?")
+    rules = se_local_rules()
+    left = [r for r in rules if r["id"] != rid]
+    if len(left) == len(rules):
+        raise Refused("there is no rule %s in fake-igd's local module" % rid)
+    said = ["rule %s taken away" % rid]
+    se_local_write(left, said)
+    if left:
+        said.append("fake-igd's local module (%s) put into the policy again - %d rule(s) in it" % (SE_LOCAL, len(left)))
+    fixed = se_fixed()
+    fixed.pop(rid, None)                    # refused again from now on, it counts again
+    root_state_write(SE_FIXED, json.dumps({"fixed": fixed}))
+    return said
 
 
 def se_check():
@@ -386,7 +511,27 @@ def se_check():
         out["ports"].append(dict(p, labelled=(se_port_has(known, p["type"], p["proto"], p["port"])
                                               if known is not None else None)))
     if on:
-        out["denials"] = se_denials(se_applied_at())
+        since = se_applied_at()
+        found = se_findings(since)
+        FIND = _here()
+        if found is None:
+            out["denials"] = {"tool": False, "total": 0, "groups": [], "since": since}
+        else:
+            block = [f for f in found if f["kind"] in FIND.FIXABLE + ("unsafe",)]
+            out["findings"] = found
+            out["denials"] = {"tool": True, "since": since, "total": sum(f["count"] for f in block),
+                              "fixable": sum(1 for f in found if f["kind"] in FIND.FIXABLE),
+                              "unsafe": sum(1 for f in found if f["kind"] == "unsafe"),
+                              "foreign": sum(f["count"] for f in found if f["kind"] == "foreign"),
+                              "settled": sum(f["count"] for f in found if f["kind"] == "allowed"),
+                              "groups": [{"source": f["source"], "target": f["target"], "class": f["class"],
+                                          "perms": " ".join(f["perms"]), "count": f["count"],
+                                          "what": " ".join(x for x in (f.get("comm") or "", f.get("path") or "") if x)}
+                                         for f in block][:30]}
+            out["findings"] = [f for f in found if f["kind"] != "allowed"]
+        rules = se_local_rules()
+        out["local"] = {"rules": rules, "in_policy": se_local_in() if rules else None,
+                        "cil": SE_LOCAL_CIL if os.path.exists(SE_LOCAL_CIL) else ""}
         out["auditd"] = se_auditd()
     probs = out["problems"]
     if on:
@@ -401,9 +546,11 @@ def se_check():
             probs.append("semanage is not on this machine - the ports cannot be checked "
                          "(dnf install policycoreutils-python-utils)")
         if out["denials"]["total"]:
-            probs.append(("SELinux refused %d thing(s) since fake-igd's needs were put in"
-                          if out["denials"].get("since") else
-                          "SELinux refused %d thing(s) since the machine started") % out["denials"]["total"])
+            d = out["denials"]
+            probs.append((("SELinux refused %d thing(s) since fake-igd's needs were put in"
+                           if d.get("since") else "SELinux refused %d thing(s) since the machine started")
+                          % d["total"]) + ((" - %d of them can be put right here (Put in what is selected)"
+                                            % d["fixable"]) if d.get("fixable") else ""))
         if not out.get("auditd", True):
             probs.append("auditd does not run - what SELinux refuses is not written down "
                          "(systemctl enable --now auditd)")
@@ -463,11 +610,21 @@ def se_apply(bools, ports, said, mark=True):
         root_state_write(SE_APPLIED, json.dumps({"at": time.time()}))
 
 
-def se_do(do):
+def se_do(do, payload=None):
     bools, ports, _cfg = se_want()
     said = []
     if do == "check":
         return se_check()
+    if do == "fix":
+        said, done = se_fix((payload or {}).get("ids"), str((payload or {}).get("by") or ""))
+        out = se_check()
+        out.update(said=said, fixed=done)
+        return out
+    if do == "rule_drop":
+        said = se_rule_drop((payload or {}).get("rule"))
+        out = se_check()
+        out["said"] = said
+        return out
     if do == "report":
         data = se_report_bytes(re.sub(r"[^A-Za-z0-9._-]", "", os.uname()[1].split(".")[0])[:60] or "server")
         se_report_write_web(data)
@@ -523,7 +680,7 @@ def se_do(do):
         se_config_set("permissive")
         said.append("SELinux is permissive, and stays so after a restart")
     else:
-        raise Refused("check, prepare, enforce, permissive or report")
+        raise Refused("check, prepare, enforce, permissive, fix, rule_drop or report")
     out = se_check()
     out["said"] = said
     return out
@@ -682,25 +839,36 @@ def se_text(c):
     lines.append("  refused since the start: %s" % (d["total"] if d["tool"] else "? (ausearch is not there)"))
     if d.get("settled"):
         lines.append("  refused before, allowed now (not counted): %d" % d["settled"])
-    for g in d["groups"][:15]:
-        lines.append("    %4dx %s -> %s %s { %s } %s" % (g["count"], g["source"], g["target"], g["class"],
-                                                         g["perms"], g["what"]))
+    words = {"boolean": "a boolean", "label": "a label", "port": "a port", "rule": "a rule of fake-igd's",
+             "unsafe": "not from here", "foreign": "not fake-igd's"}
+    for f in (c.get("findings") or [])[:40]:
+        lines.append("    %s %4dx %-15s %s -> %s %s { %s } %s" % (
+            f["id"], f["count"], words.get(f["kind"], f["kind"]), f["source"], f["target"], f["class"],
+            " ".join(f["perms"]), " ".join(x for x in (f.get("comm") or "", f.get("path") or "",
+                                                     str(f.get("port") or "")) if x)))
+        lines.append("                  %s" % ((f.get("fix") or {}).get("cmd") or f.get("says") or ""))
+    rules = (c.get("local") or {}).get("rules") or []
+    if rules:
+        lines.append("  fake-igd's local rules (%s): %d" % (SE_LOCAL, len(rules)))
+        for r in rules:
+            lines.append("    %s (allow %s %s (%s (%s)))" % (r["id"], r["source"], r["target"], r["class"],
+                                                             " ".join(r["perms"])))
     lines.append("ready for enforcing" if c.get("ready") else
                  ("enforcing" if c["mode"] == "Enforcing" and not c["problems"] else
                   "not ready: " + "; ".join(c["problems"][:6]) if c["problems"] else ""))
     return "\n".join(x for x in lines if x)
 
 
-ACTIONS = ("check", "prepare", "enforce", "permissive", "report")
+ACTIONS = ("check", "prepare", "enforce", "permissive", "report", "fix", "rule_drop")
 
 
 def serve(payload, ask=None):
     """An ask of the pages: {"do": STEP} - the answer carries the card (data) and what was done (said)."""
     do = str((payload or {}).get("do") or "check")
     if do not in ACTIONS:
-        return {"ok": False, "do": do[:20], "said": ["check, prepare, enforce, permissive or report"]}
+        return {"ok": False, "do": do[:20], "said": ["check, prepare, enforce, permissive, fix, rule_drop or report"]}
     try:
-        data = se_do(do)
+        data = se_do(do, dict(payload or {}, by=str((ask or {}).get("by") or "")[:80]))
     except Refused as e:
         return {"ok": False, "do": do, "said": [str(e)[:400]]}
     except OSError as e:
