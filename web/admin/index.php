@@ -91,6 +91,28 @@ if (isset($_GET['api'])) {
         echo json_encode(is_array($data) ? $data : ['ok' => false, 'error' => 'sign-in failed']);
         exit;
     }
+    if ($what === 'mfa' && $post) {
+        /* The second step given (otp 1.0.149, 1.9.2): the API ends the sign-in the password opened
+           and hands a new one - its cookie set here, the token never shown to the page. */
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        [$status, $body] = igd_call('/api/mfa', 'POST', sent_json(), 90.0);
+        if ($status === 0) {
+            igd_down_answer();
+            exit;
+        }
+        $data = json_decode($body, true);
+        if (is_array($data) && array_key_exists('token', $data)) {
+            if ($status === 200 && is_string($data['token']) && $data['token'] !== '') {
+                igd_set_session($data['token']);
+            }
+            unset($data['token']);
+            $body = (string) json_encode($data);
+        }
+        http_response_code($status);
+        echo $body;
+        exit;
+    }
     if ($what === 'logout' && $post) {
         igd_call('/api/auth/logout', 'POST', [], 10.0);
         igd_clear_session();

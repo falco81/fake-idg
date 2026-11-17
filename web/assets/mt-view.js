@@ -640,9 +640,14 @@
       /* a long chain is shown by its first rules (a page of 81 cards is a noodle) - all of them on a press,
          or whenever a search or "only what concerns" narrows it */
       var key = MV.fam + ':' + MV.table + ':' + ch, cut = !MV.q.trim() && !MV.mine && !MV.open[key] && keep.length > FOLD + 3;
-      (cut ? keep.slice(0, FOLD) : keep).forEach(function (r) { lane.appendChild(ruleCard(r, total, concern[MV.fam + ':' + r['.id']])); });
+      /* folded, the rules that concern a port asked for stay in sight wherever they are */
+      var shown = cut ? keep.filter(function (r, i) { return i < FOLD || concern[MV.fam + ':' + r['.id']]; }) : keep;
+      shown.forEach(function (r, i) {
+        if (cut && i && shown[i - 1] !== keep[keep.indexOf(r) - 1]) lane.appendChild(el('div', 'mt-gap muted small', '⋯ ' + num(keep.indexOf(r) - keep.indexOf(shown[i - 1]) - 1) + ' rule(s) between'));
+        lane.appendChild(ruleCard(r, total, concern[MV.fam + ':' + r['.id']]));
+      });
       if (cut || (MV.open[key] && keep.length > FOLD + 3 && !MV.q.trim() && !MV.mine)) {
-        var more = el('button', 'mt-more', cut ? 'Show all ' + num(keep.length) + ' rules of ' + ch + ' (' + num(keep.length - FOLD) + ' more)' : 'Show the first ' + FOLD + ' only');
+        var more = el('button', 'mt-more', cut ? 'Show all ' + num(keep.length) + ' rules of ' + ch + ' (' + num(keep.length - shown.length) + ' more)' : 'Show the first ' + FOLD + ' only');
         more.type = 'button';
         more.onclick = function () { MV.open[key] = cut; paintFirewall(true); if (!cut) lane.scrollIntoView({block: 'start'}); };
         lane.appendChild(more);
@@ -715,7 +720,15 @@
     var lists = s.iflists || {};
     var inList = function (n) { return Object.keys(lists).filter(function (l) { return ['all', 'none', 'dynamic', 'static'].indexOf(l) < 0 && (lists[l] || []).indexOf(n) >= 0; }); };
     var addrs = (s.addresses4 || []).concat(MV.fam === 'ipv6' ? (s.addresses6 || []) : []);
-    (s.interfaces || []).forEach(function (i) {
+    var sideMore = function (panel, key, n, what) {
+      if (n <= FOLD + 3) return;
+      var b = el('button', 'mt-more', MV.open[key] ? 'Show the first ' + FOLD + ' only' : 'Show all ' + num(n) + ' ' + what);
+      b.type = 'button';
+      b.onclick = function () { MV.open[key] = !MV.open[key]; paintFirewall(true); };
+      panel.appendChild(b);
+    };
+    var allIfs = s.interfaces || [];
+    (MV.open.ifs || allIfs.length <= FOLD + 3 ? allIfs : allIfs.slice(0, FOLD)).forEach(function (i) {
       var row = el('div', 'mt-if' + (i.disabled ? ' off' : ''));
       row.appendChild(el('span', 'dot ' + (i.running ? 'ok' : 'bad')));
       row.appendChild(noI18n(el('b', 'mono', i.name)));
@@ -724,13 +737,14 @@
       if (a.length) row.appendChild(noI18n(el('div', 'mono small muted mt-if-a', a.join(' · '))));
       ifs.appendChild(row);
     });
+    sideMore(ifs, 'ifs', allIfs.length, 'interfaces');
     box.appendChild(ifs);
     var al = el('div', 'mt-panel');
     al.appendChild(el('h3', 'peek-h', 'Address lists'));
     var ll = (s.lists || {})[MV.fam] || {};
     var names = Object.keys(ll).sort();
     if (!names.length) al.appendChild(el('p', 'muted small', 'none'));
-    names.forEach(function (n) {
+    (MV.open.lists || names.length <= FOLD + 3 ? names : names.slice(0, FOLD)).forEach(function (n) {
       var d = document.createElement('details');
       d.className = 'mt-list';
       var sm = document.createElement('summary');
@@ -747,6 +761,7 @@
       if (ll[n].length > 200) d.appendChild(el('div', 'muted small', '… and ' + num(ll[n].length - 200) + ' more'));
       al.appendChild(d);
     });
+    sideMore(al, 'lists', names.length, 'address lists');
     box.appendChild(al);
     return box;
   }

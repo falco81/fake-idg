@@ -690,7 +690,8 @@ class Store(object):
             self.run("UPDATE sessions SET data = ? WHERE id = ?", (json.dumps(d), s["id"]))
 
     def mfa_enrol(self, token, code):
-        """The app set up in this sign-in, proven by its first code: kept, and the sign-in opened."""
+        """The app set up in this sign-in, proven by its first code: kept, and the sign-in opened -
+        the new token returned (mfa_passed)."""
         with self.lock:
             s, u = self.pending(token)
             if not s:
@@ -705,11 +706,11 @@ class Store(object):
                 raise StoreError("that code is not right - the one the app shows now")
             rec = {"kind": "app", "secret": secret, "step": step, "at": time.time(), "by": u["name"]}
             self.run("UPDATE users SET mfa = ? WHERE name = ?", (json.dumps(rec), u["name"]))
-        self.mfa_passed(token)
-        return u
+        return self.mfa_passed(token)
 
     def mfa_passkey_enrol(self, token, pk):
-        """The passkey set up in this sign-in (checked by igd_webauthn): kept, and the sign-in opened."""
+        """The passkey set up in this sign-in (checked by igd_webauthn): kept, and the sign-in opened -
+        the new token returned (mfa_passed)."""
         with self.lock:
             s, u = self.pending(token)
             if not s:
@@ -718,23 +719,31 @@ class Store(object):
                 raise StoreError("this account has its second step set up already - sign in again")
             rec = {"kind": "passkey", "keys": [pk], "at": time.time(), "by": u["name"]}
             self.mfa_put(u["name"], rec)
-        self.mfa_passed(token)
-        return rec
+        return self.mfa_passed(token)
 
     def mfa_put(self, name, rec):
         self.run("UPDATE users SET mfa = ? WHERE name = ?", (json.dumps(rec), name))
 
     def mfa_passed(self, token):
-        """The second step given: the sign-in opens - the same token (its cookie is HttpOnly). When
-        it was given is kept with it (otp 1.0.262): a passkey is added only soon after."""
+        """The second step given: a sign-in of its own from here on, with a NEW token, returned
+        (otp 1.0.149, 1.9.2) - the one the password alone opened is ended, not made whole: whoever had
+        seen its cookie had the pages once the code was given. When it was given is kept with the new
+        one (otp 1.0.262): a passkey is added only soon after."""
         sid = _sid(token)
-        s = self.one("SELECT name, addr FROM sessions WHERE id = ?", (sid,))
-        if not s:
-            raise StoreError("this sign-in has ended - sign in again")
+        new = secrets.token_urlsafe(32)
         now = time.time()
-        self.run("UPDATE sessions SET mfa = '', data = ?, created = ?, seen = ? WHERE id = ?",
-                 (json.dumps({"mfa_at": int(now)}), now, now, sid))
+        with self.lock:
+            s = self.one("SELECT name, addr, agent, mfa FROM sessions WHERE id = ?", (sid,))
+            if not s or not s["mfa"]:
+                raise StoreError("this sign-in has ended - sign in again")
+            # Taken by one request only: two answers at once open one sign-in, not two.
+            if not self.run("DELETE FROM sessions WHERE id = ? AND mfa <> ''", (sid,)).rowcount:
+                raise StoreError("this sign-in has ended - sign in again")
+            self.run("INSERT INTO sessions (id, name, created, seen, addr, agent, mfa, data) "
+                     "VALUES (?, ?, ?, ?, ?, ?, '', ?)",
+                     (_sid(new), s["name"], now, now, s["addr"], s["agent"], json.dumps({"mfa_at": int(now)})))
         self.run("UPDATE users SET last_login = ?, last_from = ? WHERE name = ?", (now, s["addr"], s["name"]))
+        return new
 
     def logout(self, token):
         self.run("DELETE FROM sessions WHERE id = ?", (_sid(token),))

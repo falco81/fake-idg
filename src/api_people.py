@@ -833,12 +833,12 @@ def _mfa_passkey(ctx, s, acc, stage, act, b):
         # The question once (otp's session_take): taken only by the answer that was right.
         if not S.session_take(tok, "mfa_new"):
             raise ST.StoreError("that answer was taken already - start again")
-        S.mfa_passkey_enrol(tok, pk)
+        new_tok = S.mfa_passkey_enrol(tok, pk)
         _say(ctx, "account", "%s set up the second step of signing in: %s (%s, for https://%s/)" % (
             name, KIND_SAID["passkey"], pk.get("name") or "a device", pk["host"]), "info", name)
         _say(ctx, "sign-in", "%s gave the second step (set up now: %s) from %s" % (name, KIND_SAID["passkey"],
                                                                                   ctx.addr), "info", name)
-        return {"message": "the second step is set up", "done": True}
+        return {"message": "the second step is set up", "done": True, "token": new_tok}
     # act == "check"
     rec = S.mfa_get(name)
     if rec.get("kind") != "passkey":
@@ -857,10 +857,10 @@ def _mfa_passkey(ctx, s, acc, stage, act, b):
             _mfa_wrong(ctx, s, name, str(e), "%s: the passkey was refused - %s" % (name, e))
         rec["keys"] = [used if k.get("id") == used["id"] else k for k in rec.get("keys") or []]
         S.mfa_put(name, rec)
-    S.mfa_passed(tok)
+    new_tok = S.mfa_passed(tok)
     _say(ctx, "sign-in", "%s gave the second step (a passkey (%s)) from %s" % (
         name, used.get("name") or "a device", ctx.addr), "info", name)
-    return {"message": "signed in", "done": True}
+    return {"message": "signed in", "done": True, "token": new_tok}
 
 
 def mfa_post(ctx):
@@ -900,11 +900,11 @@ def mfa_post(ctx):
         if act == "enrol_confirm":
             if stage != "enrol":
                 raise ST.StoreError("this account has its second step set up already")
-            S.mfa_enrol(_token(ctx), b.get("code") or "")
+            new_tok = S.mfa_enrol(_token(ctx), b.get("code") or "")
             _say(ctx, "account", "%s set up the second step of signing in: an app" % name, "info", name)
             _say(ctx, "sign-in", "%s gave the second step (set up now: an app) from %s" % (name, ctx.addr),
                  "info", name)
-            return {"message": "the second step is set up", "done": True}
+            return {"message": "the second step is set up", "done": True, "token": new_tok}
         if stage != "check":
             raise ST.StoreError("set the second step up first")
         S.mfa_check(name, b.get("code") or "")
@@ -914,9 +914,11 @@ def mfa_post(ctx):
             # sign-in with the password could go on guessing as long as the name's count let it.
             _mfa_wrong(ctx, s, name, str(e))
         raise
-    S.mfa_passed(_token(ctx))
+    # A sign-in of its own from here on (otp 1.0.149): the new token goes to the cookie (the pages,
+    # ?api=mfa), never to the page; the one the password opened is ended.
+    new_tok = S.mfa_passed(_token(ctx))
     _say(ctx, "sign-in", "%s gave the second step (an app) from %s" % (name, ctx.addr), "info", name)
-    return {"message": "signed in", "done": True}
+    return {"message": "signed in", "done": True, "token": new_tok}
 
 
 mfa_post.PUBLIC = True

@@ -4771,3 +4771,5 @@ button.gx-hop:hover{border-color:var(--info)}
 .mt-more{appearance:none;margin:2px 0 0;padding:9px 12px;border-radius:10px;border:1px dashed var(--line);background:transparent;
   color:var(--info);font:600 13px/1.3 var(--face);cursor:pointer;text-align:center}
 .mt-more:hover{border-style:solid;background:var(--info-bg)}
+.mt-gap{text-align:center;padding:2px 0;letter-spacing:.3px}
+.gt-col > .step-pills{display:flex;flex-wrap:wrap;gap:4px;white-space:normal;max-width:100%}

@@ -19,6 +19,8 @@ attestation, the authenticator's data, the signature - and these are given to th
   - Your account: the list, Add (only soon after the second step), the name, taken away, never the last,
     10 at most, the same device twice refused
   - the reset (Accounts, as upnp user reset-2fa) takes the passkeys too
+  - the second step given (app or passkey, set up or given) opens a sign-in with a NEW token: the
+    password-only one is refused at once, for the pages and for the second step alike
   - the bounds of otp 1.0.254 / 1.0.262: CBOR too deep, a huge RSA key or exponent, a short RSA key
 """
 import base64
@@ -197,7 +199,11 @@ class Pages(object):
         return got
 
     def mfa(self, body=None):
-        return self.call(AP.mfa_post if body is not None else AP.mfa_get, body)
+        got = self.call(AP.mfa_post if body is not None else AP.mfa_get, body)
+        if isinstance(got, dict) and got.get("token"):
+            # As index.php does: the new token into the cookie, never to the page (otp 1.0.149).
+            self.old, self.token = self.token, got.pop("token")
+        return got
 
     def pk(self, body=None):
         return self.call(AP.pk_do if body is not None else AP.pk_list, body, signed_in=True)
@@ -618,6 +624,73 @@ class YourAccount(Base):
         self.assertEqual(Pages(self.S).login()["mfa"], "enrol")
         self.assertIn("(it was a passkey (Face ID, Touch ID, Windows Hello))",
                       " ".join(e["words"] for e in self.S.events(limit=10)["events"]))
+
+
+class NewToken(Base):
+    """otp 1.0.149: whoever saw the cookie of the password-only sign-in gets nothing."""
+
+    def check_swapped(self, p, before):
+        self.assertNotEqual(p.token, before)
+        self.assertEqual(p.old, before)
+        self.assertIsNone(self.S.session(before))
+        self.assertEqual(self.S.pending(before), (None, None))
+        me = self.S.session(p.token)
+        self.assertTrue(me and me["name"] == "admin" and me["mfa_at"])
+        # the old one can do nothing: not the pages, not the second step, not Your account
+        old = Pages(self.S)
+        old.token = before
+        with self.assertRaises(ValueError):
+            old.mfa()
+        with self.assertRaises(PermissionError):
+            old.pk()
+        self.assertEqual(self.S.one("SELECT COUNT(*) AS n FROM sessions WHERE name = 'admin'")["n"], 1)
+
+    def test_passkey_enrol_and_check(self):
+        dev = Device(-7)
+        p = Pages(self.S)
+        p.login()
+        before = p.token
+        opts = p.mfa({"action": "enrol_start", "kind": "passkey"})
+        self.assertNotIn("token", p.mfa(dict(dev.create(opts), action="enrol_confirm")))
+        self.check_swapped(p, before)
+        self.assertTrue(p.pk()["mine"])
+        p.call(AP.logout, {})
+        p.login()
+        before = p.token
+        opts = p.mfa({"action": "pk_begin"})
+        p.mfa(dict(dev.get(opts), action="check"))
+        self.check_swapped(p, before)
+
+    def test_app_enrol_and_check(self):
+        p = Pages(self.S)
+        p.login()
+        before = p.token
+        p.mfa({"action": "enrol_start", "kind": "app"})
+        s, _a = self.S.pending(p.token)
+        secret = s["data"]["mfa_new"]
+        p.mfa({"action": "enrol_confirm", "code": ST.totp(secret)})
+        self.check_swapped(p, before)
+        rec = self.S.mfa_get("admin")
+        rec["step"] = 0                         # the code of now is good once more, for the check below
+        self.S.mfa_put("admin", rec)
+        p2 = Pages(self.S)
+        p2.login()
+        before = p2.token
+        p2.mfa({"action": "check", "code": ST.totp(secret)})
+        self.assertNotEqual(p2.token, before)
+        self.assertIsNone(self.S.session(before))
+        self.assertTrue(self.S.session(p2.token))
+
+    def test_once(self):
+        """Two answers at once open one sign-in: the second finds the waiting one gone."""
+        p = Pages(self.S)
+        p.login()
+        new = self.S.mfa_passed(p.token)
+        self.assertTrue(self.S.session(new))
+        with self.assertRaises(ST.StoreError):
+            self.S.mfa_passed(p.token)
+        with self.assertRaises(ST.StoreError):
+            self.S.mfa_passed(new)              # a whole sign-in is no waiting one
 
 
 class Bounds(unittest.TestCase):
