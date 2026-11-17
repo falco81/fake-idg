@@ -2,6 +2,12 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.9.6 (2026-11-17)
+
+- Gateway → MikroTik has one button that reads: "Read it now" in the router's strip (full admins) asks fake-igd to
+  read the router at once. The tab's "Read it again" - root reading this server's counters - is shown on Devices
+  only; on MikroTik it only redrew the page, which refreshes on its own.
+
 ## 1.9.5 (2026-11-17)
 
 - MikroTik: a port put right on the router turns green at the next read (every N minutes, or Read it now) - and

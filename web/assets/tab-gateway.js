@@ -30,6 +30,10 @@
     if ($('gt-note-mikrotik')) $('gt-note-mikrotik').hidden = dev;
     if ($('gt-hours')) $('gt-hours').hidden = !dev;
     if ($('gt-read')) $('gt-read').hidden = !dev;
+    /* one button where it does something (1.9.5): on MikroTik the strip's "Read it now" reads the router - the
+       page itself refreshes on its own - so the tab's "Read it again" (root reads this server's counters) is
+       shown on Devices only */
+    if ($('gt-refresh')) $('gt-refresh').hidden = !dev;
   }
   function loadSub(quietly) {
     if (GT.sub === 'mikrotik') {
