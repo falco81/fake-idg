@@ -388,12 +388,12 @@ def write_fw_conf(conf, path=None):
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(body, f, indent=1)
         f.write("\n")
-    os.chmod(tmp, 0o640)
-    try:
-        import grp
-        os.chown(tmp, 0, grp.getgrnam("fake-igd").gr_gid)
-    except (KeyError, OSError):
-        pass
+        os.fchmod(f.fileno(), 0o640)
+        try:   # on the open file, never by name
+            import grp
+            os.fchown(f.fileno(), 0, grp.getgrnam("fake-igd").gr_gid)
+        except (KeyError, OSError):
+            pass
     os.replace(tmp, path)
     return body
 

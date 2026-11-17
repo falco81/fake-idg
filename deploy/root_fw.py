@@ -100,12 +100,12 @@ def trial_write(t):
     fd, tmp = tempfile.mkstemp(prefix=".firewall-trial.", dir=os.path.dirname(TRIAL_FILE))
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(t, f, indent=1)
-    os.chmod(tmp, 0o640)
-    try:
-        import grp
-        os.chown(tmp, 0, grp.getgrnam("fake-igd").gr_gid)
-    except (KeyError, OSError):
-        pass
+        os.fchmod(f.fileno(), 0o640)
+        try:   # on the open file, never by name
+            import grp
+            os.fchown(f.fileno(), 0, grp.getgrnam("fake-igd").gr_gid)
+        except (KeyError, OSError):
+            pass
     os.replace(tmp, TRIAL_FILE)
 
 
