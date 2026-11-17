@@ -291,6 +291,21 @@ def ts(v):
     return t.timestamp() if t else None
 
 
+EVENT_GROUPS = {
+    "sign-in": "sign-ins", "account": "accounts", "people": "accounts", "osusers": "accounts",
+    "service": "starting and stopping", "upnp": "starting and stopping", "power": "starting and stopping",
+    "upgrade": "upgrades", "backup": "backups", "carry": "backups", "db": "backups",
+    "mail": "mail", "mailq": "mail", "alerts": "mail", "alert": "mail",
+    "notify": "notifications", "ntfy": "notifications", "mdns": "mdns",
+    "tls": "certificates", "acme": "certificates", "sshd": "ssh", "sshkeys": "ssh",
+}
+
+
+def event_group(kind):
+    """otp's words for a kind of event: the group it belongs to; every other change is 'settings'."""
+    return EVENT_GROUPS.get(str(kind or ""), "settings")
+
+
 def window(q, default_s=None):
     """(since, until) as aware datetimes from otp's time picker (since=, until= in epoch seconds);
     None for an open end. No since and no default: all time."""
@@ -840,9 +855,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/events":
             page, per = pager(q)
             since, until = window(q)
-            d = S.events((q.get("q") or [""])[0], (q.get("kind") or [""])[0],
+            want = (q.get("kind") or [""])[0]
+            raw = [k for k in S.events("", "", 0, 1, 0)["kinds"] if event_group(k) == want] if want else ""
+            if want and not raw:
+                raw = [want]                     # an old link with a raw kind still filters
+            d = S.events((q.get("q") or [""])[0], raw,
                          since.timestamp() if since else 0, per, page * per,
                          until.timestamp() if until else 0)
+            for r in d["events"]:
+                r["kind_raw"], r["kind"] = r["kind"], event_group(r["kind"])
+            d["kinds"] = sorted({event_group(k) for k in d["kinds"]})
             d.update({"page": page, "per": per})
             return d
         if path == "/api/settings" and method == "GET":

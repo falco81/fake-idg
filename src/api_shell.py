@@ -810,15 +810,20 @@ def get_events(ctx):
     if until is not None:
         where.append("at <= ?")
         args.append(until.timestamp())
+    every = [r["kind"] for r in S.rows("SELECT DISTINCT kind FROM events ORDER BY kind")]
     if kind:
-        where.append("kind = ?")
-        args.append(kind)
+        # otp's group words (sign-ins, starting and stopping, ...): the raw kinds of the group; an old link
+        # with a raw kind still filters.
+        raw = [k for k in every if A.event_group(k) == kind] or [kind]
+        where.append("kind IN (%s)" % ",".join("?" * len(raw)))
+        args += raw
     rows = S.rows("SELECT * FROM events WHERE " + " AND ".join(where) + " ORDER BY id DESC LIMIT 20000", args)
     rows, bad = run_query("events", [dict(r) for r in rows], ctx.arg("q"))
-    kinds = [r["kind"] for r in S.rows("SELECT DISTINCT kind FROM events ORDER BY kind")]
+    kinds = sorted({A.event_group(k) for k in every})
     out = _strip(rows[page * per:(page + 1) * per])
     for r in out:
         r["ts"] = r.get("at")
+        r["kind_raw"], r["kind"] = r.get("kind"), A.event_group(r.get("kind"))
     return {"events": out, "total": len(rows), "kinds": kinds, "page": page, "per": per, "q_error": bad}
 
 

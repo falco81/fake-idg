@@ -356,8 +356,9 @@ class Store(object):
             where.append("at <= ?")
             args.append(float(until))
         if kind:
-            where.append("kind = ?")
-            args.append(kind)
+            kinds = [kind] if isinstance(kind, str) else [str(k) for k in kind]
+            where.append("kind IN (%s)" % ",".join("?" * len(kinds)))
+            args += kinds
         if q:
             where.append("(words LIKE ? OR who LIKE ? OR addr LIKE ? OR kind LIKE ?)")
             args += ["%" + q + "%"] * 4

@@ -722,7 +722,10 @@ def status_data(cfg):
         "notifications": ntfy, "interfaces": ifaces, "other_igd": other_igd,
         "stats": {"requests": len(ev), "add": len([e for e in ev if e.get("action") == "AddPortMapping"]),
                   "ports": len(ports), "clients": len({e.get("client") for e in ev}), "mappings": nmap,
-                  "last": last.isoformat() if last else None},
+                  "last": last.isoformat() if last else None,
+                  "refused_24h": len([e for e in ev if e.get("action") == "AddPortMapping" and e.get("_t")
+                                      and e["_t"].timestamp() > time.time() - 86400
+                                      and str(e.get("result") or "ok") != "ok"])},
     }
 
 
