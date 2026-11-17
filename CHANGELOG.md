@@ -2,6 +2,14 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.7.9 (2026-11-17)
+
+- **"To be done by hand" stayed after SELinux was put right.** "SELinux: the pages may not reach fake-igd's
+  API" (the boolean off after SELinux was switched on) was looked at again only every ten minutes, so it
+  stayed after "Put in what fake-igd needs" on Settings → SELinux had set it. The list is looked at again
+  as soon as root has done a step of SELinux (or the card has looked again), as it already was when
+  install.sh writes root-facts.json.
+
 ## 1.7.8 (2026-11-17)
 
 - **DH parameters made here never ended on the pages.** fake-igd-web.service (root's helper) had a time limit

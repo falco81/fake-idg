@@ -745,18 +745,29 @@ def after_evaluate(ctx):
         return row
 
 
-def _facts_newer(row):
-    """root-facts.json written since the list was last looked at (install.sh ended): look again now."""
+def _facts_newer(row, store=None):
+    """root-facts.json written since the list was last looked at (install.sh ended), or SELinux looked at /
+    changed by root since (a step of Settings → SELinux, 1.7.9): look again now - not ten minutes later."""
+    seen = float((row or {}).get("at") or 0)
     try:
-        return os.path.getmtime(ROOT_FACTS) > float((row or {}).get("at") or 0)
+        if os.path.getmtime(ROOT_FACTS) > seen:
+            return True
     except OSError:
-        return False
+        pass
+    if store is not None:
+        try:
+            se = json.loads(store.get_meta("selinux:now") or "{}") or {}
+            if float(se.get("at") or 0) > seen:
+                return True
+        except (ValueError, TypeError, AttributeError):
+            pass
+    return False
 
 
 def _row(ctx):
     row = ctx.store.meta_json("after:row")
     if not row or row.get("version") != VERSION or time.time() - float(row.get("at") or 0) > AFTER_EVERY * 2 \
-            or _facts_newer(row):
+            or _facts_newer(row, ctx.store):
         row = after_evaluate(ctx)
     return row
 
@@ -880,7 +891,7 @@ ROUTES = {
 # ---- once a minute ---------------------------------------------------------------------
 def background(ctx):
     """The list looked at every ten minutes; the end of an upgrade written in the events once."""
-    if time.time() - AFTER_WORK["at"] >= AFTER_EVERY or _facts_newer(ctx.store.meta_json("after:row")):
+    if time.time() - AFTER_WORK["at"] >= AFTER_EVERY or _facts_newer(ctx.store.meta_json("after:row"), ctx.store):
         try:
             after_evaluate(ctx)
         except Exception as e:                          # noqa: BLE001

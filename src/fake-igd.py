@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
-__version__ = '1.7.8'
+__version__ = '1.7.9'
 VERSION = __version__
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
 DEFAULTS = {
