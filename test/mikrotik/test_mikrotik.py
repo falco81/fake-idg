@@ -291,6 +291,21 @@ class Checks(unittest.TestCase):
         self.assertEqual(r["v6_each"][0]["addr"], "2a00:1028:8640:40::95")
         self.assertEqual(r["v6_wan"], ["ether1"])
 
+    def test_drops_since_opened(self):
+        # 1.9.4: the lines from before a rule was put right are history - counted apart ("before")
+        import time
+        now = time.time()
+        snap = {"at": now, "rules": {}, "fwlog": [
+            {"time": time.strftime("%H:%M:%S", time.localtime(now - 900)), "dst": "192.168.40.95", "proto": "udp",
+             "dport": 9308, "prefix": "drop", "family": "ip"},
+            {"time": time.strftime("%H:%M:%S", time.localtime(now - 30)), "dst": "192.168.40.95", "proto": "udp",
+             "dport": 9308, "prefix": "drop", "family": "ip"}]}
+        self.assertEqual(C.drops_of(snap, ["192.168.40.95"], "udp", {9308})["n"], 2)
+        d = C.drops_of(snap, ["192.168.40.95"], "udp", {9308}, since=now - 300)
+        self.assertEqual((d["n"], d["before"]), (1, 1))
+        self.assertIsNotNone(C.log_epoch("nov/17 16:36:44", now))
+        self.assertIsNone(C.log_epoch("yesterday-ish", now))
+
     def test_v6_set_by_hand(self):
         w = dict(next(x for x in fixture.WANTS if x["port"] == 9308), v6=["2a00:1028:8640:40::abc"], v6_set=True)
         r = C.check_port(self.snap, w)

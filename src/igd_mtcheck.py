@@ -648,15 +648,57 @@ def _drop_prefixes(snap):
     return got
 
 
-def drops_of(snap, addrs, proto=None, ports=None, most=8):
+MONTHS = {m: i + 1 for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
+                                          "nov", "dec"))}
+
+
+def log_epoch(text, ref=None):
+    """The time of a line of the router's log as seconds (1.9.4): "16:36:44" (today, as RouterOS 7 writes the
+    day's lines), "2026-11-17 16:36:44", "nov/17 16:36:44" or "nov/17/2026 16:36:44" - in this machine's local
+    time, as the router's clock is taken to be; None when it cannot be told. A time of day later than the read
+    is yesterday's."""
+    import time as _t
+    import datetime as _d
+    ref = ref or _t.time()
+    s = str(text or "").strip().lower()
+    try:
+        m = re.match(r"^(\d{1,2}):(\d{2}):(\d{2})$", s)
+        if m:
+            day = _d.datetime.fromtimestamp(ref)
+            at = day.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=int(m.group(3)), microsecond=0)
+            if at.timestamp() > ref + 120:
+                at -= _d.timedelta(days=1)
+            return at.timestamp()
+        m = re.match(r"^(\d{4})-(\d{2})-(\d{2})[ t](\d{1,2}):(\d{2}):(\d{2})$", s)
+        if m:
+            return _d.datetime(*[int(x) for x in m.groups()]).timestamp()
+        m = re.match(r"^([a-z]{3})/(\d{1,2})(?:/(\d{4}))? (\d{1,2}):(\d{2}):(\d{2})$", s)
+        if m and m.group(1) in MONTHS:
+            year = int(m.group(3) or _d.datetime.fromtimestamp(ref).year)
+            return _d.datetime(year, MONTHS[m.group(1)], int(m.group(2)), int(m.group(4)), int(m.group(5)),
+                               int(m.group(6))).timestamp()
+    except ValueError:
+        return None
+    return None
+
+
+def drops_of(snap, addrs, proto=None, ports=None, most=8, since=None):
     """What the router's log says it dropped toward these addresses (1.9.2) - of this protocol and port when
-    given: {n, last, by: {prefix: n}, ports: {port: n}, lines: [the last few]}."""
+    given: {n, last, by: {prefix: n}, ports: {port: n}, lines: [the last few]}. `since` (1.9.4): only the lines
+    written after it - those before a rule was put right are history, not a fault."""
     kinds = _drop_prefixes(snap)
     addrs = {str(a) for a in addrs}
-    out = {"n": 0, "last": "", "by": {}, "ports": {}, "lines": []}
+    out = {"n": 0, "last": "", "by": {}, "ports": {}, "lines": [], "before": 0}
+    ref = snap.get("at")
     for e in snap.get("fwlog") or []:
         if e.get("dst") not in addrs:
             continue
+        if since:
+            when = log_epoch(e.get("time"), ref)
+            if when is not None and when < since:
+                if (not proto or e.get("proto") == proto) and (not ports or e.get("dport") in ports):
+                    out["before"] += 1
+                continue
         if proto and e.get("proto") != proto:
             continue
         if ports and e.get("dport") not in ports:

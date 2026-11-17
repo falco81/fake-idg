@@ -586,6 +586,7 @@
         if (r.state === 'ok') a.appendChild(el('p', 'note bad', 'Open by the rules, yet the router\'s log shows drops of it.'));
         a.appendChild(dropsTable(r.drops4));
       } else a.appendChild(el('p', 'muted small', 'Nothing dropped in the lines the router keeps (' + logWords() + ').'));
+      if ((r.drops4 || {}).before) a.appendChild(el('p', 'note', num(r.drops4.before) + ' older line(s) of the log from before it turned open (' + stamp(r.drops4.opened_at) + ') - history, not counted.'));
       two.appendChild(a);
       /* IPv6 */
       var b = el('section', 'gx-peek-f' + (fam === 'ipv6' ? ' lit' : ''));
@@ -614,6 +615,7 @@
         if (r.v6 === 'open') b.appendChild(el('p', 'note bad', 'Open by the rules, yet the router\'s log shows drops of it.'));
         b.appendChild(dropsTable(r.drops6));
       } else b.appendChild(el('p', 'muted small', 'Nothing dropped in the lines the router keeps (' + logWords() + ').'));
+      if ((r.drops6 || {}).before) b.appendChild(el('p', 'note', num(r.drops6.before) + ' older line(s) of the log from before it turned open (' + stamp(r.drops6.opened_at) + ') - history, not counted.'));
       two.appendChild(b);
       body.appendChild(two);
       body.appendChild(el('p', 'muted small', 'Commands for the MikroTik\'s terminal - fake-igd only reads, it never sends them. Only rules with log=yes write lines to its log, and it keeps the last ~1000 in memory.'));

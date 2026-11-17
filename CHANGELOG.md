@@ -2,6 +2,14 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.9.5 (2026-11-17)
+
+- MikroTik: a port put right on the router turns green at the next read (every N minutes, or Read it now) - and
+  the drops its log still holds from before are not held against it: when an IPv4 or IPv6 check turns open
+  between two reads, the log's lines are counted only from that read on; the older ones are said apart in the
+  port's popup ("N older line(s) from before it turned open - history, not counted"). The times of the log's
+  lines are read as RouterOS writes them ("16:36:44" today, "2026-11-17 16:36:44", "nov/17 16:36:44").
+
 ## 1.9.4 (2026-11-17)
 
 - IPv6 on the MikroTik is information, not a fault: UPnP's AddPortMapping asks for an IPv4 port only, and a

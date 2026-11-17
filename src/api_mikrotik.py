@@ -320,6 +320,32 @@ def checks(ctx, snap=None):
     for row, w in zip(res["rows"], ws):
         row.update(asked=w.get("asked", 0), last=w.get("last") or "", description=w.get("description") or "",
                    held=bool(w.get("held")), gateway=bool(w.get("gateway")))
+    # 1.9.4: when a port turns open between two reads (a rule put right), the drops the router's log still holds
+    # from before are history - counted only from that read on, and said as such
+    seen = _meta_json(ctx.store, "mikrotik:opened") or {}
+    at = float(snap.get("at") or time.time())
+    was = json.dumps(seen, sort_keys=True)
+    for row in res["rows"]:
+        for fam, ok, key in (("4", row.get("state") == "ok", "drops4"), ("6", row.get("v6") == "open", "drops6")):
+            k = "%s/%s/%s/%s" % (row["device"], row["proto"], row["port"], fam)
+            old = seen.get(k)
+            if not ok:
+                seen[k] = {"ok": False, "since": 0}
+                continue
+            if old is None:
+                seen[k] = {"ok": True, "since": 0}          # open when first seen: its drops are not history
+            elif not old.get("ok"):
+                seen[k] = {"ok": True, "since": at}         # opened now: what the log held before is history
+            since = seen[k]["since"]
+            if since:
+                addrs = ([row["device"]] + ([row["way"]["public"]] if (row.get("way") or {}).get("public") else [])) \
+                    if fam == "4" else (row.get("v6_addrs") or [])
+                row[key] = C.drops_of(snap, addrs, row["proto"], {row["port"], row["to_port"]}, since=since)
+                row[key]["opened_at"] = since
+    if json.dumps(seen, sort_keys=True) != was:
+        if len(seen) > 2000:
+            seen = dict(list(seen.items())[-2000:])
+        ctx.store.set_meta("mikrotik:opened", json.dumps(seen))
     res["merged"] = C.merged_commands(res["rows"])
     return res
 
