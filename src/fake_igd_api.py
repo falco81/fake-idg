@@ -157,7 +157,7 @@ def root_result():
         return {}
 
 
-def settings_view():
+def settings_view(full=False):
     cfg = load_cfg()
     out = []
     infile = set(cfg.get("_in_file") or [])
@@ -170,7 +170,7 @@ def settings_view():
              "list": isinstance(default, list), "bool": isinstance(default, bool),
              "restarts": key in U.SERVICE_KEYS, "root": key in U.ROOT_KEYS}
         if s["secret"]:
-            s["value"] = ""
+            s["value"] = PN.shown(v) if full else ""
             s["set"] = bool(v)
         elif isinstance(default, list):
             s["value"] = ", ".join(str(x) for x in (v or []))
@@ -186,7 +186,7 @@ def settings_view():
     panes = {}
     for group, keys in U.SETTING_GROUPS:
         panes[PANE_OF_GROUP.get(group, group)] = list(keys)
-    more, more_panes = PN.view(STORE[0])
+    more, more_panes = PN.view(STORE[0], full=full)
     out += more
     for pane, keys in more_panes.items():
         panes.setdefault(pane, []).extend(keys)
@@ -206,7 +206,7 @@ def settings_save(changes, who, addr, handler=None):
     for key, raw in changes.items():
         if key not in U.DEFAULTS:
             raise ValueError("%s is not a setting" % key)
-        if key in U.SECRET_KEYS and raw in (None, "•" * 8):
+        if key in U.SECRET_KEYS and (raw is None or PN.masked(raw)):
             continue
         if isinstance(U.DEFAULTS[key], bool):
             raw = "on" if raw in (True, "true", "1", "on") else "off"
@@ -846,7 +846,7 @@ class Handler(BaseHTTPRequestHandler):
             d.update({"page": page, "per": per})
             return d
         if path == "/api/settings" and method == "GET":
-            d = settings_view()
+            d = settings_view(full=me["role"] == "fulladmin")
             d["root"] = root_result()
             return d
         if path == "/api/settings" and method == "POST":

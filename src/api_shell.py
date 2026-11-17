@@ -867,8 +867,9 @@ def get_suggest(ctx):
 
 def get_settings(ctx):
     """The API's settings, each with where it is kept and its command line (the (i) of each)."""
+    me = ctx.need("readonly")
     A = _api()
-    d = A.settings_view()
+    d = A.settings_view(full=me.get("role") == "fulladmin")
     d["root"] = A.root_result()
     for s in d.get("settings") or []:
         if s.get("key") in U.DEFAULTS:

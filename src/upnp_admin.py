@@ -519,7 +519,8 @@ def _password_from(M, given, name, least=None):
         M.warn("the password is on the command line (ps, the shell's history) - next time: --password -")
         return given, False
     import secrets
-    return secrets.token_urlsafe(12), True
+    n = max(16, int(least or ST.MIN_PASSWORD))
+    return secrets.token_urlsafe(n)[:n], True
 
 
 def _span(sec):
@@ -586,7 +587,11 @@ def cmd_user(M, args, cfg):
         M.fail("which account? upnp user %s NAME" % what)
     pw, made = ("", False)
     if what in ("add", "passwd"):
-        pw, made = _password_from(M, args.password, name)
+        try:
+            least = store_of(M, cfg).policy()["password_min"]
+        except Exception:                           # noqa: BLE001 - the store says it again
+            least = None
+        pw, made = _password_from(M, args.password, name, least)
     if what == "del" and not args.yes and not _ask("take the account %s away?" % name):
         print("  nothing done")
         return 1
@@ -637,6 +642,10 @@ def cmd_user(M, args, cfg):
                      else "%s had no second step set up" % name)
             elif what == "del":
                 s.delete_user(name)
+                try:                          # its own layout of the tables goes with it (as on the pages)
+                    s.run("DELETE FROM meta WHERE k = ?", ("user:%s:own" % name.lower(),))
+                except Exception:             # noqa: BLE001
+                    pass
                 s.add_event("account", "%s removed the account %s" % (by, name), "warn", by)
                 M.ok("%s is gone" % name)
             elif what == "end":

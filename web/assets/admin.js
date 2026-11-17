@@ -1910,7 +1910,7 @@ function settingItemBare(s) {
     input.rows = 1;
     input.placeholder = '-----BEGIN CERTIFICATE-----';
   } else {
-    input = s.secret ? maskBox('', '', '') : textBox(s.value === null || s.value === undefined ? '' : s.value, s.list ? 'comma separated; empty = none' : '', '');
+    input = s.secret ? maskBox(s.value || '', '', '') : textBox(s.value === null || s.value === undefined ? '' : s.value, s.list ? 'comma separated; empty = none' : '', '');
     if (s.list || /url|file|dir|path/.test(s.key)) input.classList.add('mono');
     if (s.secret) {
       input.placeholder = s.set ? 'set - leave as it is to keep it' : 'not set';
@@ -1936,8 +1936,9 @@ function markDirty(item, s) {
   s = settingByKey(s.key) || s;
   var now = readValue(s);
   var was = isBool(s) ? (s.value === true || String(s.value) === '1')
-    : (s.secret ? '' : (s.value === null || s.value === undefined ? '' : String(s.value)));
-  var changed = isBool(s) ? !!now !== was : (s.secret ? String(now || '') !== '' : was !== String(now));
+    : (s.value === null || s.value === undefined ? '' : String(s.value));
+  /* A secret as otp's: its dots kept are no change; emptied, it is taken away when saved. */
+  var changed = isBool(s) ? !!now !== was : was !== String(now === null || now === undefined ? '' : now);
   item.classList.toggle('changed', changed);
   if (changed) DIRTY[s.key] = isBool(s) ? !!now : now; else delete DIRTY[s.key];
   markDirtyCount();

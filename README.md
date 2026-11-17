@@ -1,4 +1,4 @@
-# fake-igd 1.7.4
+# fake-igd 1.7.5
 
 A fake UPnP router (IGD) for reconnaissance: it finds out **which ports a PS5 (or any other device) wants to open**, without enabling UPnP on your real router. Everything is logged to `/var/log/fake-igd/` and controlled with the **`upnp`** command - or by its menus with **`upnp --console`**. It also shows and controls the **mDNS reflector (avahi-daemon)** running on the same server, and sends notifications to **ntfy** (ntfy.sh or your private server).
 
@@ -20,8 +20,8 @@ packages only, checked and put in by root, exactly as otp does it.
 ## Installation (AlmaLinux 9)
 
 ```bash
-tar xzf fake-igd-1.7.4.tar.gz
-cd fake-igd-1.7.4
+tar xzf fake-igd-1.7.5.tar.gz
+cd fake-igd-1.7.5
 sudo ./install.sh
 ```
 
@@ -37,7 +37,7 @@ The installer does everything (each step says `==> what`, as otp's):
    - from the repositories with `dnf install python3.14 python3.14-pip` (in AppStream since AlmaLinux 9.8; on older 9.x run `sudo dnf upgrade` first),
    - if the package is not available, it **builds Python 3.14.9 from source** (python.org) into `/usr/local` (`make altinstall`, the system Python 3.9 stays untouched). The archive is verified with SHA-256. Building takes a few minutes, log: `/var/log/fake-igd-python-build.log`.
 3. Creates the virtualenv `/opt/fake-igd/venv` with **colorama** (from the bundled wheel in `vendor/`, works offline).
-4. Creates the system user and group `fake-igd`. The user who ran `sudo` is added to the group so they can read logs with `upnp` without sudo (after logging in again).
+4. Creates the system user and group `fake-igd`. Nobody is added to the group (it may change `config.json`, which root puts into nginx and the firewall); to read logs with `upnp` without sudo, add yourself by hand: `sudo usermod -aG fake-igd $USER` (and log in again).
 5. Installs the service (systemd, start on boot, sandboxed), the `upnp` command, bash completion and log rotation.
 6. Checks for port collisions and opens 1900/udp and 5000/tcp in **firewalld**. If firewalld is not running but iptables/nftables rules are active, it does **not** touch them and tells you to run `upnp firewall`.
 7. Starts the service and shows `upnp status`.
@@ -84,7 +84,7 @@ Or on the pages: *Settings → Upgrades* - *Look now*, *Upgrade to X now*, or dr
 console: menu **14 Upgrades**. Or by hand, as before:
 
 ```bash
-tar xzf fake-igd-1.7.4.tar.gz && cd fake-igd-1.7.4
+tar xzf fake-igd-1.7.5.tar.gz && cd fake-igd-1.7.5
 sudo ./install.sh --upgrade
 ```
 

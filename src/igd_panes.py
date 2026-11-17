@@ -103,6 +103,23 @@ def _seal():
         return None
 
 
+MASK = "\u2022" * 8
+
+
+def shown(plain):
+    """A secret as a full admin's page sees it (otp's secret_shown): eight dots, and its last two
+    characters when it is longer than four - "the one I set" told from another, never its length."""
+    plain = str(plain or "")
+    if not plain:
+        return ""
+    return MASK + plain[-2:] if len(plain) > 4 else MASK
+
+
+def masked(raw):
+    """The dots of a kept secret sent back unchanged (otp's is_masked): not a change."""
+    return isinstance(raw, str) and raw.startswith("\u2022")
+
+
 def value(store, key):
     s = SETTINGS.get(key)
     if s is None:
@@ -116,7 +133,7 @@ def value(store, key):
     return v
 
 
-def view(store, secret_set=None):
+def view(store, secret_set=None, full=False):
     """The modules' settings as the pages draw them (the same shape as config.json's)."""
     saved = values(store)
     out, panes = [], {}
@@ -131,7 +148,9 @@ def view(store, secret_set=None):
                "source_says": "saved on these pages" if key in saved else "as it comes",
                "restarts": bool(s.get("restarts")), "root": bool(s.get("root"))}
         if kind == "secret":
-            row["value"] = ""
+            # Dots and its last two to a full admin (otp): the box holds them, emptied and saved it is
+            # taken away; anybody else is told only whether it is set.
+            row["value"] = shown(value(store, key)) if full and v else ""
             row["set"] = bool(v)
         elif kind == "list":
             row["value"] = ", ".join(str(x) for x in (v or [])) if isinstance(v, list) else (v or "")
@@ -207,7 +226,8 @@ def _save(store, changes):
     changed = {}
     for key, raw in changes.items():
         s = SETTINGS[key]
-        if s.get("kind") == "secret" and raw in (None, "", "•" * 8):
+        # A kept secret's dots are no change; "" takes it away (otp: the box emptied and saved).
+        if s.get("kind") == "secret" and (raw is None or masked(raw)):
             continue
         v, err = check(key, raw)
         if err:

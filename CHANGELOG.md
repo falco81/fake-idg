@@ -2,6 +2,50 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.7.5 (2026-11-17)
+
+Round 4, run 2 of 3: deeper - every flow end to end with root's side running in a sandbox (TOTP, lockouts,
+TLS dialogs, ACME against a test CA, firewall rules and trials, SSH, local users, upgrades and their rescue,
+export/import round trip, mail through a test SMTP server), the shell's popups, the command line, the API
+under load.
+
+**Security**
+- Root's helpers set the group of what they write into a folder the API's account owns BY NAME, after
+  writing it - that account could lay a link there between the two and have root hand the group any file
+  of root's. Now on the open file (fchown) - fake_igd_web.py, root_tls.py, root_osup.py, root_fw.py.
+- install.sh no longer adds the person who ran it to the group fake-igd (which may write config.json, put
+  into nginx and the firewall by root) - as otp, which puts nobody in its group; it prints the command.
+- The self-signed key is made under umask 077 (it was readable by all until the chmod).
+- A setting with a control character is refused; interfaces take interface names only.
+
+**Fixed**
+- Two saves of Settings at once lost one (12 at once: 2 lost) - one lock now.
+- The API's background: one pane's background that raised skipped the others, a SystemExit killed it for good.
+- A secret (a password, a token, a key) could never be taken away from the pages: now shown to a full
+  administrator as dots and its last two characters, as otp; emptied and saved, it is taken away.
+- A password made by the pages or `upnp user` was always 16 characters - refused by a policy asking more.
+- Clearing a locked-out address cleared every name tried from it too (and the other way round).
+- A local user made on the pages was "not a user who may sign in" for SSH keys until its next read.
+- ACME's "Try port 80" said "HTTP 200" as an error when port 80 did not answer.
+- install.sh --upgrade put the package's logrotate file over what Settings → Disks and logs had set; a run
+  again switched the firewall back on after it was switched off on the pages.
+- uninstall.sh stops every unit of fake-igd, takes its SELinux label and run files away; --purge also the
+  net and root state folders and the copies of the certificate, nginx's file and the pool.
+- Mail: what the receiving server said ("451 Greylisted", "550 ...") is kept; a mail without From was sent
+  as MAIL FROM:<None>; a test alert to a wrong address held the real alerts back for 15 minutes.
+- mDNS tab: avahi-browse missing is said in the list (it was HTTP 400); whole numbers 0-9 only.
+- Settings import of 1-2 MB was refused by PHP.
+
+**As otp's**
+- The UPnP service: ssdp:byebye on every interface when it stops; BOOTID grows (the start time); a search
+  that came in on an interface not used is not answered (as miniupnpd); LOCATION is the address of the
+  interface the search came by; presentationURL leads to these pages.
+- A failed scheduled backup is tried again an hour later, three times a day at most.
+- The upgrade band says "- 1.7.x runs again" when the version before was put back.
+- The console has otp's "Backups and the database" and "Certificates, updates, time, tests" menus.
+- Mail and Outgoing mail are shown to read-only accounts (their buttons are a full administrator's).
+- A mail about something over: "✔ N over, M still so".
+
 ## 1.7.4 (2026-11-17)
 
 Round 4, run 1 of 3: every area compared with otp 1.0.288 again, and bugs hunted - in the pages (every

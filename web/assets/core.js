@@ -2686,7 +2686,7 @@ function mfaDraw(box, d) {
       }
     }
   } else {
-    box.appendChild(el('p', 'lede small', 'After the password these pages ask for a code too - choose how (the account\'s own, not a VPN token).'));
+    box.appendChild(el('p', 'lede small', 'After the password these pages ask for a code too - choose how (an app of your own).'));
     var seg = el('div', 'seg mfa-ways');
     var body = el('div', 'mfa-body');
     /* a passkey offered only where this browser can give one (1.0.254) */
