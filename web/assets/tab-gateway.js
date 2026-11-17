@@ -316,7 +316,7 @@
                 ['From its port', String(c.sport)], ['State', c.state || '–'], ['Packets sent', num(c.pkts)], ['Bytes sent', kb(c.bytes)],
                 ['Answered', c.replied ? 'yes' : 'not seen here'], ['Expires in', span(c.timeout || 0)]]));
               body.appendChild(el('p', 'note', 'As this server\'s connection tracking has it (conntrack). It sees the way out only: the answers come from the router to the device directly, so "not seen here" is usual - and the bytes are what the device sent.'));
-            }, null, 'narrow');
+            }, null, 'medium');
           });
         };
         return tr;
@@ -333,7 +333,7 @@
     var dn = x.dns || [], r = x.rules || [];
     lanes.appendChild(laneRow(true, 'Internet', 'via the router', num((x.internet || {}).pkts || 0) + ' pkts', 'ok'));
     dn.forEach(function (y) {
-      lanes.appendChild(laneRow(y.direct ? null : true, 'DNS ' + y.ip, y.direct ? 'reached directly' : 'udp/tcp 53' + (y.dot ? ' + 853' : '') + ' out ' + y.via,
+      lanes.appendChild(laneRow(true, 'DNS ' + y.ip, y.direct ? 'reached directly' : 'udp/tcp 53' + (y.dot ? ' + 853' : '') + ' out ' + y.via,
         num((y.hits || {}).pkts || 0) + ' pkts', y.direct ? 'direct' : 'ok'));
     });
     r.forEach(function (y) {
@@ -524,7 +524,7 @@
           modal('Line ' + (i + 1) + ' of FAKE-IGD-FWD', function (body) {
             body.appendChild(peekFacts([['Does', y.target], ['Packets', num(y.pkts)], ['Bytes', kb(y.bytes)]]));
             body.appendChild(noI18n(el('pre', 'mono small', y.line)));
-          }, null, 'narrow');
+          }, null, 'medium');
         };
         det.appendChild(row);
       });

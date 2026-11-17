@@ -126,8 +126,27 @@ def device_checked(d, net):
     if ip in (n.network_address, n.broadcast_address) or any(ip == x.ip for x in defs) or str(ip) == net.get("router"):
         return None, "%s: %s is not the address of a device there" % (name, ip)
     did = str(d.get("id") or "")
+    # Its IPv6 addresses (1.9.2): only to find it on the MikroTik (DHCPv6) - never in this server's iptables or
+    # ip6tables; IPv6 is never forwarded here.
+    raw6 = d.get("ip6")
+    raw6 = raw6 if isinstance(raw6, list) else re.split(r"[\s,;]+", str(raw6 or ""))
+    ip6 = []
+    for x in raw6:
+        x = str(x or "").strip()
+        if not x:
+            continue
+        try:
+            a6 = ipaddress.ip_address(x.split("/")[0])
+        except ValueError:
+            return None, "%s: %s is not an IPv6 address" % (name, x[:45])
+        if a6.version != 6 or a6.is_link_local or a6.is_multicast or a6.is_loopback or a6.is_unspecified:
+            return None, "%s: %s is not an IPv6 address of a device (global or ULA)" % (name, x[:45])
+        if str(a6) not in ip6:
+            ip6.append(str(a6))
+    if len(ip6) > 8:
+        return None, "%s: 8 IPv6 addresses at most" % name
     out = {"id": did if DEV_ID_RE.match(did) else secrets.token_hex(6), "name": name, "ip": str(ip), "mac": mac,
-           "on": d.get("on") is not False}
+           "on": d.get("on") is not False, "ip6": ip6}
     # Its DNS servers and its own rules (1.8.2): each checked again here - one refused is left out and said.
     out["dns"], out["rules"], out["left_out"] = [], [], []
     for x in (d.get("dns") if isinstance(d.get("dns"), list) else [])[:MOST_DNS]:
@@ -772,8 +791,11 @@ def apply(by):
     for d in w["devices"]:
         said += ["left out: %s" % x for x in d.get("left_out") or []]
     was = put(st, w["on"], w["devices"], net, said)
-    now = (st.get("on") is True, [d for d in st.get("devices") or [] if d.get("on")])
-    changed = now != (was["on"], [d for d in was["devices"] if d.get("on")] if was["on"] else [])
+    # its IPv6 addresses (1.9.2) are only for the MikroTik's checks: changed alone, nothing here is on trial
+    def _fw(ds):
+        return [{k: v for k, v in d.items() if k != "ip6"} for d in ds if d.get("on")]
+    now = (st.get("on") is True, _fw(st.get("devices") or []))
+    changed = now != (was["on"], _fw(was["devices"]) if was["on"] else [])
     t = st.get("trial") if isinstance(st.get("trial"), dict) else {}
     if changed and now[0] and w["trial_min"]:
         if not pending(t):

@@ -4773,3 +4773,17 @@ button.gx-hop:hover{border-color:var(--info)}
 .mt-more:hover{border-style:solid;background:var(--info-bg)}
 .mt-gap{text-align:center;padding:2px 0;letter-spacing:.3px}
 .gt-col > .step-pills{display:flex;flex-wrap:wrap;gap:4px;white-space:normal;max-width:100%}
+/* 1.9.2: spacing of the Gateway tab - the heading card and every card under it 16 px apart, on both sub-tabs,
+   whatever margins the cards bring; an empty chart is one line there too */
+#tab-gateway > .gt-top{margin:0 0 16px}
+#gt-body{display:flex;flex-direction:column;gap:16px}
+#gt-body > *{margin-top:0 !important;margin-bottom:0 !important}
+#gt-body > div:not(.card):not(.grid) > .card{margin:0}
+.gt-chart.gt-chart-s.is-empty{height:auto;min-height:0;padding:14px 0}
+/* 1.9.2: a line of code in a popup wraps - never a scrollbar of its own (an iptables line, a RouterOS command) */
+.modal .body pre, .modal .body code.block{white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;overflow-x:visible;
+  max-width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--bg);line-height:1.55}
+/* 1.9.2: a device's way out fills the width of its card - the nodes share it, the arrows between them grow */
+.gx-path .gx-node{flex:1 1 150px;max-width:none}
+.gx-path .gx-arrow{flex:0 1 40px;min-width:22px}
+@media (max-width:900px){.gx-path .gx-node{flex-basis:100%}.gx-path .gx-arrow{display:none}}

@@ -209,3 +209,13 @@ def as_value(path):
 # 1.9.2: menus of RouterOS 7 only (the ssh stand-in can be told to not know them: FAKE_SSH_UNKNOWN)
 ROUTER.setdefault("/ip/vrf", [])
 ROUTER.setdefault("/routing/rule", [])
+ROUTER.setdefault("/ipv6/route", [{"dst-address": "::/0", "gateway": "fe80::1%ether1", "active": "true"}])
+ROUTER.setdefault("/log", [
+    {"time": "16:36:44", "topics": "firewall,info",
+     "message": "v6-drop forward: in:ether1 out:bridge, connection-state:new src-mac 44:31:92:3e:5e:ca, proto UDP, "
+                "[2a03:2880::1]:443->[2a00:1028:8640:40::95]:9308, len 56"},
+    {"time": "16:36:59", "topics": "firewall,info",
+     "message": "drop forward: in:ether1 out:bridge, connection-state:new src-mac 00:0c:29:08:06:29, proto UDP, "
+                "198.51.100.7:5000->192.168.40.95:9308, NAT (198.51.100.7:5000->203.0.113.26:9308)->"
+                "(198.51.100.7:5000->192.168.40.95:9308), len 70"},
+    {"time": "16:37:00", "topics": "system,info,account", "message": "user mdns logged in from 192.168.40.27 via ssh"}])

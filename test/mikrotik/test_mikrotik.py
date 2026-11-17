@@ -280,6 +280,23 @@ class Checks(unittest.TestCase):
         self.assertTrue(any("own UPnP is ON" in w for w in self.res["warnings"]))
         self.assertEqual(self.res["wan"]["ifs"], ["ether1"])
 
+    def test_log_drops(self):
+        # 1.9.2: the router's log - only its firewall's lines, said per port and per family
+        self.assertEqual(len(self.snap["fwlog"]), 2)
+        r = self.by[("udp", 9308)]
+        self.assertEqual(r["drops6"]["n"], 1)
+        self.assertEqual(r["drops6"]["by"], {"v6-drop": 1})
+        self.assertEqual(r["drops4"]["n"], 1)
+        self.assertEqual(self.by[("tcp", 3478)]["drops4"]["n"], 0)
+        self.assertEqual(r["v6_each"][0]["addr"], "2a00:1028:8640:40::95")
+        self.assertEqual(r["v6_wan"], ["ether1"])
+
+    def test_v6_set_by_hand(self):
+        w = dict(next(x for x in fixture.WANTS if x["port"] == 9308), v6=["2a00:1028:8640:40::abc"], v6_set=True)
+        r = C.check_port(self.snap, w)
+        self.assertEqual(r["v6_addrs"], ["2a00:1028:8640:40::abc"])     # not the neighbour table's
+        self.assertIn("Gateway for devices", r["v6_source"])
+
     def test_merged(self):
         rows = [{"device": "d", "proto": "udp", "port": p, "to_port": p, "state": "no_dnat"} for p in (3478, 3479, 3480, 9308)]
         self.assertEqual(C.merged_commands(rows)[0]["ports"], "3478-3480,9308")

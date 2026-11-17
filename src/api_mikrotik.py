@@ -243,7 +243,8 @@ def wants(ctx):
     try:
         for d in (json.loads(ctx.store.get_meta("gateway") or "{}").get("devices") or []):
             if isinstance(d, dict) and d.get("ip"):
-                names[d["ip"]] = {"name": d.get("name") or "", "mac": d.get("mac") or ""}
+                names[d["ip"]] = {"name": d.get("name") or "", "mac": d.get("mac") or "",
+                                  "ip6": [x for x in d.get("ip6") or [] if isinstance(x, str)]}
     except ValueError:
         pass
     got = {}
@@ -287,6 +288,8 @@ def wants(ctx):
         n = names.get(w["device"]) or {}
         w["name"] = n.get("name") or ""
         w["mac"] = n.get("mac") or ""
+        if n.get("ip6"):                        # 1.9.2: its IPv6 as set in Gateway for devices (DHCPv6)
+            w["v6"], w["v6_set"] = list(n["ip6"]), True
         w["gateway"] = w["device"] in names
         out.append(w)
     out.sort(key=lambda w: (w["device"], w["proto"], w["port"]))

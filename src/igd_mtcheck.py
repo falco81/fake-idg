@@ -518,12 +518,40 @@ def _forward_blocks(filt):
                and (r.get("in-interface-list") or r.get("in-interface")) for r in filt)
 
 
+def wan6_of(snap, wan):
+    """The IPv6 WAN (1.9.2): the interface of the default IPv6 route of the main table (its immediate-gw, a
+    gateway%interface, an interface named, or the IPv6 network that holds its gateway); else the IPv4 WAN."""
+    ifs = set()
+    for r in snap.get("routes6") or []:
+        if r.get("disabled") or not r.get("active", True) or str(r.get("table") or "main") != "main":
+            continue
+        im, gw = str(r.get("immediate") or ""), str(r.get("gateway") or "").split(",")[0]
+        if "%" in im:
+            ifs.add(im.split("%", 1)[1])
+        elif "%" in gw:
+            ifs.add(gw.split("%", 1)[1])
+        elif gw and ":" not in gw:
+            ifs.add(gw)
+        elif gw:
+            try:
+                g = ipaddress.ip_address(gw)
+                for a in snap.get("addresses6") or []:
+                    if not a.get("disabled") and g in ipaddress.ip_interface(a.get("address")).network:
+                        ifs.add(a.get("interface"))
+            except ValueError:
+                pass
+    ifs.discard(None)
+    ifs.discard("")
+    return ifs or set(wan["ifs"])
+
+
 def _check_v6(snap, want, wan, proto, port, c):
     mac = str(want.get("mac") or "").upper()
     if not mac:
         mac = next((a["mac"] for a in snap.get("arp") or [] if a.get("address") == want["device"] and a.get("mac")), "")
     v6 = list(want.get("v6") or [])
-    if mac:
+    source = "set in Gateway for devices" if want.get("v6_set") else "the router's IPv6 neighbour table, by its MAC"
+    if mac and not want.get("v6_set"):
         v6 += [n["address"] for n in snap.get("neigh6") or [] if n.get("mac") == mac]
     glob = []
     for a in v6:
@@ -534,16 +562,27 @@ def _check_v6(snap, want, wan, proto, port, c):
         if ip.version == 6 and ip in ipaddress.ip_network("2000::/3") and ip not in glob:
             glob.append(ip)
     if not glob:
-        return {"v6": "none", "v6_why": "it has no global IPv6 address the router knows (its neighbour table%s)"
-                % (", by its MAC %s" % mac if mac else "; its MAC is not known"), "v6_addrs": []}
+        return {"v6": "none", "v6_why": "it has no global IPv6 address the router knows (its neighbour table%s) - "
+                "set its DHCPv6 address in Gateway for devices" % (", by its MAC %s" % mac if mac else
+                                                                   "; its MAC is not known"),
+                "v6_addrs": [], "v6_each": [], "v6_source": source}
     r6 = (snap.get("rules") or {}).get("ipv6") or {}
     filt, raw = r6.get("filter") or [], r6.get("raw") or []
     lists6 = address_lists(snap, "ipv6")
-    wan6 = wan["ifs"] or None
-    in_lists = lists_of(snap, wan["ifs"]) if wan["ifs"] else ({"WAN"} if "WAN" in (snap.get("iflists") or {}) else None)
+    w6 = wan6_of(snap, wan)
+    wan6 = w6 or None
+    in_lists = lists_of(snap, w6) if w6 else ({"WAN"} if "WAN" in (snap.get("iflists") or {}) else None)
     dev_ifs = {n.get("interface") for n in snap.get("neigh6") or [] if n.get("mac") == mac} - {None, ""}
-    states, words, rules = [], [], []
+    if not dev_ifs:                                 # the router's IPv6 network that holds it
+        for a in snap.get("addresses6") or []:
+            try:
+                if not a.get("disabled") and any(x in ipaddress.ip_interface(a.get("address")).network for x in glob):
+                    dev_ifs.add(a.get("interface"))
+            except ValueError:
+                pass
+    states, words, rules, each = [], [], [], []
     for ip in glob:
+        n_before = len(states)
         rp = walk(raw, "prerouting", Packet("ipv6", proto, port, [ip], wan6, in_lists, chain="prerouting", lists=lists6))
         if rp["verdict"] == "drop":
             states.append("blocked")
@@ -565,6 +604,10 @@ def _check_v6(snap, want, wan, proto, port, c):
         else:
             states.append("blocked")
             words.append("%s: rule %s %ss it" % (ip, _rule_words(fr), fv["verdict"]))
+        if len(states) > n_before:
+            r_ = rules[-1] if rules else None
+            each.append({"addr": str(ip), "state": states[-1], "why": words[-1].split(": ", 1)[-1],
+                         "rule": {"table": "filter", "id": r_.get(".id"), "n": r_.get("n"), "family": "ipv6"} if r_ else None})
     st = "open" if all(s == "open" for s in states) else ("blocked" if "blocked" in states else "unsure")
     cmds = []
     if st == "blocked":
@@ -576,6 +619,7 @@ def _check_v6(snap, want, wan, proto, port, c):
                         "dst-port=%d %s comment=\"%s\"%s" % (proto, ip, port, spec, c,
                                                              (" place-before=%s" % block[".id"]) if block and block.get(".id") else ""))
     return {"v6": st, "v6_why": "; ".join(words), "v6_addrs": [str(x) for x in glob], "v6_commands": cmds,
+            "v6_each": each, "v6_source": source, "v6_wan": sorted(w6),
             "v6_rules": [{"table": "filter", "id": r.get(".id"), "n": r.get("n"), "family": "ipv6"} for r in rules if r]}
 
 
@@ -587,6 +631,51 @@ def device_wan(snap, way, wan):
         return {"ifs": {way["out_if"]}, "addrs4": [ipaddress.ip_address(way["public"])],
                 "how": "its own way out: %s as %s" % (way["out_if"], way["public"])}
     return wan
+
+
+def _drop_prefixes(snap):
+    """{(family, prefix): "drop" | "pass" | "both"} - what the rules logging under each prefix do (1.9.2): a line of
+    the log says no action, the rule that wrote it does."""
+    got = {}
+    for fam, tabs in (snap.get("rules") or {}).items():
+        for t in ("filter", "raw"):
+            for r in tabs.get(t) or []:
+                if r.get("disabled") or not r.get("log"):
+                    continue
+                k = (fam, str(r.get("log-prefix") or "").strip())
+                a = "drop" if r.get("action") in ("drop", "reject", "tarpit") else "pass"
+                got[k] = a if got.get(k, a) == a else "both"
+    return got
+
+
+def drops_of(snap, addrs, proto=None, ports=None, most=8):
+    """What the router's log says it dropped toward these addresses (1.9.2) - of this protocol and port when
+    given: {n, last, by: {prefix: n}, ports: {port: n}, lines: [the last few]}."""
+    kinds = _drop_prefixes(snap)
+    addrs = {str(a) for a in addrs}
+    out = {"n": 0, "last": "", "by": {}, "ports": {}, "lines": []}
+    for e in snap.get("fwlog") or []:
+        if e.get("dst") not in addrs:
+            continue
+        if proto and e.get("proto") != proto:
+            continue
+        if ports and e.get("dport") not in ports:
+            continue
+        kind = kinds.get((e.get("family"), e.get("prefix") or ""))
+        if kind is None:
+            kind = "drop" if re.search(r"drop|reject|block|deny", e.get("prefix") or "", re.I) else "pass"
+        if kind == "pass":
+            continue
+        out["n"] += 1
+        out["last"] = e.get("time") or out["last"]
+        out["by"][e.get("prefix") or "(no prefix)"] = out["by"].get(e.get("prefix") or "(no prefix)", 0) + 1
+        if e.get("dport") is not None:
+            k = "%s/%s" % (e["dport"], e.get("proto"))
+            out["ports"][k] = out["ports"].get(k, 0) + 1
+        out["lines"].append(e)
+    out["lines"] = out["lines"][-most:]
+    out["ports"] = dict(sorted(out["ports"].items(), key=lambda kv: -kv[1])[:10])
+    return out
 
 
 def check_all(snap, wants):
@@ -612,6 +701,11 @@ def check_all(snap, wants):
         try:
             row = check_port(snap, w, device_wan(snap, ways.get(w["device"]), wan))
             row["way"] = {k: ways[w["device"]].get(k) for k in ("public", "out_if", "table", "ok", "trouble")}
+            # 1.9.2: what the router's log says it dropped of this port - IPv4 (to the device, after the
+            # translation, or to its public address) and IPv6 (to its addresses), apart
+            pub = [ways[w["device"]].get("public")] if ways[w["device"]].get("public") else []
+            row["drops4"] = drops_of(snap, [w["device"]] + pub, row["proto"], {row["port"], row["to_port"]})
+            row["drops6"] = drops_of(snap, row.get("v6_addrs") or [], row["proto"], {row["to_port"], row["port"]})
             rows.append(row)
         except Exception as e:                      # noqa: BLE001 - one port that cannot be told is said so
             rows.append({"device": w.get("device"), "name": w.get("name") or "", "proto": w.get("proto"),
@@ -632,7 +726,11 @@ def check_all(snap, wants):
         counts[r["state"]] = counts.get(r["state"], 0) + 1
     return {"rows": rows, "warnings": warnings, "wan": {"ifs": sorted(wan["ifs"]), "how": wan["how"],
                                                         "addrs4": [str(a) for a in wan["addrs4"]]},
-            "ways": list(ways.values()),
+            "ways": [dict(wy, drops4=drops_of(snap, [wy.get("device")]),
+                          drops6=drops_of(snap, next((r.get("v6_addrs") or [] for r in rows
+                                                      if r.get("device") == wy.get("device")), [])))
+                     for wy in ways.values()],
+            "log_read": bool(snap.get("fwlog") is not None), "log_lines": len(snap.get("fwlog") or []),
             "counts": counts, "open": counts.get("ok", 0), "total": len(rows)}
 
 

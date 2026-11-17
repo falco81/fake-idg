@@ -48,9 +48,12 @@ READ = {
     "addresses4": ("/ip/address", False, True),
     "addresses6": ("/ipv6/address", False, False),
     "routes4": ("/ip/route", False, False),
+    "routes6": ("/ipv6/route", False, False),
     # 1.9.2: the way of each device out - VRFs and routing rules (RouterOS 7; missing on 6, said so)
     "vrfs": ("/ip/vrf", False, False),
     "routing_rules": ("/routing/rule", False, False),
+    # 1.9.2: its log - the lines its firewall's rules logged (log=yes), to say what it dropped of a device's
+    "log": ("/log", False, False),
     "arp": ("/ip/arp", False, False),
     "neigh6": ("/ipv6/neighbor", False, False),
     "filter4": ("/ip/firewall/filter", False, True),
@@ -1134,6 +1137,31 @@ def read_all(sess, log=None):
     return out, missing
 
 
+FW_LINE = re.compile(
+    r"^(?P<prefix>.*?)\s*(?P<chain>[A-Za-z][\w-]*): in:(?P<inif>\S+) out:(?P<outif>[^,]+),.*?"
+    r"proto (?P<proto>[A-Za-z0-9-]+)(?: \([^)]*\))?, "
+    r"(?P<src>\[[0-9a-fA-F:.]+\]|[0-9.]+)(?::(?P<sport>\d+))?->(?P<dst>\[[0-9a-fA-F:.]+\]|[0-9.]+)(?::(?P<dport>\d+))?")
+
+
+def fw_log(entries, most=2000):
+    """The lines of the router's log its firewall wrote (a rule with log=yes, 1.9.2): who to whom, which
+    protocol and ports, in and out of which interface, under which prefix. Nothing else of the log is kept."""
+    out = []
+    for e in entries[-most:]:
+        if "firewall" not in str(e.get("topics") or ""):
+            continue
+        m = FW_LINE.match(str(e.get("message") or ""))
+        if not m:
+            continue
+        g = m.groupdict()
+        out.append({"time": str(e.get("time") or ""), "prefix": g["prefix"].strip(), "chain": g["chain"],
+                    "in": g["inif"], "out": g["outif"].strip(), "proto": g["proto"].lower(),
+                    "src": g["src"].strip("[]"), "sport": int(g["sport"]) if g["sport"] else None,
+                    "dst": g["dst"].strip("[]"), "dport": int(g["dport"]) if g["dport"] else None,
+                    "family": "ipv6" if g["dst"].startswith("[") else "ip"})
+    return out
+
+
 def snapshot(raw, missing, via):
     """What was read, as the pages and the checks take it: each rule with its number in its table (as
     `print` numbers them), its flags as booleans, its counters as numbers."""
@@ -1198,6 +1226,11 @@ def snapshot(raw, missing, via):
                      "comment": str(r.get("comment") or ""), ".id": str(r.get(".id") or "")}
                     for r in (raw.get("routes4") or [])[:LIST_MOST]
                     if ":" not in str(r.get("dst-address") or "")],
+        "routes6": [{"dst": str(r.get("dst-address") or ""), "gateway": str(r.get("gateway") or ""),
+                     "immediate": str(r.get("immediate-gw") or r.get("immediate-gateway") or ""),
+                     "active": _bool(r.get("active", "true")), "disabled": _bool(r.get("disabled")),
+                     "table": str(r.get("routing-table") or "main")}
+                    for r in (raw.get("routes6") or [])[:LIST_MOST] if str(r.get("dst-address") or "") == "::/0"],
         "vrfs": [{"name": str(r.get("name") or ""), "interfaces": str(r.get("interfaces") or ""),
                   "disabled": _bool(r.get("disabled"))} for r in raw.get("vrfs") or []],
         "routing_rules": [{k: str(v) for k, v in r.items() if k in (
@@ -1211,6 +1244,7 @@ def snapshot(raw, missing, via):
         "rules": {"ip": {t: rules(t + "4") for t in ("filter", "nat", "mangle", "raw")},
                   "ipv6": {t: rules(t + "6") for t in ("filter", "nat", "mangle", "raw")}},
         "lists": {"ip": lists("lists4"), "ipv6": lists("lists6")},
+        "fwlog": fw_log(raw.get("log") or []),
         "upnp": {k: str(v) for k, v in one("upnp").items()},
         "upnp_ifs": [{k: str(v) for k, v in r.items() if not k.startswith(".")} for r in raw.get("upnp_ifs") or []],
         "tracking": {k: str(v) for k, v in one("tracking").items() if k in ("enabled", "total-entries", "max-entries")},

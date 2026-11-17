@@ -204,7 +204,7 @@ def designer_of(dev, net, by_comment):
 def _plain(dev):
     """A device as it is kept in the database: what was typed, nothing worked out."""
     return {"id": dev["id"], "name": dev["name"], "ip": dev["ip"], "mac": dev.get("mac") or "",
-            "on": dev.get("on") is not False,
+            "on": dev.get("on") is not False, "ip6": list(dev.get("ip6") or []),
             "dns": [{"ip": x["ip"], "dot": bool(x.get("dot"))} for x in dev.get("dns") or []],
             "rules": [{k: r.get(k) for k in ("id", "to", "proto", "ports", "comment", "on")} for r in dev.get("rules") or []]}
 
@@ -262,6 +262,41 @@ def post_gateway(ctx):
     me = ctx.need("fulladmin")
     b = ctx.body()
     act = str(b.get("action") or "")
+    if act == "v6_seen":
+        # 1.9.2: the IPv6 addresses of a MAC - this server's IPv6 neighbour table and the MikroTik's (as last read),
+        # global and ULA only; a temporary (privacy) address changes daily, the DHCPv6 one stays
+        mac = str(b.get("mac") or "").strip().lower()
+        if not R.MAC_RE.match(mac):
+            raise ValueError("its MAC first - the IPv6 addresses are found by it")
+        seen = {}
+        try:
+            r = subprocess.run([R.IP, "-6", "neigh", "show"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               universal_newlines=True, timeout=10)
+            for ln in r.stdout.splitlines():
+                f = ln.split()
+                if "lladdr" in f and f[f.index("lladdr") + 1].lower() == mac:
+                    seen.setdefault(f[0], "this server's neighbour table")
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+            pass
+        try:
+            snap = json.loads(ctx.store.get_meta("mikrotik:snap") or "{}")
+        except ValueError:
+            snap = {}
+        for n in snap.get("neigh6") or []:
+            if str(n.get("mac") or "").lower() == mac:
+                seen.setdefault(n.get("address"), "the MikroTik's neighbour table")
+        out = []
+        for a, where in seen.items():
+            try:
+                x = ipaddress.ip_address(str(a).split("%")[0])
+            except ValueError:
+                continue
+            if x.version == 6 and not (x.is_link_local or x.is_multicast or x.is_loopback):
+                out.append({"ip": str(x), "where": where,
+                            "kind": "stable (DHCPv6 or EUI-64)" if (int(x) & 0xffffffffffff0000) == 0 or
+                            (int(x) >> 24 & 0xffff) == 0xfffe else "may be a temporary one"})
+        return {"mac": mac, "seen": out, "message": "%d IPv6 address(es) of %s seen" % (len(out), mac) if out else
+                "no IPv6 address of %s in either neighbour table" % mac}
     if act == "mac_seen":
         ip = str(b.get("ip") or "").strip()
         mac = neighbours().get(ip, "")
