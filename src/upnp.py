@@ -17,7 +17,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from xml.etree import ElementTree as ET
 
-VERSION = "1.7.7"
+VERSION = "1.7.8"
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 APP = "fake-igd"
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"

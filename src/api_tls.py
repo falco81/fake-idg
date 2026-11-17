@@ -947,7 +947,15 @@ def web_progress(ctx):
         return None
     if not isinstance(got, dict) or time.time() - float(got.get("at") or 0) > 3 * 3600:
         return None
-    got["now"] = time.time()
+    now = time.time()
+    got["now"] = now
+    # Root says again every 10 s that it still works (1.7.8); not heard from for long, it was ended half
+    # way - killed, or its unit's time limit (5 min before 1.7.8, for a DH of minutes). Before the beat:
+    # three times the time it usually takes, half an hour at least.
+    quiet = now - float(got.get("at") or 0)
+    if (got.get("beat") and quiet > 90) or \
+            (not got.get("beat") and quiet > max(1800, 3 * float(got.get("expect_s") or 0))):
+        got["stale"] = True
     return got
 
 
@@ -976,6 +984,11 @@ def ask_state(ctx):
             return {"state": "done" if mine.get("ok") else "failed", "action": mine.get("action") or asked.get("action"),
                     "at": mine.get("at"), "said": mine.get("said") or [], "by": mine.get("by")}
         prog = web_progress(ctx)
+        if prog and prog.get("stale"):
+            return {"state": "failed", "action": asked.get("action"), "at": prog.get("at"),
+                    "said": ["root stopped half way while %s (ended - its time limit, or killed) - nothing was "
+                             "changed; ask again, or choose an RFC 7919 group in TLS settings: ready at once"
+                             % (prog.get("words") or "working")]}
         if prog:
             return {"state": "working", "action": asked.get("action"), "at": asked.get("at"), "said": [],
                     "progress": prog}

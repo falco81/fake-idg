@@ -119,9 +119,14 @@ def progress(words, step=None, expect=None):
     import json
     if step is not None:
         PROGRESS["step"] = step
+    if PROGRESS.get("words") != words:
+        PROGRESS["words"], PROGRESS["began"] = words, time.time()
+    # "beat": root says again every 10 s that it still works on it (1.7.8) - a helper ended half way
+    # (killed, its unit's time limit) is seen by the pages as such, not as a bar that runs for ever.
     _web_write("progress-tls.json", json.dumps({
         "id": PROGRESS["id"], "step": PROGRESS["step"], "total": PROGRESS["total"],
-        "words": words, "at": time.time(), "expect_s": expect}))
+        "words": words, "at": time.time(), "began": PROGRESS["began"], "beat": 10, "pid": os.getpid(),
+        "expect_s": expect}))
 
 
 def progress_done():
@@ -517,8 +522,23 @@ def dh_pem(choice):
     if choice.startswith("ffdhe"):
         return openssl(["genpkey", "-genparam", "-algorithm", "DH", "-pkeyopt", "group:%s" % choice],
                        "the DH group %s" % choice)
-    progress("making DH parameters of %s bits" % choice[3:], 2, DH_EXPECT_S.get(choice))
-    return openssl(["dhparam", choice[3:]], "making DH parameters of %s bits" % choice[3:])
+    words = "making DH parameters of %s bits" % choice[3:]
+    progress(words, 2, DH_EXPECT_S.get(choice))
+    import threading
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(10):
+            try:
+                progress(words, 2, DH_EXPECT_S.get(choice))
+            except Exception:                           # noqa: BLE001 - only how far it is
+                pass
+    t = threading.Thread(target=beat, daemon=True)
+    t.start()
+    try:
+        return openssl(["dhparam", choice[3:]], words)
+    finally:
+        stop.set()
 
 
 def dh_had():
@@ -1077,7 +1097,7 @@ def serve(payload, ask=None):
         except Refused as e:
             return {"ok": False, "action": act, "said": said + [str(e)]}
         return {"ok": bool(ok), "action": act, "said": said}
-    PROGRESS.update(step=0, id=ident)
+    PROGRESS.update(step=0, id=ident, words=None, began=time.time())
     try:
         progress("checking what was asked", 1)
         if act == "put":

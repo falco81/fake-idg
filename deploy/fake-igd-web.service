@@ -6,4 +6,6 @@ StartLimitIntervalSec=0
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 -I /opt/fake-igd/fake_igd_web.py
-TimeoutStartSec=5min
+# Making DH parameters of 4096 bits here takes from minutes to half an hour on a slow machine: as otp's
+# otp-web.service (1.7.8) - 5 min ended it half way, and the pages waited for ever.
+TimeoutStartSec=30min

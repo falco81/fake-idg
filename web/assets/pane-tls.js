@@ -411,7 +411,7 @@
   function certProgress(p) {
     var box = el('div', 'cert-prog');
     var total = Number(p.total) || 4, step = Math.max(1, Number(p.step) || 1);
-    var gone = Math.max(0, (Number(p.now) || 0) - (Number(p.at) || 0));
+    var gone = Math.max(0, (Number(p.now) || 0) - (Number(p.began || p.at) || 0));
     var part = p.expect_s ? Math.min(0.95, gone / Number(p.expect_s)) : 0.5;
     var pct = Math.min(99, Math.round(((step - 1) + part) / total * 100));
     var head = el('div', 'cert-prog-h');

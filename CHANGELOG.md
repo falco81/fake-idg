@@ -2,6 +2,16 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.7.8 (2026-11-17)
+
+- **DH parameters made here never ended on the pages.** fake-igd-web.service (root's helper) had a time limit
+  of 5 minutes; making DH parameters of 4096 bits takes from minutes to half an hour, so systemd ended it
+  half way - nothing was changed, but the bar "making DH parameters" ran on for ever. The limit is otp's
+  30 minutes now; root says every 10 seconds that it still works, and a helper ended half way is said on
+  the card as such ("root stopped half way ... ask again, or choose an RFC 7919 group: ready at once")
+  instead of a bar - also for one ended before this version (after half an hour). The time on the bar is
+  counted from the start of the step.
+
 ## 1.7.7 (2026-11-17)
 
 **SELinux, as otp's** (otp 1.0.288's, for one server):
