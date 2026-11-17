@@ -159,19 +159,10 @@
     };
     acts.appendChild(tryb);
     var dl = cmdButton('Download one here', 'download', '');
-    /* Pressable as otp's; with no password it says why not and takes you to the password (otp asks
-       whether to download it unlocked - fake-igd never writes an unlocked backup). */
     explain(dl, 'A backup made now, saved on the computer you are sitting at - locked with the password as the others.');
-    dl.onclick = function () {
-      if (!d.locked) {
-        confirmThen('Set the password of the backups first', 'No password of the backups is set: a backup holds <b>every account and every secret</b> of this installation, and fake-igd writes none that is not locked. Set it, save, and download one then.', 'Set the password', function () {
-          var box = $('set-rbackup_password');
-          if (box) { box.scrollIntoView({block: 'center'}); box.focus(); }
-        }, false);
-        return;
-      }
+    var dlGo = function (unlocked) {
       busy(dl, true);
-      api('backup', {action: 'download'}).then(function (x) {
+      api('backup', unlocked ? {action: 'download', unlocked: true} : {action: 'download'}).then(function (x) {
         toast(x.message, 'good'); RB.job = x.job; rbWatch(function (j) {
           if (!j.result || !j.result.ready) return;
           api('backup', {action: 'download_get', ready: j.result.ready}).then(function (y) {
@@ -180,6 +171,15 @@
           }).catch(oops);
         });
       }).catch(function (e) { busy(dl, false); oops(e); });
+    };
+    dl.onclick = function () {
+      /* As otp's: with no password it asks whether to download it not locked (only here - a backup
+         sent to a destination is always locked). */
+      if (!d.locked) {
+        confirmThen('Download a backup that is not locked?', 'No password of the backups is set: the file will hold <b>every account and every secret</b> of this installation readable. Set the password first unless you know where the file goes.', 'Download it', function () { dlGo(true); }, false);
+        return;
+      }
+      dlGo(false);
     };
     acts.appendChild(dl);
     var back = cmdButton('Put one back…', 'undo', '');

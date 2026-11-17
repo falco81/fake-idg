@@ -2,6 +2,21 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.7.3 (2026-11-17)
+
+- **No more "the parts root installs are from before it" after every upgrade.** The new API starts in the
+  middle of install.sh --upgrade, before install.sh has put root's parts in and written root-facts.json,
+  and wrote it down as something to be done by hand. "To be done by hand" is no longer looked at while an
+  upgrade goes on, and is looked at again as soon as install.sh has written root-facts.json - not ten
+  minutes later. An entry already shown goes by itself once the new pages read it.
+- **System updates: Stop it** (otp's). dnf is stopped while it asks and downloads - nothing is put in, the
+  update is said as "stopped by NAME" in the card and the events. Once dnf puts the packages in, it
+  finishes: stopped there, the system would be left half updated (otp too lets the node being updated
+  finish) - the button says so.
+- **Backups: Download one here without a password** (otp's): asked "Download a backup that is not
+  locked?", it gives the .tar.gz not locked, written in the events as such. A backup sent to a
+  destination is never unlocked, as before.
+
 ## 1.7.2 (2026-11-17)
 
 Everything gone through once more against otp 1.0.288, in its code and side by side on the screen.

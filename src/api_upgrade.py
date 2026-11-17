@@ -644,6 +644,14 @@ def after_evaluate(ctx):
     with AFTER_LOCK:
         store = ctx.store
         was = store.meta_json("after:row") or {}
+        # Not while an upgrade goes on (1.7.3): the new API starts before install.sh has put root's parts
+        # in and written root-facts.json - every upgrade said "the parts root installs are from before it".
+        try:
+            busy = bool(ON.status().get("busy"))
+        except Exception:                               # noqa: BLE001
+            busy = False
+        if busy:
+            return was
         old = was.get("items") or {}
         log = [x for x in (was.get("log") or []) if isinstance(x, dict)][:AFTER_LOG_KEEP]
         f = after_facts(ctx)
@@ -676,9 +684,18 @@ def after_evaluate(ctx):
         return row
 
 
+def _facts_newer(row):
+    """root-facts.json written since the list was last looked at (install.sh ended): look again now."""
+    try:
+        return os.path.getmtime(ROOT_FACTS) > float((row or {}).get("at") or 0)
+    except OSError:
+        return False
+
+
 def _row(ctx):
     row = ctx.store.meta_json("after:row")
-    if not row or row.get("version") != VERSION or time.time() - float(row.get("at") or 0) > AFTER_EVERY * 2:
+    if not row or row.get("version") != VERSION or time.time() - float(row.get("at") or 0) > AFTER_EVERY * 2 \
+            or _facts_newer(row):
         row = after_evaluate(ctx)
     return row
 
@@ -802,7 +819,7 @@ ROUTES = {
 # ---- once a minute ---------------------------------------------------------------------
 def background(ctx):
     """The list looked at every ten minutes; the end of an upgrade written in the events once."""
-    if time.time() - AFTER_WORK["at"] >= AFTER_EVERY:
+    if time.time() - AFTER_WORK["at"] >= AFTER_EVERY or _facts_newer(ctx.store.meta_json("after:row")):
         try:
             after_evaluate(ctx)
         except Exception as e:                          # noqa: BLE001

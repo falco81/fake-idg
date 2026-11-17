@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -168,8 +169,13 @@ def serve(payload, ask):
     if not isinstance(payload, dict):
         return {"ok": False, "said": ["the request is not an object"]}
     do = payload.get("do")
-    if do not in ("check", "upgrade", "reboot"):
-        return {"ok": False, "said": ["check, upgrade or reboot - not %r" % str(do)[:40]]}
+    if do not in ("check", "upgrade", "reboot", "stop"):
+        return {"ok": False, "said": ["check, upgrade, reboot or stop - not %r" % str(do)[:40]]}
+    if do == "stop":
+        try:
+            return {"ok": True, "do": do, "said": [stop(str((ask or {}).get("by") or ""))]}
+        except Refused as e:
+            return {"ok": False, "do": do, "said": [str(e)[:400]]}
     ident = re.sub(r"[^A-Za-z0-9-]", "", str((ask or {}).get("id") or ""))[:40] or "%d" % int(time.time())
     try:
         if do == "reboot":
@@ -186,6 +192,36 @@ def serve(payload, ask):
                                                  " through the proxy" if payload.get("proxy") else "")]}
     except Refused as e:
         return {"ok": False, "do": do, "said": [str(e)[:400]]}
+
+
+def stop(by=""):
+    """Stop it (otp's): the job asked to end - dnf stopped while it asks and downloads; once it puts the
+    packages in, it finishes (stopped there the system would be left half updated - otp lets the node
+    being updated finish too)."""
+    try:
+        with open(os.path.join(WEB_DIR, OSUP_FILE), encoding="utf-8") as f:
+            st = json.load(f)
+    except (OSError, ValueError):
+        st = {}
+    if st.get("state") != "running" or not running():
+        raise Refused("nothing is going on")
+    if st.get("phase") == "whether a restart is needed":
+        raise Refused("the packages are in already - it only asks whether a restart is needed")
+    if st.get("phase") == "putting the packages in":
+        raise Refused("dnf is putting the packages in - stopped now, the system would be left half updated; "
+                      "it ends by itself in a few minutes")
+    pid = int(st.get("pid") or 0)
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            cmd = f.read().split(b"\0")
+    except OSError:
+        raise Refused("the job is not found")
+    if b"--job" not in cmd or not any(c.endswith(b"root_osup.py") for c in cmd):
+        raise Refused("the job is not found")
+    with open(os.path.join(WEB_DIR, "osup.stop"), "w") as f:
+        f.write(json.dumps({"by": by[:80], "at": time.time()}))
+    os.kill(pid, signal.SIGTERM)
+    return "dnf is asked to stop - nothing more is put in"
 
 
 # ---- what dnf says, read -----------------------------------------------------------------
@@ -220,7 +256,7 @@ def job(ident, kind, security=False):
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         return 1
-    state = {"id": ident, "kind": kind, "state": "running", "pct": 1, "lines": [], "began": time.time(),
+    state = {"id": ident, "kind": kind, "state": "running", "pct": 1, "lines": [], "began": time.time(), "pid": os.getpid(),
              "at": time.time(), "packages": [], "reboot": False, "pm": "dnf", "phase": "starting",
              "security_only": bool(security)}
     last = [0.0]
@@ -243,10 +279,29 @@ def job(ident, kind, security=False):
 
     env = proxy_env({"PATH": PATH, "LANG": "C", "LC_ALL": "C", "HOME": "/root"})
 
+    child = {"p": None, "stopped": False}
+
+    def on_term(signum, frame):
+        """Stop it: dnf ended as Ctrl-C ends it (it leaves nothing half done before the transaction)."""
+        child["stopped"] = True
+        if child["p"] is not None and child["p"].poll() is None:
+            try:
+                child["p"].send_signal(signal.SIGINT)
+            except OSError:
+                pass
+    signal.signal(signal.SIGTERM, on_term)
+    try:
+        os.unlink(os.path.join(WEB_DIR, "osup.stop"))
+    except OSError:
+        pass
+
     def stream(cmd, on_line=None, ok=(0,)):
+        if child["stopped"]:
+            raise Refused("stopped")
         say("$ " + " ".join(cmd))
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
                              stdin=subprocess.DEVNULL, universal_newlines=True, bufsize=1)
+        child["p"] = p
         try:
             for ln in p.stdout:
                 say(ln)
@@ -259,6 +314,9 @@ def job(ident, kind, security=False):
             except Exception:                           # noqa: BLE001
                 pass
             rc = p.wait()
+        child["p"] = None
+        if child["stopped"]:
+            raise Refused("stopped")
         if rc not in ok:
             raise Refused("%s ended with %d" % (os.path.basename(cmd[0]), rc))
         return rc
@@ -309,6 +367,8 @@ def job(ident, kind, security=False):
                     seen["total"] = max(seen["total"], int(m.group(2)) * 2)
                     seen["done"] = min(seen["total"], seen["done"] + 1)
                     state["phase"] = "putting the packages in"
+                if ln.startswith("Running transaction") or ln.startswith("Transaction test"):
+                    state["phase"] = "putting the packages in"
                 if ln.startswith("Downloading Packages"):
                     state["phase"] = "downloading"
                     state["pct"] = max(state["pct"], 8)
@@ -322,7 +382,17 @@ def job(ident, kind, security=False):
         state["state"] = "done"
         state["phase"] = "done"
     except Refused as e:
-        state.update(state="failed", said=str(e)[:300])
+        if child["stopped"]:
+            who = ""
+            try:
+                with open(os.path.join(WEB_DIR, "osup.stop"), encoding="utf-8") as f:
+                    who = str(json.load(f).get("by") or "")
+            except (OSError, ValueError):
+                pass
+            state.update(state="stopped", said="stopped" + (" by " + who if who else "") + " - nothing more was put in")
+            say(state["said"])
+        else:
+            state.update(state="failed", said=str(e)[:300])
     except Exception as e:                              # noqa: BLE001
         state.update(state="failed", said="it broke: %s" % str(e)[:300])
     finally:

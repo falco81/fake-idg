@@ -929,11 +929,12 @@ def db_module():
     return mod
 
 
-def build(ctx, work, collected, progress):
+def build(ctx, work, collected, progress, unlocked=False):
     """The backup, built in `work`: (path of the file, manifest, RESTORE.md), the file and its two
-    companions in backup/out/."""
+    companions in backup/out/. unlocked: only for a download asked for in so many words while no
+    password is set (otp's "Download a backup that is not locked?") - never one that is sent."""
     pw = password(ctx)
-    if not pw:
+    if not pw and not unlocked:
         raise RbError("the backups have no password - set it (Settings → Backups → The password of the backups); "
                       "an unlocked backup would hand every account's hash to whoever reads the destination")
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -979,11 +980,15 @@ def build(ctx, work, collected, progress):
         for n in sorted(os.listdir(inner)):
             tf.add(os.path.join(inner, n), arcname="%s/%s" % (base, n))
     shutil.rmtree(inner, ignore_errors=True)
-    progress(4, "locked with the password of the backups")
     out_dir = sub(ctx, "out")
     final = os.path.join(out_dir, m["file"])
-    lock(tar, final, pw)
-    os.unlink(tar)
+    if pw:
+        progress(4, "locked with the password of the backups")
+        lock(tar, final, pw)
+        os.unlink(tar)
+    else:
+        progress(4, "not locked - no password of the backups is set")
+        os.replace(tar, final)
     os.chmod(final, 0o640)
     m["sha256"] = sha256_of(final)
     m["bytes"] = os.path.getsize(final)
@@ -1694,12 +1699,13 @@ def post_backup(ctx):
                 dst = os.path.join(out, "download-" + name)
                 fetch(ctx, tid, name, dst)
                 return {"ready": "download-" + name, "name": name}
-            if not password(ctx):
-                raise RbError("the backups have no password - set it first")
+            unlocked = not password(ctx)
+            if unlocked and b.get("unlocked") is not True:
+                raise RbError("the backups have no password - set it first, or download it not locked")
             work = tempfile.mkdtemp(prefix="dl-", dir=sub(ctx, "work"))
             collected, _w = collect(ctx, p)
             try:
-                final, m, _md = build(ctx, work, collected, p)
+                final, m, _md = build(ctx, work, collected, p, unlocked=unlocked)
             finally:
                 shutil.rmtree(work, ignore_errors=True)
                 if collected:
@@ -1711,6 +1717,8 @@ def post_backup(ctx):
                 except OSError:
                     pass
             return {"ready": "download-" + m["file"], "name": m["file"], "system": bool(collected)}
+        if not tid and not password(ctx) and b.get("unlocked") is True:
+            ctx.event("%s downloaded a backup that is NOT locked (no password of the backups is set)" % who, "warn")
         j = start_job(ctx, "a backup to download", who, make)
         return {"job": j, "message": "it is being made - the download starts when it is ready"}
     if act == "download_get":

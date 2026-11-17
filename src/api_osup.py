@@ -138,7 +138,8 @@ def follow(ctx):
                    at=st.get("at"))
         ctx.store.set_meta(CHECK_KEY, json.dumps(chk))
         ctx.event("the system update %s%s" % ("is done" if st.get("state") == "done" else
-                                              "failed: %s" % (st.get("said") or "?"),
+                                              ("was %s" % (st.get("said") or "stopped")) if st.get("state") == "stopped"
+                                              else "failed: %s" % (st.get("said") or "?"),
                                               " - a restart is needed" if st.get("reboot") else ""),
                   "info" if st.get("state") == "done" else "warn", kind="osup")
         if st.get("reboot") and plan.get("reboot") == "auto":
@@ -204,6 +205,22 @@ def osup_post(ctx):
         ctx.event("%s restarted the machine after the system update" % me["name"], "warn")
         return {"id": ident, "message": "asked root - the machine restarts in a few seconds; these pages are "
                                         "away for a minute or two"}
+    if act in ("stop", "cancel"):
+        # Stop it (otp's): dnf stopped while it asks and downloads; once it puts the packages in, it finishes.
+        if not busy:
+            raise ValueError("nothing is going on")
+        ident = ask(ctx, "stop", by=me["name"])
+        end = time.time() + 8
+        while time.time() < end:
+            res = ctx.root_result(ident=ident)
+            if res:
+                if not res.get("ok"):
+                    raise ValueError("; ".join(res.get("said") or []) or "root could not stop it")
+                ctx.event("%s stopped the %s" % (me["name"], "system update" if st.get("kind") == "upgrade"
+                                                 else "look for system updates"), "warn")
+                return {"message": (res.get("said") or ["dnf is asked to stop"])[0]}
+            time.sleep(0.4)
+        return {"message": "asked root to stop it - is fake-igd-web.path active?"}
     if act == "clear":
         ctx.store.set_meta("osup:hidden", json.dumps({"id": st.get("id"), "from": len(st.get("lines") or [])}))
         return osup_get(ctx)

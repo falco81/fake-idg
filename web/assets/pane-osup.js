@@ -4,7 +4,7 @@
 
 var OU = {d: null, poll: null, hide: false, reboot: 'ask', what: 'all', asked: 0, away: 0};
 try { OU.hide = localStorage.getItem('fake-igd-ou-hide') === '1'; } catch (e) { /* only a convenience */ }
-var OU_STATE = {running: ['going on', 'info'], done: ['done', 'ok'], failed: ['failed', 'crit']};
+var OU_STATE = {running: ['going on', 'info'], done: ['done', 'ok'], failed: ['failed', 'crit'], stopped: ['stopped', 'warn']};
 
 function upBar(pc, kind, words, wide) {
   var box = el('div', 'going up-bar' + (wide ? ' wide' : '') + (kind ? ' ' + kind : ''));
@@ -190,7 +190,21 @@ function drawOsup(live) {
     if (plan.id || upJob) {
       var pstate = plan.id ? plan.state : 'running';
       var pc = el('div', 'card full');
-      pc.appendChild(el('h2', '', 'The update'));
+      var ph = el('h2', '', 'The update');
+      if (pstate === 'running' && ADMIN) {
+        /* Stop it (otp's): dnf stops while it asks and downloads; once it puts the packages in, it finishes. */
+        var stop = cmdButton('Stop it', 'cancel', 'small danger');
+        explain(stop, 'Stopped while dnf asks and downloads - nothing is put in. Once it puts the packages in, it finishes: stopped there, the system would be left half updated.');
+        stop.disabled = job.phase === 'putting the packages in' || job.phase === 'whether a restart is needed';
+        stop.onclick = function () {
+          confirmThen('Stop the update', 'dnf is stopped before it puts anything in; once it is putting the packages in, it finishes.', 'Stop it', function () {
+            busy(stop, true);
+            api('osup', {action: 'stop'}).then(function (x) { toast(x.message); loadOsup(); }).catch(oops).then(function () { busy(stop, false); });
+          }, true);
+        };
+        var tl = el('span', 'right'); tl.appendChild(stop); ph.appendChild(tl);
+      }
+      pc.appendChild(ph);
       var w = OU_STATE[pstate] || OU_STATE.running;
       pc.appendChild(el('p', 'note', (plan.id ? 'Started by ' + (plan.by || '?') + ' · ' + ago(plan.at) : 'Started ' + ago(job.began || job.at))
         + ' · ' + w[0] + (plan.reboot === 'auto' ? ' · restarted where needed' : '')
@@ -198,7 +212,7 @@ function drawOsup(live) {
       var pct = pstate === 'running' ? (job.kind === 'upgrade' ? Math.max(1, Math.min(99, Number(job.pct || 1))) : 1) : 100;
       var good = pstate === 'done', bad = pstate === 'failed';
       pc.appendChild(upBar(pct, bad ? 'bad' : (good ? 'good' : ''), num(pct) + ' % · ' + (good ? '1' : '0') + ' of 1 server(s) done', true));
-      var step = pstate === 'running' ? ['updating', 'info'] : (good ? ['done', 'ok'] : ['failed', 'crit']);
+      var step = pstate === 'running' ? ['updating', 'info'] : (good ? ['done', 'ok'] : (pstate === 'stopped' ? ['stopped', 'warn'] : ['failed', 'crit']));
       var said = pstate === 'running' ? (job.said || '') : (plan.said || (good ? (plan.reboot_needed ? 'a restart is needed' : 'no restart needed') : ''));
       var t = listTable(['Server', 'Step', 'How far', 'What happened', 'When'], [1], function () {
         var tr = el('tr');
