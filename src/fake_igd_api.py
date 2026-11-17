@@ -79,6 +79,9 @@ NAMES = {
     "web_allow": "Who may reach the pages", "firewall": "Firewall (iptables, FAKE-IGD-IN)",
     "firewall_ssh": "Let SSH in", "firewall_icmp": "Let ping in", "upgrade_url": "Where new versions are looked for",
     "upgrade_check": "Look for a new version every day",
+    "ntfy_events": "What is sent", "ntfy_quiet_from": "Quiet hours from", "ntfy_quiet_to": "Quiet hours until",
+    "ntfy_quiet_priority": "In the quiet hours, only priority", "ntfy_quiet_summary": "Held back: a summary when they end",
+    "ntfy_rate_per_hour": "At most of one kind an hour",
 }
 CHOICE_WORDS = {
     "mode": {"active": "active - answer like a UPnP router", "passive": "passive - only listen and log"},
@@ -212,6 +215,8 @@ def settings_save(changes, who, addr, handler=None):
             raw = "on" if raw in (True, "true", "1", "on") else "off"
         elif isinstance(U.DEFAULTS[key], list) and isinstance(raw, list):
             raw = ",".join(str(x) for x in raw)
+        elif isinstance(U.DEFAULTS[key], dict):
+            raw = json.dumps(raw) if isinstance(raw, dict) else raw
         raw = "" if raw is None else str(raw)
         if key in ("state_dir", "log_file", "request_log") and raw != str(cfg.get(key)):
             raise ValueError("%s is changed on the server only (sudo upnp config set %s ...): the service's "

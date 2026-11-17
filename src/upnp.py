@@ -41,6 +41,12 @@ DEFAULTS = {
     "ntfy_ca_file": "",
     "notify_on_renew": False,
     "notify_other_router": True,
+    "ntfy_events": {},
+    "ntfy_quiet_from": "",
+    "ntfy_quiet_to": "",
+    "ntfy_quiet_priority": 4,
+    "ntfy_quiet_summary": True,
+    "ntfy_rate_per_hour": 30,
     "log_level": "INFO",
     "log_file": "/var/log/fake-igd/fake-igd.log",
     "request_log": "/var/log/fake-igd/requests.jsonl",
@@ -75,6 +81,12 @@ KEY_HELP = {
     "ntfy_ca_file": "CA certificate (PEM) of a private ntfy server with its own certificate authority",
     "notify_on_renew": "notify on mapping renewals too",
     "notify_other_router": "notify when another UPnP router announces itself on the network",
+    "ntfy_events": "what is sent: each kind of event on or off, with a priority (0: as ntfy_priority) and tags of its own - JSON {kind: {on, priority, tags}} (upnp notify list|on|off KIND; Settings → Notifications (ntfy) → What is sent)",
+    "ntfy_quiet_from": "quiet hours from HH:MM (this machine's clock); empty = none",
+    "ntfy_quiet_to": "quiet hours until HH:MM",
+    "ntfy_quiet_priority": "in the quiet hours only this priority and above is sent (1-5)",
+    "ntfy_quiet_summary": "what the quiet hours held back is sent as one summary when they end (off: dropped)",
+    "ntfy_rate_per_hour": "at most this many of one kind an hour, then one \"N more\" summary (0 = no limit)",
     "log_level": "INFO or DEBUG",
     "log_file": "main log",
     "request_log": "request log (JSON lines)",
@@ -93,7 +105,7 @@ KEY_HELP = {
 }
 ALLOWED_VALUES = {"mode": ("active", "passive"), "mapping_response": ("accept", "reject"),
                   "log_level": ("DEBUG", "INFO", "WARNING", "ERROR")}
-NUMBER_RANGES = {"igd_version": (1, 2), "api_port": (1024, 65535), "session_idle_minutes": (5, 1440), "http_port": (1, 65535), "ntfy_priority": (1, 5), "interface_rescan_seconds": (10, 3600),
+NUMBER_RANGES = {"ntfy_quiet_priority": (1, 5), "ntfy_rate_per_hour": (0, 1000), "igd_version": (1, 2), "api_port": (1024, 65535), "session_idle_minutes": (5, 1440), "http_port": (1, 65535), "ntfy_priority": (1, 5), "interface_rescan_seconds": (10, 3600),
                  "notify_interval_seconds": (30, 86400)}
 SECRET_KEYS = ("ntfy_token", "ntfy_password")
 SETTING_GROUPS = [
@@ -101,7 +113,8 @@ SETTING_GROUPS = [
     ("Network", ["http_port", "interfaces", "exclude_interfaces", "interface_rescan_seconds",
                  "notify_interval_seconds"]),
     ("Notifications (ntfy)", ["ntfy_url", "ntfy_token", "ntfy_user", "ntfy_password", "ntfy_priority",
-                              "ntfy_tags", "ntfy_ca_file", "notify_on_renew", "notify_other_router"]),
+                              "ntfy_tags", "ntfy_ca_file", "ntfy_quiet_from", "ntfy_quiet_to", "ntfy_quiet_priority",
+                              "ntfy_quiet_summary", "ntfy_rate_per_hour"]),
     ("Logs and state", ["log_level", "log_file", "request_log", "state_dir"]),
     ("About", ["site_name", "api_port"]),
     ("Web pages and firewall", ["web_allow",
@@ -111,7 +124,9 @@ SETTING_GROUPS = [
 # What the fake-igd service itself uses: a change of anything else does not restart it (1.4.0).
 SERVICE_KEYS = ("mode", "mapping_response", "igd_version", "http_port", "external_ip", "interfaces", "exclude_interfaces",
                 "allowed_clients", "ntfy_url", "ntfy_token", "ntfy_user", "ntfy_password", "ntfy_priority",
-                "ntfy_tags", "ntfy_ca_file", "notify_on_renew", "notify_other_router", "log_level", "log_file",
+                "ntfy_tags", "ntfy_ca_file", "notify_on_renew", "notify_other_router", "ntfy_events",
+                "ntfy_quiet_from", "ntfy_quiet_to", "ntfy_quiet_priority", "ntfy_quiet_summary", "ntfy_rate_per_hour",
+                "log_level", "log_file",
                 "request_log", "state_dir", "interface_rescan_seconds", "notify_interval_seconds")
 # What root has to put in place again when it changes: nginx's allow list, the firewall's chain.
 ROOT_KEYS = ("web_allow", "firewall", "firewall_ssh", "firewall_icmp", "http_port", "interfaces",
@@ -126,6 +141,8 @@ def shown_value(key, v):
         return "on" if v else "off"
     if isinstance(v, list):
         return ", ".join(str(x) for x in v)
+    if isinstance(v, dict):
+        return json.dumps(v, sort_keys=True)
     return "" if v is None else str(v)
 
 
@@ -135,6 +152,12 @@ CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 def check_value(key, raw):
     """(value, None) or (None, error) - the same checks `config set` makes, without leaving."""
     default = DEFAULTS[key]
+    if isinstance(default, dict):           # ntfy_events (1.8.2): a JSON object, every kind checked
+        import igd_ntfy
+        try:
+            return igd_ntfy.events_checked(raw if isinstance(raw, dict) else str(raw or "{}")), None
+        except ValueError as e:
+            return None, str(e)
     raw = str(raw)
     if isinstance(default, bool):
         if raw.lower() in ("1", "true", "yes", "on"):
@@ -187,6 +210,8 @@ def check_value(key, raw):
         return v2, None
     if key == "ntfy_url" and v and not re.match(r"^https?://[^/\s]+/[^\s/][^\s]*$", v):
         return None, "ntfy_url must be http(s)://server/topic, e.g. https://ntfy.example.com/ps5"
+    if key in ("ntfy_quiet_from", "ntfy_quiet_to") and v and not re.match(r"^([01]\d|2[0-3]):[0-5]\d\Z", v):
+        return None, "%s: HH:MM (22:00), or empty" % key
     if key == "ntfy_ca_file" and v and not os.path.isfile(v):
         return None, "ntfy_ca_file: %s is not a file" % v
     if key == "upgrade_url" and v and not v.startswith("https://"):
