@@ -105,6 +105,9 @@ SETTINGS = [
     {"key": "alerts_cert_days", "name": "A certificate running out within (days)", "kind": "int", "default": 21,
      "min": 0, "max": 120, "only_when": ON,
      "says": "The certificate of these pages (nginx) running out within so many days. 0: never."},
+    {"key": "alerts_gateway", "name": "The gateway for devices not forwarding", "kind": "bool", "default": True,
+     "only_when": ON, "says": "The gateway for devices is on, but net.ipv4.ip_forward was turned off by something "
+                              "else, or fake-igd's chain is no longer first in FORWARD (Settings → Gateway for devices)."},
     {"key": "alerts_upgrade", "name": "An upgrade that failed", "kind": "bool", "default": True, "only_when": ON,
      "says": "An upgrade of fake-igd (Settings → Upgrades) that failed, or never said that it ended."},
     {"key": "alerts_mailq", "name": "Mails that do not go", "kind": "bool", "default": True, "only_when": ON,
@@ -249,6 +252,14 @@ def problems(ctx, c=None):
                            "pane": "tls", "said": "%s (%s) is good until %s." % (
                                crt["file"], crt.get("subject") or "?",
                                time.strftime("%Y-%m-%d %H:%M", time.localtime(crt["until"])))}
+    if c.get("alerts_gateway"):
+        try:
+            gw = __import__("api_gateway").problem(ctx)
+        except Exception:                               # noqa: BLE001
+            gw = ""
+        if gw:
+            out["gateway"] = {"level": "bad", "title": "The gateway for devices does not forward", "pane": "gateway",
+                              "said": gw}
     if c.get("alerts_upgrade"):
         try:
             import igd_online as ON

@@ -1308,6 +1308,12 @@ def main(argv):
             print(ln)
         return 0
     if argv[:1] == ["--firewall-off"]:
+        # The gateway for devices first (1.7.15): its forwarding never stays on without its chain.
+        try:
+            for ln in fwd_sync({"firewall": False}):
+                print(ln)
+        except (Refused, OSError, subprocess.SubprocessError) as e:
+            print("gateway: %s" % e)
         if have_iptables():
             fw_live_off()
             if os.path.isfile(IPT_FILE):

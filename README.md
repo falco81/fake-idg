@@ -582,7 +582,7 @@ UPnP IGD is only a **control protocol**: a device asks the router "open port X f
 
 ### What this means for the PS5
 
-- Traffic, gateway and DNS **do not change**. If fake-igd crashes, the PS5 keeps working as before.
+- Traffic, gateway and DNS **do not change** (unless you make this server its gateway - below). If fake-igd crashes, the PS5 keeps working as before.
 - The only side effect is what the PS5 **believes** about open ports:
 
 | `mapping_response` | What the PS5 gets | Consequence |
@@ -593,6 +593,47 @@ UPnP IGD is only a **control protocol**: a device asks the router "open port X f
 - `"mode": "passive"`: fake-igd **does not answer at all**, it only logs who is looking for a UPnP router on the network (and announcements of other UPnP devices). The PS5 is not affected at all, **but you will not learn the ports** - without an answer the PS5 never sends `AddPortMapping`. Useful to check who uses UPnP on the network, or whether there is another UPnP router.
 
 **Recommended workflow:** run `mode: active` + `mapping_response: accept`, go through the connection test, party chat and the games you play on the PS5, then run `upnp ports` and `upnp dnat`, set the ports as DNAT on the router and switch fake-igd (`sudo upnp response reject`, `sudo upnp mode passive`) or stop it (`sudo upnp stop && sudo upnp disable`).
+
+### A PS5 that stops at "answered": the gateway for devices (1.7.15)
+
+Some consoles - a PS5 Pro was seen doing it - use UPnP **only from their default gateway**. With the real
+router as its gateway it sends its `M-SEARCH`, gets fake-igd's answer and goes no further: it never fetches
+`/rootDesc.xml` and never asks for a port. The Clients tab shows it stopped at **answered** and says so, with
+a button that opens **Settings → Gateway for devices** with that device filled in.
+
+There this server can be made the default gateway of **chosen devices** - and of nobody else:
+
+- **Each device** by its IPv4 address, a name ("PS5 Pro") and best its **MAC** (offered from the neighbour
+  table, `ip neigh`): the rule then matches only that network card - another box that takes its address does
+  not pass. Rules per device, with its name in the iptables comment; never a network range.
+- **Only toward the router:** forwarded only in and out the interface of this server's default route (where the
+  PS5 and the router are), never to any network of this server's other interfaces (each a destination it
+  drops - the server stays no bridge between the networks it reflects mDNS between), nor link-local,
+  multicast, loopback or reserved ranges.
+- fake-igd's chain **`FAKE-IGD-FWD` first in FORWARD, ending in a DROP of its own**: nothing else is ever
+  forwarded, whatever the distribution's FORWARD policy says. No conntrack state is matched: the way back goes
+  from the router to the PS5 directly (asymmetric), so this server sees one half of each connection.
+- **`net.ipv4.ip_forward` is global**, so it is turned on only while at least one device is on **and** that chain
+  is in place - and the mode cannot be switched on with fake-igd's firewall off (or with firewalld in charge).
+  `/etc/sysctl.d/90-fake-igd-gateway.conf` (only while on): `ip_forward = 1` and `send_redirects = 0` for all,
+  default and every interface - an ICMP redirect would send the PS5 to the router directly. Switched off (or
+  the last device removed): forwarding goes back to what it was, the file and the chain are taken away.
+  Turning fake-igd's firewall off turns the gateway off with it. **IPv6 forwarding is never turned on.**
+- On **trial** like every firewall change: unless *Keep it* is pressed within `fw_confirm_min` minutes, it goes
+  back by itself. It comes back after a reboot by itself (`sysctl.d` and `/etc/sysconfig/iptables` between
+  fake-igd's marks). The server becomes a single point of failure for those devices.
+
+On the PS5: *Settings → Network → Settings → Set Up Internet Connection →* your connection *→ Advanced Settings →
+IP Address Settings: Manual* - its IP address, the subnet mask, **Default Gateway = this server's address on that
+network**, DNS as it uses now. The pane shows the exact values, the packets forwarded for each device and when
+it last went through.
+
+```
+sudo upnp gateway                                     # how it stands: forwarding, the chain, the devices
+sudo upnp gateway add 192.168.40.95 --name "PS5 Pro" --mac-seen
+sudo upnp gateway on                                  # then: sudo upnp gateway keep
+sudo upnp gateway del 192.168.40.95                   # the last one: the forwarding goes off with it
+```
 
 ### What if something else on the network offers UPnP?
 

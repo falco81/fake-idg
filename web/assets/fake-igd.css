@@ -4300,3 +4300,19 @@ p.btnhelp{margin-bottom:10px}
 
 /* a list with nothing in it says so with the room of a row, not tight under its header */
 tr.empty-row > td{padding-top:14px;padding-bottom:14px}
+
+/* ==== 1.7.15: Settings → Gateway for devices (pane-gateway.js) ==================================== */
+.gw-list{margin:0;padding-left:20px;line-height:1.7}
+.gw-list li + li{margin-top:4px}
+.gw-list li.warn{color:var(--warn)}
+.gw-mac{display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.gw-mac input{width:100%}
+.gw-mac-said:empty{display:none}
+.gw-form{margin-bottom:6px}
+.gw-pick table tr.tappable{cursor:pointer}
+.gw-hint{margin-top:6px}
+.gw-hint.small{font-size:12px;color:var(--warn)}
+.gw-hint .fgo{margin-left:4px;cursor:pointer;color:var(--info);text-decoration:underline}
+.gw-name > b{white-space:nowrap}
+.modal .body > .gw-hint{margin:0 0 14px}
+.gw-hint-go{margin-top:10px}

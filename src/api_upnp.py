@@ -897,7 +897,29 @@ def steps(ctx):
             v = 0
         return datetime.fromtimestamp(v).astimezone() if v > 0 else None
     client = str(ctx.arg("client") or "")[:64] or None
-    return {"clients": _steps_of(ctx.cfg, when("since"), when("until"), client), "at": time.time()}
+    got = _steps_of(ctx.cfg, when("since"), when("until"), client)
+    _gateway_of(ctx, got)
+    return {"clients": got, "at": time.time()}
+
+
+def _gateway_of(ctx, clients):
+    """Each client: whether it uses this server as its gateway (Settings → Gateway for devices, 1.7.15) -
+    "uses" (on, put in, packets forwarded), "defined" (one of its devices, not forwarding), or "" - and the
+    hint where it stopped at "answered": a PS5 asks UPnP only of its default gateway."""
+    try:
+        gw = __import__("api_gateway")
+        meta = gw._meta(ctx.store)
+        st = gw.state()
+    except Exception:                                   # noqa: BLE001 - the steps all the same
+        return
+    applied = {d.get("ip") for d in st.get("devices") or [] if d.get("on")} if st.get("on") else set()
+    seen = st.get("seen") or {}
+    defined = {d.get("ip") for d in meta.get("devices") or []}
+    for ip, c in clients.items():
+        c["gateway"] = "uses" if ip in applied and (seen.get(ip) or {}).get("changed") else \
+            ("defined" if ip in defined or ip in applied else "")
+        c["gateway_hint"] = bool(c.get("answered") and not (c.get("described") or c.get("actions") or c.get("ports"))
+                                 and c["gateway"] != "uses")
 
 
 ROUTES = {

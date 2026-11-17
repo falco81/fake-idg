@@ -1644,7 +1644,7 @@ commands by purpose:
   upgrades        upgrade (check, online, file, status, follow, log, after), updates (the system's)
   security        selinux (check, prepare, enforce, permissive, report), firewall
   web pages       web, tls, acme, user (list, add, passwd, role, del, sessions, lockouts)
-  the machine     net, time, updates, power
+  the machine     net, gateway, time, updates, power
   tests           test, notify-test, mail-test, siem-test, proxy-test, snmp-trap
   what the pages do, here too   api GET|POST /api/... (any pane's question, as JSON)
   console         --console (menus, live log), --console-at-login on|off|status
@@ -2237,6 +2237,27 @@ def build_parser():
     s.add_argument("--yes", "-y", action="store_true", help="do not ask")
     s.add_argument("--json", action="store_true", help="JSON output (status)")
     s.set_defaults(func=admin("cmd_power"))
+
+    s = add("gateway", "this server as the default gateway of chosen devices (a PS5 asks UPnP only of its gateway)",
+            "  status                  forwarding, fake-igd's chain, the devices and their packets (default)\n"
+            "  on | off                switch the gateway for devices on (fake-igd's firewall must be on) or off\n"
+            "  add IP --name NAME      a device: forwarded only for it, only toward the router\n"
+            "      [--mac MAC | --mac-seen]   its MAC too (--mac-seen: as this server's neighbour table has it)\n"
+            "  del IP                  the device taken away (the last one: the forwarding goes off with it)\n"
+            "  keep | back             a change on trial kept, or put back now\n"
+            "  Only in and out the interface of the default route, toward the router - never between this\n"
+            "  server's networks; fake-igd's FORWARD chain ends in a DROP. IPv6 is never forwarded." + pages_note,
+            "examples:\n  sudo upnp gateway\n  sudo upnp gateway add 192.168.40.95 --name \"PS5 Pro\" --mac-seen\n"
+            "  sudo upnp gateway on\n  sudo upnp gateway keep")
+    s.add_argument("what", nargs="?", choices=("status", "on", "off", "add", "del", "keep", "back"),
+                   metavar="status|on|off|add|del|keep|back")
+    s.add_argument("ip", nargs="?", help="the device's IPv4 address (add, del)")
+    s.add_argument("--name", default="", help="what it is (add)")
+    s.add_argument("--mac", default="", help="its MAC address (add)")
+    s.add_argument("--mac-seen", action="store_true", help="its MAC from this server's neighbour table (add)")
+    s.add_argument("--yes", "-y", action="store_true", help="do not ask")
+    s.add_argument("--json", action="store_true", help="JSON output (status)")
+    s.set_defaults(func=admin("cmd_gateway"))
 
     s = add("selinux", "SELinux on this server: how it stands, a step, the report (otp --selinux-check, --selinux)",
             "  check             the mode now and after a restart, fake-igd's module, the labels of its files,\n"

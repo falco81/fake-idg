@@ -2490,7 +2490,33 @@ class Console(object):
             ("20", "SELinux: what it refuses, and what puts it right", lambda: self.act("selinux", "look")),
             ("21", "SELinux: put right everything that can be", self.se_fix_all),
             ("22", "SELinux: fake-igd's local rules", lambda: self.act("selinux", "rules")),
+            ("23", "Gateway for devices: how it stands", lambda: self.act("gateway")),
+            ("24", "Gateway for devices: add a device", self.gw_add),
+            ("25", "Gateway for devices: switch it on or off", self.gw_switch),
         ])
+
+    def gw_add(self):
+        """A device that uses this server as its default gateway (a PS5 asks UPnP only of its gateway)."""
+        got = self.form("Gateway for devices: add a device", [
+            {"key": "name", "label": "Name", "value": "PS5", "need": True},
+            {"key": "ip", "label": "Its IPv4 address", "need": True},
+            {"key": "mac", "kind": "choice", "label": "Its MAC", "options": [
+                ("seen", "as this server's neighbour table has it now"), ("none", "the address only")]}])
+        if got:
+            self.act("gateway", "add", got["ip"], "--name", got["name"], *(["--mac-seen"] if got.get("mac") == "seen" else []))
+
+    def gw_switch(self):
+        st = self.choose("Gateway for devices", [
+            ("on", "on - forwarded for the devices defined, only toward the router"),
+            ("off", "off - nothing is forwarded")])
+        if st and self.confirm("Gateway for devices", {
+                "on": "net.ipv4.ip_forward is turned on behind fake-igd's chain FAKE-IGD-FWD (first in FORWARD, a DROP "
+                      "at its end): only the devices defined, in and out the interface of the default route. On trial "
+                      "as every change of the firewall.",
+                "off": "Forwarding goes back off and the chain is taken away: the devices that use this server as "
+                       "their gateway reach nothing until they are given the router again."}[st],
+                "Switch it %s" % st, danger=st == "off"):
+            self.act("gateway", st, "--yes")
 
     def se_step(self):
         """otp's console se_step (1.0.236): one of the SELinux steps of Settings → SELinux, on this machine."""

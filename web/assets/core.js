@@ -47,7 +47,18 @@ function clockWords(d, seconds) {
   return pad2(d.getHours()) + ':' + pad2(d.getMinutes())
     + (seconds === false ? '' : ':' + pad2(d.getSeconds()));
 }
+/* A moment as seconds - from seconds, or from the ISO words the UPnP service writes some down in
+   ("2026-11-17T13:12:23+01:00": a mapping's "added", 1.7.15). null when it is neither. */
+function tsOf(v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (typeof v === 'number') return isFinite(v) ? v : null;
+  var s = String(v).trim();
+  if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s);
+  var ms = Date.parse(s);
+  return isFinite(ms) ? ms / 1000 : null;
+}
 function stamp(ts) {
+  ts = tsOf(ts);
   if (!ts) return '–';
   var d = new Date(ts * 1000);
   return dayWords(d) + ' ' + clockWords(d);
@@ -58,6 +69,7 @@ function shortStamp(ts) { return stamp(ts); }
     being read, so they are not given the same weight. */
 function stampCell(ts, cls) {
   var td = el('td', cls || '');
+  ts = tsOf(ts);
   if (!ts) { td.textContent = '\u2013'; return td; }
   var d = new Date(ts * 1000);
   /* The row's own moment, written on the cell that says it. Anything else
@@ -70,6 +82,7 @@ function stampCell(ts, cls) {
   return td;
 }
 function ago(ts) {
+  ts = tsOf(ts);
   if (!ts) return 'never';
   var s = Math.max(0, Math.round(Date.now() / 1000 - ts));
   if (s < 90) return s + ' s ago';

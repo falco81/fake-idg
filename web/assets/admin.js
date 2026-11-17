@@ -1360,6 +1360,7 @@ function clientsTable(rows, small, steps) {
       var st = steps[r.client], td = el('td');
       td.appendChild(stepPills(st));
       if (st && st.stopped) td.appendChild(el('div', 'muted small step-said', st.stopped));
+      if (st && st.gateway_hint) td.appendChild(gatewayHint(r.client, r.name, true));
       tr.appendChild(td);
     }
     tr.appendChild(noI18n(el('td', 'mono small', (r.ports || []).slice(0, small ? 6 : 40).join(', ') + ((r.ports || []).length > (small ? 6 : 40) ? ' …' : ''))));
@@ -1373,6 +1374,34 @@ function clientsTable(rows, small, steps) {
     tr.onclick = function () { if ($('modal').hidden) clientPeek(r.client, r); else modalOver(function () { clientPeek(r.client, r); }); };
     return tr;
   }, 'rows|No client in this window', {own: true});
+}
+/* Stopped at "answered" (1.7.15): a PS5 asks UPnP only of its DEFAULT GATEWAY - answered by fake-igd
+   while the real router is its gateway, it goes no further. The way on: this server as its gateway
+   (Settings → Gateway for devices), opened with this device filled in. */
+function gatewayHint(ip, name, small) {
+  var box = el('div', 'gw-hint' + (small ? ' small' : ' note warn'));
+  box.appendChild(el('span', '', small ? 'A PS5 asks only its default gateway. '
+    : 'A PS5 asks UPnP only of its default gateway: answered by fake-igd while the router is its gateway, it goes no further. Make this server its gateway for it - only this device, only toward the router. '));
+  if (ADMIN) {
+    var go = function (ev) {
+      if (ev) ev.stopPropagation();
+      window.GW_PREFILL = {ip: ip, name: name || ''};
+      closeModal();
+      location.hash = '#settings/gateway';
+    };
+    if (small) {
+      var a = el('a', 'fgo', 'Make this server its gateway');
+      a.onclick = go;
+      box.appendChild(a);
+    } else {
+      var row = el('div', 'btnrow gw-hint-go');
+      var b = cmdButton('Make this server its gateway', 'router', 'small primary');
+      b.onclick = go;
+      row.appendChild(b);
+      box.appendChild(row);
+    }
+  }
+  return box;
 }
 var CL = {steps: null};
 function loadClients() {
@@ -1411,6 +1440,7 @@ function clientPeek(ip, known) {
     body.appendChild(el('h3', 'peek-h', 'How far it got'));
     body.appendChild(stepPills(st || {reached: [], furthest: -1}));
     if (st && st.stopped) body.appendChild(el('p', 'note warn', 'It stopped: ' + st.stopped + '.'));
+    if (st && st.gateway_hint) body.appendChild(gatewayHint(ip, c.name, false));
     else if (!st) body.appendChild(el('p', 'muted small', 'Nothing of it in fake-igd\'s log.'));
     if (st) {
       var facts = [];

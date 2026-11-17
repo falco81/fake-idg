@@ -1429,6 +1429,73 @@ def cmd_power(M, args, cfg):
     return 0
 
 
+# ---- the gateway for devices (1.7.15) ----------------------------------------------------------------
+def cmd_gateway(M, args, cfg):
+    """upnp gateway [status|on|off|add IP --name N [--mac M|--mac-seen]|del IP|keep|back] - Settings → Gateway
+    for devices: this server as the default gateway of chosen devices, forwarding only for them, only toward
+    the router."""
+    what = args.what or "status"
+    d = api(M, "GET", "/api/gateway")
+    if what in ("on", "off", "keep", "back", "add", "del"):
+        body = {"action": what}
+        if what == "add":
+            if not args.ip or not args.name:
+                M.fail("upnp gateway add IP --name NAME [--mac MAC | --mac-seen]")
+            mac = args.mac
+            if args.mac_seen:
+                seen = api(M, "POST", "/api/gateway", {"action": "mac_seen", "ip": args.ip})
+                if not seen.get("mac"):
+                    M.fail(seen.get("message") or "no MAC seen for %s" % args.ip)
+                mac = seen["mac"]
+                M.info("its MAC, as the neighbour table has it: %s" % mac)
+            old = next((x for x in d.get("devices") or [] if x.get("ip") == args.ip), {})
+            body = {"action": "device_save", "device": {"id": old.get("id") or "", "name": args.name, "ip": args.ip,
+                                                        "mac": mac, "on": True}}
+        elif what == "del":
+            hit = next((x for x in d.get("devices") or [] if x.get("ip") == args.ip), None)
+            if not hit:
+                M.fail("%s is not one of the devices of the gateway" % (args.ip or "?"))
+            body = {"action": "device_remove", "id": hit["id"]}
+        elif what == "on" and not args.yes:
+            names = ", ".join("%s (%s)" % (x["name"], x["ip"]) for x in d.get("devices") or [] if x.get("on") is not False)
+            if not _ask("Forward the traffic of %s to the router %s?" % (names or "nobody", (d.get("net") or {}).get("router"))):
+                print("  nothing done")
+                return 1
+        r = api(M, "POST", "/api/gateway", body)
+        M.info(r.get("message") or "asked")
+        if r.get("id"):
+            got = follow_root(M, cfg, "gateway", r.get("id"), 60, "root")
+            return _said_root(M, got) if got else 1
+        return 0
+    if _out(args, d):
+        return 0
+    nv, ap, lv = d.get("net") or {}, d.get("applied") or {}, d.get("live") or {}
+    on = ap.get("on") and lv.get("ip_forward") == "1"
+    print(M.col("Gateway for devices", M.C.bold) + "  " + (M.col("forwarding ON", M.C.green) if on else
+                                                            M.col("off - nothing is forwarded", M.C.yellow)))
+    print("  %-22s %s" % ("default route", "%s via %s (this server %s/%s)" % (nv.get("defif") or "-", nv.get("router") or "-",
+                                                                         nv.get("address") or "-", nv.get("prefix") or "")))
+    print("  %-22s %s" % ("net.ipv4.ip_forward", lv.get("ip_forward") or "?"))
+    print("  %-22s %s" % ("FAKE-IGD-FWD", ("first in FORWARD" if lv.get("first") else "NOT first") + (", ends in DROP" if lv.get("ends_drop") else ", no DROP")
+                          if lv.get("chain") else "not in place"))
+    print("  %-22s %s" % ("fake-igd's firewall", "on" if lv.get("firewall") else "OFF - the gateway cannot be switched on"))
+    if ap.get("why_off"):
+        M.warn("turned off by itself: %s" % ap["why_off"])
+    t = d.get("trial") or {}
+    if t.get("id"):
+        M.warn("a change waits to be kept until %s - sudo upnp gateway keep" % _when(t.get("until")))
+    devs = d.get("devices") or []
+    if devs:
+        print()
+        M.table(["device", "address", "MAC", "on", "forwarded", "last through"],
+                [[x.get("name"), x.get("ip"), x.get("mac") or "-", "yes" if x.get("on") is not False else "no",
+                  "%s pkts" % ((x.get("counters") or {}).get("out_pkts") or 0), _when(x.get("seen")) if x.get("seen") else "-"]
+                 for x in devs])
+    else:
+        print("  no device yet - sudo upnp gateway add IP --name NAME --mac-seen")
+    return 0
+
+
 # ---- SELinux (1.7.7, otp's --selinux-check, --selinux STEP, --selinux-report) ------------------------
 def _web_helper():
     for p in (WEB_HELPER, os.path.join(os.path.dirname(LIB_DIR), "deploy", "fake_igd_web.py")):

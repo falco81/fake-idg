@@ -87,7 +87,7 @@ fi
 echo "    Python 3.14, nginx and php-fpm are kept."
 # What the panes changed of the machine itself is the machine's now, and stays: said, so it is known.
 for f in /etc/ssh/sshd_config.d/00-$APP.conf /etc/systemd/journald.conf.d/00-$APP.conf \
-         /etc/sysctl.d/90-$APP-ipv6.conf /etc/php.d/99-php2shell.ini; do
+         /etc/sysctl.d/90-$APP-ipv6.conf /etc/sysctl.d/90-$APP-gateway.conf /etc/php.d/99-php2shell.ini; do
   [[ -e "$f" ]] && echo "    kept (the machine's settings, made on the pages or by the installer): $f"
 done
 echo "Done."
