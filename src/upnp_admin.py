@@ -766,3 +766,511 @@ def firewall_do(M, args, cfg):
     for ln in (r.stdout or "").splitlines():
         (M.warn if ("refused" in ln or "would not" in ln) else M.ok)(ln)
     return r.returncode
+
+
+# ---- what the pages do, here too (otp's --api and its commands, 1.7.4) ----------------------
+# A server whose pages are down, or reached only over SSH: the panes' questions asked of
+# fake-igd-api as root on the command line - with the key only root and the API's account may
+# read (/run/fake-igd-api/cli-token), so it is a full administrator, written down in the events
+# as "root (command line)".
+RUN_DIR = os.environ.get("FAKE_IGD_RUN", "/run/fake-igd-api")
+SECRETISH = r"pass|secret|token|(^|_)key$|(^|_)pw$|pin$"
+
+
+def _run_file(M, name):
+    path = os.path.join(RUN_DIR, name)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.read().strip()
+    except PermissionError:
+        M.fail("this asks fake-igd-api as a full administrator, with a key only root may read: "
+               "sudo upnp %s" % " ".join(sys.argv[1:]))
+    except OSError:
+        M.fail("fake-igd-api is not running (%s is not there): systemctl start fake-igd-api" % path)
+
+
+def api(M, method, path, body=None, timeout=330.0, quiet=False):
+    """One question of the pages asked of fake-igd-api: its answer (a dict), or M.fail with what it said
+    (quiet: the answer with ok False instead)."""
+    import http.client
+    token, cli = _run_file(M, "api-token"), _run_file(M, "cli-token")
+    try:
+        port = int(_run_file(M, "api-port"))
+    except ValueError:
+        port = 9862
+    who = os.environ.get("SUDO_USER") or ("root" if os.geteuid() == 0 else os.environ.get("USER") or "root")
+    headers = {"X-IGD-Token": token, "X-IGD-Cli": cli, "X-IGD-Cli-Who": who, "X-IGD-Client": "127.0.0.1",
+               "Accept": "application/json", "User-Agent": "upnp/%s" % M.VERSION}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+        conn.request(method, path, body=data, headers=headers)
+        r = conn.getresponse()
+        raw = r.read()
+        status = r.status
+        conn.close()
+    except (OSError, http.client.HTTPException) as e:
+        M.fail("fake-igd-api does not answer on 127.0.0.1:%d (%s): systemctl status fake-igd-api" % (port, e))
+    try:
+        got = json.loads(raw.decode("utf-8") or "{}")
+    except ValueError:
+        got = {"ok": False, "error": raw.decode("utf-8", "replace")[:300]}
+    if not isinstance(got, dict):
+        got = {"ok": True, "answer": got}
+    if status != 200:
+        got["ok"] = False
+        got.setdefault("error", "HTTP %d" % status)
+        if not quiet:
+            M.fail(str(got.get("error")))
+    return got
+
+
+def follow_root(M, cfg, kind, ident, timeout=120, words="root"):
+    """Root's answer to one ask of a kind (web/result-KIND.json), waited for: the answer, or {}."""
+    import igd_panes as PN
+    end = time.time() + timeout
+    spin = "|/-\\"
+    n = 0
+    tty = sys.stdout.isatty()
+    while time.time() < end:
+        got = PN.root_result(cfg.get("state_dir"), kind, ident)
+        if got:
+            if tty:
+                sys.stdout.write("\r\033[K")
+            return got
+        if tty:
+            sys.stdout.write("\r%s %s ..." % (spin[n % 4], words))
+            sys.stdout.flush()
+        n += 1
+        time.sleep(0.5)
+    if tty:
+        sys.stdout.write("\r\033[K")
+    M.warn("%s has not answered in %d s - is fake-igd-web.path active? (systemctl status fake-igd-web.path)"
+           % (words, timeout))
+    return {}
+
+
+def _said_root(M, got):
+    for ln in got.get("said") or []:
+        (M.ok if got.get("ok", True) else M.warn)(str(ln))
+    return 0 if got.get("ok", True) else 1
+
+
+def _out(args, got):
+    if getattr(args, "json", False):
+        print(json.dumps(got, indent=1, ensure_ascii=False, default=str))
+        return True
+    return False
+
+
+def cmd_api(M, args, cfg):
+    """upnp api METHOD PATH [BODY|-] - any question of the pages (otp --api)."""
+    import re
+    method = (args.method or "").upper()
+    if method not in ("GET", "POST") or not (args.path or "").startswith("/api/"):
+        M.fail("upnp api GET|POST /api/... [BODY]   e.g. upnp api GET /api/db")
+    body = None
+    if args.body is not None:
+        raw = sys.stdin.read() if args.body == "-" else args.body
+        try:
+            body = json.loads(raw or "{}")
+        except ValueError:
+            M.fail('the body is JSON: \'{"action": "..."}\'')
+        if not isinstance(body, dict):
+            M.fail("the body is a JSON object")
+
+        def keys(o):
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    yield str(k)
+                    yield from keys(v)
+            elif isinstance(o, list):
+                for v in o:
+                    yield from keys(v)
+        secretish = sorted({k for k in keys(body) if re.search(SECRETISH, k, re.I)})
+        if args.body != "-" and secretish:
+            M.fail("%s - a secret is not taken written out on the command line, where ps and the shell's "
+                   "history show it: give the body on stdin (upnp api POST PATH - < file)" % ", ".join(secretish))
+    if method == "GET" and body:
+        M.fail("a GET takes no body - its arguments go in the path: /api/events?q=word")
+    got = api(M, method, args.path, body if method == "POST" else None)
+    print(json.dumps(got, indent=1, ensure_ascii=False, default=str))
+    return 0
+
+
+def cmd_events(M, args, cfg):
+    """upnp events - fake-igd's own events (otp --events): sign-ins, settings, root's work."""
+    from urllib.parse import urlencode
+    q = {"per": max(10, min(1000, args.limit or 40))}
+    if args.search:
+        q["q"] = args.search
+    if args.kind:
+        q["kind"] = args.kind
+    if args.hours:
+        q["since"] = int(time.time() - args.hours * 3600)
+    got = api(M, "GET", "/api/events?" + urlencode(q))
+    if _out(args, got):
+        return 0
+    rows = got.get("events") or []
+    if args.limit and args.limit < 10:
+        rows = rows[:args.limit]
+    tone = {"warn": M.C.yellow, "error": M.C.red, "bad": M.C.red}
+    out = []
+    for e in reversed(rows):
+        lvl = str(e.get("level") or "info")
+        out.append([M.col(_when(e.get("at")), M.C.dim), e.get("kind") or "",
+                    M.col(lvl, tone.get(lvl, "")) if lvl in tone else lvl,
+                    e.get("who") or "", e.get("addr") or "", M.col(e.get("words") or e.get("text") or "",
+                                                                   tone.get(lvl, ""))])
+    M.table(["when", "kind", "level", "who", "from", "what"], out, empty="(no events)")
+    if got.get("q_error"):
+        M.warn("the search: %s" % got["q_error"])
+    print(M.col("  %d of %d shown · kinds: %s" % (len(rows), got.get("total", len(rows)),
+                                                 ", ".join(got.get("kinds") or [])), M.C.dim))
+    return 0
+
+
+def cmd_check(M, args, cfg):
+    """upnp check - every part looked at, as the pages' alerts do it (otp --check). Exit 1 on a problem."""
+    health = api(M, "GET", "/api/health", quiet=True)
+    al = api(M, "GET", "/api/alerts", quiet=True)
+    if _out(args, {"health": health, "alerts": al}):
+        return 0 if not al.get("problems") else 1
+    print(M.col("fake-igd %s on %s - every part" % (M.VERSION, health.get("node") or "?"), M.C.bold))
+    rows = [["the API", M.col("answers", M.C.green) if health.get("ok") else M.col(health.get("error") or "no",
+                                                                                M.C.red)],
+            ["the database", M.col("opens", M.C.green) if (health.get("database") or {}).get("ok")
+             else M.col("does not open", M.C.red)],
+            ["accounts", str(health.get("users", "?"))],
+            ["fake-igd.service", _state(M, str(health.get("service") or "?"))]]
+    for k, v in rows:
+        print("  %-20s %s" % (k, v))
+    probs = al.get("problems") or []
+    if not al.get("ok", True) and not probs:
+        M.warn("the alerts could not be read: %s" % al.get("error"))
+    print()
+    if not probs:
+        M.ok("nothing is wrong")
+        return 0
+    for p in probs:
+        say = M.warn if p.get("level") != "bad" else None
+        line = "%s - %s%s" % (p.get("title"), p.get("said") or "",
+                              M.col("  (Settings → %s)" % p["pane"], M.C.dim) if p.get("pane") else "")
+        if say:
+            say(line)
+        else:
+            print(M.col("✘ ", M.C.red, M.C.bold) + line)
+    return 1
+
+
+def cmd_backup(M, args, cfg):
+    """upnp backup [status|now|verify] - the backups of Settings → Backups (otp --rbackup-*)."""
+    what = args.what or "status"
+    if what in ("now", "verify"):
+        r = api(M, "POST", "/api/backup", {"action": "run" if what == "now" else "verify"})
+        M.info(r.get("message") or "started")
+        return _follow_job(M, "/api/backup/job")
+    got = api(M, "GET", "/api/backup")
+    if _out(args, got):
+        return 0
+    print(M.col("Backups of %s" % (got.get("node") or "?"), M.C.bold))
+    ts = got.get("targets") or []
+    M.table(["destination", "kind", "on", "where", "last"],
+            [[t.get("name") or t.get("id"), t.get("kind") or "", M.col("on", M.C.green) if t.get("on")
+              else M.col("off", M.C.dim), t.get("where") or t.get("host") or t.get("path") or "",
+              _when(t.get("last_at") or (t.get("last") or {}).get("at") if isinstance(t.get("last"), dict)
+                    else t.get("last_at"))] for t in ts], empty="(no destination - Settings → Backups)")
+    runs = got.get("runs") or []
+    if runs:
+        print()
+        M.table(["made", "by", "result"], [[_when(r.get("at") or r.get("began")), r.get("by") or "",
+                                            M.col(r.get("said") or ("ok" if r.get("ok") else "failed"),
+                                                  M.C.green if r.get("ok") else M.C.red)] for r in runs[-10:]])
+    if got.get("next"):
+        print(M.col("  next: %s" % _when(got["next"]), M.C.dim))
+    j = got.get("job") or {}
+    if j.get("running"):
+        M.info("%s is going on: %s" % (j.get("what"), j.get("says")))
+    return 0
+
+
+def _follow_job(M, path):
+    last = None
+    while True:
+        j = (api(M, "GET", path) or {}).get("job") or {}
+        whole = max(1, int(j.get("whole") or 1))
+        pc = int(100 * min(whole, int(j.get("done") or 0)) / whole)
+        words = j.get("says") or j.get("what") or ""
+        if sys.stdout.isatty():
+            sys.stdout.write("\r\033[K%s %s" % (bar(M, pc), words[:60]))
+            sys.stdout.flush()
+        elif words != last:
+            print("%3d %% %s" % (pc, words))
+        last = words
+        if not j.get("running"):
+            break
+        time.sleep(1)
+    if sys.stdout.isatty():
+        sys.stdout.write("\n")
+    if j.get("error"):
+        M.fail(j["error"])
+    r = j.get("result")
+    M.ok(r.get("message") if isinstance(r, dict) and r.get("message") else "%s: done" % (j.get("what") or "it"))
+    return 0
+
+
+def cmd_db(M, args, cfg):
+    """upnp db [status|check|copy|tidy|vacuum] - the database (Settings → Database)."""
+    what = args.what or "status"
+    if what != "status":
+        r = api(M, "POST", "/api/db", {"action": what})
+        if _out(args, r):
+            return 0
+        (M.ok if r.get("good", True) else M.warn)(r.get("message") or "done")
+        return 0 if r.get("good", True) else 1
+    d = api(M, "GET", "/api/db")
+    if _out(args, d):
+        return 0
+    print(M.col("The database", M.C.bold))
+    for k, v in (("file", d.get("where")), ("engine", d.get("version")),
+                 ("size", "%.1f MB" % ((d.get("size") or 0) / 1048576.0)),
+                 ("the key of its secrets", "%s%s" % (d.get("key"), "" if d.get("key_there")
+                                                      else M.col("  - NOT THERE", M.C.red, M.C.bold))),
+                 ("events kept", "%s day(s)" % d.get("events_keep_days") if d.get("events_keep_days") else "for ever"),
+                 ("a copy every day", "at %s, %s kept in %s" % (d.get("at"), d.get("keep"), d.get("backup_dir"))
+                  if d.get("daily") else "off"),
+                 ("last copy", _when(d.get("last_copy")))):
+        print("  %-24s %s" % (k, v))
+    print()
+    M.table(["table", "rows", "bytes"], [[t.get("table"), t.get("rows"), t.get("bytes")]
+                                         for t in d.get("tables") or []])
+    if d.get("copies"):
+        print()
+        M.table(["copy", "bytes", "made"], [[c.get("name"), c.get("bytes"), _when(c.get("at"))]
+                                            for c in d["copies"][-10:]])
+    return 0
+
+
+def cmd_updates(M, args, cfg):
+    """upnp updates [status|check|start|stop|reboot] - the operating system's updates (otp --updates)."""
+    what = args.what or "status"
+    if what in ("check", "start", "stop", "reboot"):
+        body = {"action": what}
+        if what == "start":
+            body.update({"security": bool(args.security), "reboot": args.reboot or "ask"})
+        if what in ("start", "reboot") and not args.yes:
+            if not _ask("%s?" % ("Update the operating system now" if what == "start"
+                                  else "Restart this machine now")):
+                return 1
+        r = api(M, "POST", "/api/osup", body)
+        M.info(r.get("message") or "asked")
+        if what in ("check", "start") and not args.no_follow:
+            return _follow_osup(M)
+        return 0
+    d = api(M, "GET", "/api/osup")
+    if _out(args, d):
+        return 0
+    c = d.get("check") or {}
+    j = d.get("job") or {}
+    print(M.col("The operating system's updates (dnf)", M.C.bold))
+    print("  %-22s %s" % ("last looked", "%s - %s" % (_when(c.get("at")), c.get("state") or "never")))
+    if c.get("error"):
+        M.warn(c["error"])
+    print("  %-22s %s" % ("waiting", M.col("%s update(s), %s for security" % (c.get("count", 0), c.get("security", 0)),
+                                          M.C.yellow if c.get("count") else M.C.green)))
+    if c.get("reboot_now") or d.get("reboot"):
+        M.warn("a restart is needed: %s" % ", ".join(c.get("reboot_why") or []))
+    if j:
+        print("  %-22s %s" % ("the last run", "%s, %s %s%%" % (j.get("kind"), j.get("state"), j.get("pct"))))
+    for p in (c.get("packages") or [])[:40]:
+        print("    " + M.col(p if isinstance(p, str) else (p.get("name") or json.dumps(p)), M.C.dim))
+    return 0
+
+
+def _follow_osup(M):
+    last = -1
+    while True:
+        d = api(M, "GET", "/api/osup")
+        j = d.get("job") or {}
+        pc = int(j.get("pct") or 0)
+        lines = d.get("lines") or []
+        for ln in lines[max(0, last):] if last >= 0 else lines[-5:]:
+            print(M.col("  " + str(ln if isinstance(ln, str) else ln.get("text", ln)), M.C.dim))
+        last = len(lines)
+        if j.get("state") != "running":
+            break
+        if sys.stdout.isatty():
+            print(bar(M, pc), j.get("phase") or "")
+        time.sleep(2)
+    (M.ok if j.get("state") == "done" else M.warn)("%s: %s" % (j.get("kind") or "dnf", j.get("state") or "?"))
+    return 0 if j.get("state") == "done" else 1
+
+
+def cmd_time(M, args, cfg):
+    """upnp time [status|sync] - the clock and its time servers (otp --ntp, --ntp-sync)."""
+    if args.what == "sync":
+        r = api(M, "POST", "/api/time", {"action": "sync"})
+        M.info(r.get("message") or "asked")
+        got = follow_root(M, cfg, "time", r.get("id"), 60, "root steps the clock")
+        return _said_root(M, got) if got else 1
+    d = api(M, "GET", "/api/time")
+    if _out(args, d):
+        return 0
+    n = d.get("now") or {}
+    print(M.col("The time", M.C.bold))
+    print("  %-22s %s" % ("this machine", time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(n.get("time") or
+                                                                                          time.time()))))
+    print("  %-22s %s" % ("chrony", M.col("running", M.C.green) if n.get("chrony") else M.col("not running",
+                                                                                          M.C.yellow)))
+    tr = n.get("tracking") or {}
+    for k in ("ref", "reference", "stratum", "offset", "system_time", "leap"):
+        if tr.get(k) not in (None, ""):
+            print("  %-22s %s" % (k.replace("_", " "), tr[k]))
+    srcs = n.get("sources") or []
+    if srcs:
+        M.table(["server", "state", "stratum", "offset"],
+                [[s.get("name") or s.get("address"), s.get("state") or "", s.get("stratum") or "",
+                  s.get("offset") or ""] for s in srcs])
+    return 0
+
+
+def cmd_pane_test(M, args, cfg):
+    """upnp mail-test ADDRESS · siem-test · proxy-test [URL] · snmp-trap - a test, as the pane's button."""
+    what = args.cmd
+    if what == "mail-test":
+        if not args.target:
+            M.fail("upnp mail-test ADDRESS")
+        r = api(M, "POST", "/api/mail", {"action": "test", "to": args.target, "kind": args.kind or "short",
+                                         "via": "straight" if args.straight else "queue"})
+        if _out(args, r):
+            return 0 if r.get("sent") else 1
+        for st in r.get("steps") or []:
+            print(M.col("  " + (st if isinstance(st, str) else " ".join(str(x) for x in (st.values()
+                                                                                        if isinstance(st, dict)
+                                                                                        else st))), M.C.dim))
+        (M.ok if r.get("sent") else M.warn)("%s (%s ms)" % (r.get("said") or ("sent" if r.get("sent") else "not sent"),
+                                                          r.get("took_ms", "?")))
+        return 0 if r.get("sent") else 1
+    if what == "siem-test":
+        r = api(M, "POST", "/api/siem", {"action": "test"})
+        if _out(args, r):
+            return 0
+        bad = 0
+        for t, said in ((r.get("test") or {}).get("said") or {}).items():
+            if said == "sent":
+                M.ok("%s: sent" % t)
+            else:
+                bad += 1
+                M.warn("%s: %s" % (t, said))
+        return 1 if bad else 0
+    if what == "proxy-test":
+        r = api(M, "POST", "/api/proxy", {"action": "try", "url": args.target or ""})
+        if _out(args, r):
+            return 0
+        g = r.get("result") or {}
+        for st in g.get("steps") or []:
+            print(M.col("  %s" % (st if isinstance(st, str) else json.dumps(st, ensure_ascii=False)), M.C.dim))
+        (M.ok if g.get("ok") else M.warn)("%s %s: %s" % (g.get("url"), "through the proxy" if g.get("mode") == "proxy"
+                                                          else "straight", g.get("said") or
+                                                          ("reached" if g.get("ok") else "not reached")))
+        return 0 if g.get("ok") else 1
+    if what == "snmp-trap":
+        r = api(M, "POST", "/api/snmp", {"action": "trap"})
+        if _out(args, r):
+            return 0
+        M.ok(r.get("message") or "sent")
+        return 0
+    return 2
+
+
+def cmd_tls(M, args, cfg):
+    """upnp tls - the pages' certificate and TLS settings (otp --web-status)."""
+    d = api(M, "GET", "/api/tls")
+    a = api(M, "GET", "/api/acme", quiet=True)
+    if _out(args, {"tls": d, "acme": a}):
+        return 0
+    c = d.get("cert") or {}
+    pol = d.get("policy") or {}
+    print(M.col("The certificate of the pages", M.C.bold))
+    rows = [["how", d.get("how") or "?"],
+            ["subject", c.get("subject") or c.get("cn") or "-"],
+            ["issued by", c.get("issuer") or "-"],
+            ["names", ", ".join(c.get("names") or d.get("names") or []) or "-"],
+            ["valid until", _when(c.get("not_after")) if isinstance(c.get("not_after"), (int, float))
+             else (c.get("not_after") or "-")],
+            ["key", c.get("key") or "-"],
+            ["protocols", " ".join(pol.get("protocols") or []) + "  (%s)" % (pol.get("preset") or "?")],
+            ["DH parameters", pol.get("dh") or "-"],
+            ["HSTS", "%s s" % pol.get("hsts") if pol.get("hsts") else "off"],
+            ["nginx", (d.get("nginx") or {}).get("file", "") + ("" if (d.get("nginx") or {}).get("there")
+                                                                 else M.col("  - not there", M.C.yellow))],
+            ["ACME", (M.col("on", M.C.green) if a.get("on") else M.col("off", M.C.dim)) +
+             ("  %s" % a.get("directory") if a.get("on") else "")]]
+    for k, v in rows:
+        print("  %-16s %s" % (k, v))
+    if d.get("pending"):
+        M.warn("a certificate request waits for its certificate")
+    return 0
+
+
+def cmd_acme(M, args, cfg):
+    """upnp acme [status|order] - the certificate by ACME (otp --acme, --acme-order)."""
+    if args.what == "order":
+        r = api(M, "POST", "/api/acme", {"action": "order"})
+        M.info(r.get("message") or "ordered")
+        seen = 0
+        while True:
+            d = api(M, "GET", "/api/acme")
+            w = d.get("work") or {}
+            log = d.get("log") or []
+            for ln in log[seen:] if seen else []:
+                print(M.col("  " + (ln if isinstance(ln, str) else (ln.get("said") or json.dumps(ln))), M.C.dim))
+            seen = len(log) or seen
+            if not w.get("busy"):
+                break
+            if w.get("says"):
+                sys.stdout.write("\r\033[K… %s" % w["says"][:70] if sys.stdout.isatty() else "")
+            time.sleep(2)
+        st = (d.get("card") or {}).get("state") or {}
+        (M.ok if st.get("ok") else M.warn)(st.get("said") or "the order has ended")
+        return 0 if st.get("ok") else 1
+    d = api(M, "GET", "/api/acme")
+    if _out(args, d):
+        return 0
+    card = d.get("card") or {}
+    print(M.col("The certificate by ACME", M.C.bold))
+    for k, v in (("on", M.col("yes", M.C.green) if d.get("on") else M.col("no", M.C.dim)),
+                 ("the CA", d.get("directory")), ("names", ", ".join(d.get("names") or []) or d.get("names_words")),
+                 ("challenge", d.get("challenge")), ("the certificate now", card.get("how")),
+                 ("valid until", _when(card.get("not_after")) if isinstance(card.get("not_after"), (int, float))
+                  else (card.get("not_after") or "-")),
+                 ("renewed", card.get("due") or "-"),
+                 ("last order", (card.get("state") or {}).get("said") or "-")):
+        print("  %-20s %s" % (k, v))
+    return 0
+
+
+def cmd_net(M, args, cfg):
+    """upnp net - the network of this machine as the pages read it (otp --net)."""
+    d = api(M, "GET", "/api/net")
+    if _out(args, d):
+        return 0
+    n = d.get("now") or {}
+    print(M.col("The network of %s" % (n.get("hostname") or "?"), M.C.bold))
+    print("  %-16s %s" % ("NetworkManager", M.col("yes", M.C.green) if n.get("nm") else M.col("no", M.C.yellow)))
+    print("  %-16s %s" % ("gateway", "%s %s" % (n.get("gw4") or "-", n.get("gw4_dev") or "")))
+    if n.get("gw6"):
+        print("  %-16s %s" % ("gateway (IPv6)", "%s %s" % (n.get("gw6"), n.get("gw6_dev") or "")))
+    print("  %-16s %s" % ("DNS", ", ".join(n.get("dns") or []) or "-"))
+    devs = n.get("devices") or []
+    if devs:
+        print()
+        M.table(["device", "state", "connection", "addresses"],
+                [[x.get("dev") or x.get("device") or x.get("name"), x.get("state") or "", x.get("con") or "",
+                  ", ".join(x.get("ip4") or x.get("addresses") or [])] for x in devs])
+    if d.get("trial"):
+        M.warn("a change of the network is on trial - Settings → Network")
+    return 0

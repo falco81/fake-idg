@@ -49,6 +49,11 @@ VERSION = U.VERSION
 RUN_DIR = os.environ.get("FAKE_IGD_RUN", "/run/fake-igd-api")
 TOKEN_FILE = os.path.join(RUN_DIR, "api-token")
 PORT_FILE = os.path.join(RUN_DIR, "api-port")
+# The command line's own key (1.7.4, otp's --api): `sudo upnp api ...` and the commands built on it
+# ask this API as a full administrator with it. Readable by this account alone (and root) - never
+# by the pages' group, so the pages cannot pass for the command line.
+CLI_FILE = os.path.join(RUN_DIR, "cli-token")
+CLI_TOKEN = [""]
 WEB_GROUP = "fake-igd-web"
 STARTED = time.time()
 
@@ -652,7 +657,19 @@ class Handler(BaseHTTPRequestHandler):
         a = self.headers.get("X-IGD-Client") or ""
         return a if re.match(r"^[0-9A-Fa-f:.]{2,45}\Z", a) else "?"
 
+    def cli_who(self):
+        """root on the command line (upnp api ...), with the key only it may read: a full administrator."""
+        got = self.headers.get("X-IGD-Cli") or ""
+        if not got or not CLI_TOKEN[0] or not hmac.compare_digest(got.encode(), CLI_TOKEN[0].encode()):
+            return None
+        name = re.sub(r"[^A-Za-z0-9._@-]", "", self.headers.get("X-IGD-Cli-Who") or "")[:32] or "root"
+        return {"name": "%s (command line)" % name, "role": "fulladmin", "must_change": 0, "note": "",
+                "source": "cli"}
+
     def who(self, need=None):
+        cli = self.cli_who()
+        if cli is not None:
+            return cli
         tok = self.headers.get("X-IGD-Session") or ""
         idle = 60 * int(CFG.get("session_idle_minutes") or 120)
         u = STORE[0].session(tok, idle) if tok else None
@@ -960,17 +977,22 @@ def write_run_files(port):
         os.chmod(RUN_DIR, 0o750)
     except (KeyError, OSError):
         gid = None
-    for name, text in ((TOKEN_FILE, TOKEN[0]), (PORT_FILE, str(port))):
+    for name, text, mode in ((TOKEN_FILE, TOKEN[0], 0o640), (PORT_FILE, str(port), 0o640),
+                             (CLI_FILE, CLI_TOKEN[0], 0o600)):
         tmp = name + ".new"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o640)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
         with os.fdopen(fd, "w") as f:
             f.write(text + "\n")
-        if gid is not None:
+        if gid is not None and mode & 0o040:
             try:
                 os.chown(tmp, -1, gid)
             except OSError:
                 pass
-        os.chmod(tmp, 0o640)
+        os.chmod(tmp, mode)
         os.replace(tmp, name)
 
 
@@ -1009,6 +1031,7 @@ def main():
     db = os.environ.get("FAKE_IGD_DB") or os.path.join(cfg["state_dir"], "fake-igd.db")
     STORE[0] = ST.Store(db)
     TOKEN[0] = secrets.token_urlsafe(32)
+    CLI_TOKEN[0] = secrets.token_urlsafe(32)
     port = args.port or int(cfg.get("api_port") or 9862)
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)

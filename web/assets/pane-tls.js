@@ -166,7 +166,8 @@
       if (ac.care && ac.state && ac.state.ok === false) chips.appendChild(el('span', 'cchip warn', 'the last order failed'));
     }
     if (!d.how) chips.appendChild(el('span', 'cchip dim', 'as install.sh made it'));
-    else chips.appendChild(el('span', 'cchip dim', {uploaded: 'uploaded here', 'self-signed': 'made here, self-signed', ACME: 'from the CA (ACME)'}[d.how] || d.how));
+    /* How the one there came - said only while there is one (a file gone since is not "uploaded here"). */
+    else if (info) chips.appendChild(el('span', 'cchip dim', {uploaded: 'uploaded here', 'self-signed': 'made here, self-signed', ACME: 'from the CA (ACME)'}[d.how] || d.how));
     card.appendChild(chips);
     /* What root did with the last ask. */
     var r = d.root;

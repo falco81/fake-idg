@@ -1,6 +1,7 @@
 /* pane-people.js - Settings → Accounts: otp's loadUsers, its lockouts and its popups (1.6.1).
    The accounts with their row tools (the role, who it is and its sign-ins, a new password, off/on,
-   remove, the second step reset), who is signed in now, who is locked out - and the settings of
+   remove, somebody's columns put back, the second step reset), who is signed in now, who is locked
+   out, the card of the columns of the tables (#cols-card, wired by admin.js) - and the settings of
    the pane (sect-people) drawn by the shell. */
 'use strict';
 

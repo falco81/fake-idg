@@ -278,6 +278,9 @@ def hosts_lines(text, n, old_ips, old_host):
     olds = set(x for x in (old_host, old_host.split(".")[0] if old_host else "") if x)
     new4 = n["addr4"].split("/")[0] if n["addr4"] else ""
     new6 = n["addr6"].split("/")[0] if n.get("addr6") else ""
+    # The names are rewritten only when the name changes (a short static name: "vm vm" never).
+    rename = bool(n["hostname"]) and n["hostname"] != old_host
+    mine = [x for i, x in enumerate((name, short)) if x and x not in (name, short)[:i]]
     out, named = [], False
     for line in text.splitlines():
         body, sep, comment = line.partition("#")
@@ -290,15 +293,18 @@ def hosts_lines(text, n, old_ips, old_host):
             ip = (new6 if ":" in ip else new4)
             if not ip:
                 continue
-        if any(x.lower() in olds for x in names) and name:
-            names = [name, short] + [x for x in names if x.lower() not in olds and x.lower() not in (name, short)]
+        if rename and any(x.lower() in olds for x in names):
+            # the old name, short or whole (vm, vm.example.com), makes way for the new one
+            old_short = old_host.split(".")[0] if old_host else ""
+            names = mine + [x for x in names if x.lower() not in olds and x.lower() not in (name, short)
+                            and not (old_short and x.lower().startswith(old_short + "."))]
         if any(x.lower() in (name, short) for x in names):
             named = True
         if [ip] + names != f:
             line = " ".join([ip] + names) + ("    #" + comment if sep else "")
         out.append(line)
     if name and not named and new4:
-        out.append("%s %s %s    # this machine - written by fake-igd" % (new4, name, short))
+        out.append("%s %s    # this machine - written by fake-igd" % (new4, " ".join(mine)))
     return "\n".join(out) + "\n"
 
 
