@@ -373,7 +373,39 @@ EOF
     rm -f /usr/local/bin/$APP-ports
     install -D -m 0644 "$SOURCE_DIR/completion/upnp" /etc/bash_completion.d/upnp
     install -D -m 0644 "$SOURCE_DIR/console/zz-upnp-console.sh" /etc/profile.d/zz-upnp-console.sh
+    # The package's file, with the three lines Settings → Disks and logs sets (rotate, the period,
+    # maxsize) kept as they are here: an upgrade put "weekly, rotate 12" back until root was asked
+    # again, up to six hours later.
+    local lr_old=""
+    [[ -f /etc/logrotate.d/$APP && ! -L /etc/logrotate.d/$APP ]] && lr_old="$(cat /etc/logrotate.d/$APP)"
     install -m 0644 "$SOURCE_DIR/logrotate/$APP" /etc/logrotate.d/$APP
+    if [[ -n "$lr_old" ]]; then
+        LR_OLD="$lr_old" "$VENV/bin/python" -I - /etc/logrotate.d/$APP <<'PY' || warn "the log rotation set on the pages could not be kept - Settings → Disks and logs puts it back"
+import os, re, sys
+p = sys.argv[1]
+old, new = os.environ["LR_OLD"], open(p, encoding="utf-8").read()
+def one(pat, text):
+    m = re.search(r"(?m)^\s*(%s)\s*$" % pat, text)
+    return m.group(1) if m else None
+keep = one(r"rotate\s+\d+", old)
+every = one(r"daily|weekly|monthly|yearly", old)
+size = one(r"maxsize\s+\S+", old)
+out = new
+if keep:
+    out = re.sub(r"(?m)^(\s*)rotate\s+\d+\s*$", lambda m: m.group(1) + keep, out)
+if every:
+    out = re.sub(r"(?m)^(\s*)(daily|weekly|monthly|yearly)\s*$", lambda m: m.group(1) + every, out)
+if size:
+    if re.search(r"(?m)^\s*maxsize\s+\S+\s*$", out):
+        out = re.sub(r"(?m)^(\s*)maxsize\s+\S+\s*$", lambda m: m.group(1) + size, out)
+    else:
+        out = re.sub(r"(?m)^(\s*)(rotate\s+\d+)\s*$", lambda m: m.group(1) + m.group(2) + "\n" + m.group(1) + size,
+                     out, count=1)
+if out != new:
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(out)
+PY
+    fi
     good "upnp → $OPT_DIR/upnp.py   (upnp --help, upnp --console)"
     if [[ -f /etc/upnp-console-login ]]; then
         note "the console at login: $(head -n 1 /etc/upnp-console-login) (kept as it is)"
@@ -561,10 +593,12 @@ make_cert() {           # make_cert "name1 name2" - self-signed, for the names a
     local names="$1" san="" n
     for n in $names; do san+="DNS:$n,"; done
     for n in $(host_ips); do san+="IP:$n,"; done
-    openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
+    # The key never readable by others, not even for the moment before the chmod (umask 077).
+    ( umask 077; openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
         -keyout "$CERT_DIR/fake-igd.key" -out "$CERT_DIR/fake-igd.pem" \
-        -subj "/CN=${names%% *}" -addext "subjectAltName=${san%,}" 2>/dev/null
+        -subj "/CN=${names%% *}" -addext "subjectAltName=${san%,}" 2>/dev/null )
     chmod 0600 "$CERT_DIR/fake-igd.key"
+    chmod 0644 "$CERT_DIR/fake-igd.pem"
 }
 cert_selfmade() {       # the certificate there is one of ours: signed by itself, made by this installer
     local c="$CERT_DIR/fake-igd.pem"
@@ -655,7 +689,8 @@ install_pages() {
             cp -p "$CERT_DIR/fake-igd.pem" "$CERT_DIR/fake-igd.pem.before-$VERSION"
             cp -p "$CERT_DIR/fake-igd.key" "$CERT_DIR/fake-igd.key.before-$VERSION"
             make_cert "$names"
-            good "the self-signed certificate made again, for $names and $(host_ips | paste -sd' ' -) (it lacked: $lacks)"
+            local ips2_; ips2_="$(host_ips | paste -sd' ' -)"
+            good "the self-signed certificate made again, for $names${ips2_:+ and $ips2_} (it lacked: $lacks)"
             note "the browser asks once more to accept it; the one before is fake-igd.pem.before-$VERSION"
         elif [[ -n "$lacks" ]]; then
             good "$CERT_DIR/fake-igd.pem is already there (yours - kept; it does not name: $lacks)"
@@ -667,7 +702,8 @@ install_pages() {
         note "Browsers will complain about it. Replace $CERT_DIR/fake-igd.pem and fake-igd.key with a"
         note "real pair and reload nginx (or ./install.sh --upgrade --cert FILE --key FILE)."
         make_cert "$SERVER_NAME"
-        good "made for $SERVER_NAME and $(host_ips | paste -sd' ' -)"
+        local ips_; ips_="$(host_ips | paste -sd' ' -)"
+        good "made for $SERVER_NAME${ips_:+ and $ips_}"
     fi
 
     # ---- nginx ---------------------------------------------------------------------
@@ -768,7 +804,9 @@ open_firewall() {
         return 0
     fi
     if [[ -z "$on" ]]; then
-        if [[ "$FIREWALL" == "on" ]] || { iptables_in_use && { [[ -z "$DO_UPGRADE" ]] || [[ " $ADDED_KEYS " == *" firewall "* ]]; }; }; then
+        # By itself only where config.json is new (or lacked the key): the installer run again never
+        # switches back on a firewall somebody switched off on the pages (1.7.5).
+        if [[ "$FIREWALL" == "on" ]] || { iptables_in_use && { [[ "$ADDED_KEYS" == "(all)" ]] || [[ " $ADDED_KEYS " == *" firewall "* ]]; }; }; then
             cfg_set firewall true
             on=1
             say "iptables is in use here: fake-igd's own chain FAKE-IGD-IN is put in place (as otp's OTP-IN)"
@@ -901,10 +939,12 @@ accounts() {
         usermod -a -G "$WEB_GROUP" "$POOL_USER"
         good "$POOL_USER may read the API token, through $WEB_GROUP - and nothing else of fake-igd's"
     fi
+    # Nobody is put into the group by itself any more (1.7.5, as otp: its group holds its own
+    # accounts only). A member reads the logs and the state without sudo - and may also write
+    # config.json (0660 root:$SERVICE_USER, the pages' API saves into it), which root's helpers
+    # put into nginx and the firewall. Said, for whoever wants it.
     if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]] && ! id -nG "$SUDO_USER" | tr ' ' '\n' | grep -qx "$SERVICE_USER"; then
-        usermod -aG "$SERVICE_USER" "$SUDO_USER"
         ADDED_USER=$SUDO_USER
-        good "$SUDO_USER may read the logs with upnp without sudo (after signing in again)"
     fi
 }
 
@@ -963,10 +1003,13 @@ if [[ -n "$DO_UPGRADE" ]]; then
                 warn "the upgrade stopped half way (exit $rc); the services are started again as they are"
                 systemctl restart $APP fake-igd-api >/dev/null 2>&1 || true
                 if ! upgrade_stays_up && upgrade_put_old_back; then
-                    upgrade_stays_up && warn "the version before runs again - look at what stopped the new one (journalctl -u fake-igd -u fake-igd-api)"
+                    if upgrade_stays_up; then
+                        UPGRADE_BACK="${OLD_VERSION:-the version before}"
+                        warn "the version before runs again - look at what stopped the new one (journalctl -u fake-igd -u fake-igd-api)"
+                    fi
                 fi
             fi
-            upgrade_tell failed "install.sh --upgrade stopped (exit $rc) - its output says why"
+            upgrade_tell failed "install.sh --upgrade stopped (exit $rc)${UPGRADE_BACK:+ - $UPGRADE_BACK runs again}; its output says why"
         fi
         return 0
     }
@@ -1110,7 +1153,10 @@ say "The command:    upnp --help            (status | test | ports | log -f | dn
 say "Configuration:  $CONFIG_FILE  (the pages, or sudo upnp config set ...)"
 say "Upgrades:       sudo upnp upgrade online   (or the pages: Settings → Upgrades)"
 say "Taking it away: sudo $OPT_DIR/uninstall.sh [--purge]"
-[[ -n "$ADDED_USER" ]] && warn "$ADDED_USER was added to the group $SERVICE_USER - sign out and in again."
+if [[ -n "$ADDED_USER" ]]; then
+    say "Without sudo:   sudo usermod -aG $SERVICE_USER $ADDED_USER   (then sign in again: upnp status, log ...)"
+    say "                - the group $SERVICE_USER may also change $CONFIG_FILE"
+fi
 echo
 say "Remember: UPnP on the router must be OFF, and this server in the same VLAN as the PS5."
 exit 0

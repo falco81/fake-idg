@@ -129,6 +129,9 @@ def shown_value(key, v):
     return "" if v is None else str(v)
 
 
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
 def check_value(key, raw):
     """(value, None) or (None, error) - the same checks `config set` makes, without leaving."""
     default = DEFAULTS[key]
@@ -158,6 +161,12 @@ def check_value(key, raw):
                 pass
             return None, "%s: invalid JSON list" % key
         v = [x.strip() for x in raw.split(",") if x.strip()]
+        if any(CONTROL_RE.search(x) for x in v):
+            return None, "%s: no control characters" % key
+        if key in ("interfaces", "exclude_interfaces"):
+            bad = [x for x in v if not re.match(r"^[A-Za-z0-9_.:@-]{1,15}\Z", x)]
+            if bad:
+                return None, "%s: %r is not the name of an interface" % (key, bad[0])
         if key in ("allowed_clients", "web_allow"):
             import ipaddress
             for x in v:
@@ -167,6 +176,9 @@ def check_value(key, raw):
                     return None, "%s: %r is not an IP address or subnet" % (key, x)
         return v, None
     v = raw.strip()
+    # Nothing that would break a line of the log, a header or a page (1.7.5): "a\x00b" was taken.
+    if CONTROL_RE.search(v):
+        return None, "%s: no control characters (a new line, a tab, NUL ...)" % key
     if key in ALLOWED_VALUES:
         v2 = v.upper() if key == "log_level" else v.lower()
         if v2 not in ALLOWED_VALUES[key]:

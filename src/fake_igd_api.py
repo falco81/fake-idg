@@ -853,8 +853,10 @@ class Handler(BaseHTTPRequestHandler):
             self.who("fulladmin")
             d = settings_save(self.body().get("changes"), me["name"], self.addr(), self)
             d["ok"] = True
-            d["message"] = ("saved - %s" % ("fake-igd.service is restarted with it" if d.get("restart")
-                                            else "in effect") if d["saved"] else "nothing was changed")
+            # otp's words: how many were saved, and what follows from it.
+            d["message"] = " ".join(["%d setting(s) saved." % len(d["saved"])] + (
+                ["fake-igd.service is restarted with them."] if d.get("restart") else []) + (
+                ["Root puts nginx's allow list and the firewall in place."] if d.get("root") else []))
             return d
         if path == "/api/apply" and method == "POST":
             self.who("fulladmin")
@@ -1051,25 +1053,57 @@ def write_run_files(port):
         os.replace(tmp, name)
 
 
+BG = {"threads": {}, "said": {}}
+
+
+def _bg_say(name, words):
+    """A part of the background that went wrong, written to the journal - once until it says something else."""
+    if BG["said"].get(name) != words:
+        BG["said"][name] = words
+        sys.stderr.write("api: %s in the background: %s\n" % (name, words))
+
+
+def _bg_one(name, fn):
+    try:
+        fn()
+        BG["said"].pop(name, None)
+    except SystemExit as e:                             # the command line's readers end the program: not here
+        _bg_say(name, "a file it reads could not be read (%s)" % (e.code or "permission"))
+    except Exception as e:                              # noqa: BLE001 - one part does not stop the rest
+        _bg_say(name, "%s: %s" % (type(e).__name__, e))
+
+
 def background():
-    """Once a minute: old sign-ins away; once a day: a look at upgrade_url."""
+    """Once a minute: old sign-ins away; once a day: a look at upgrade_url; each pane's background().
+    Each part on its own (1.7.5): one that raises does not skip the others, and a pane whose background
+    still runs from the minute before (a server that does not answer) is not started again beside itself,
+    nor does it hold up the rest - every pane's runs in a thread of its own."""
     while True:
-        try:
-            STORE[0].tidy_sessions(60 * int(CFG.get("session_idle_minutes") or 120))
-            load_cfg()
+        _bg_one("sign-ins", lambda: STORE[0].tidy_sessions(60 * int(CFG.get("session_idle_minutes") or 120)))
+        _bg_one("settings", load_cfg)
+
+        def look():
             if CFG.get("upgrade_check"):
                 last = STORE[0].meta_json("upgrade:online") or {}
                 url = CFG.get("upgrade_url") or ON.DEFAULT_URL
                 if last.get("url") != url or time.time() - float(last.get("at") or 0) > ON.EVERY_S:
                     look_now("")
-            for mod in PN.MODULES:
-                if hasattr(mod, "background"):
-                    try:
-                        mod.background(PN.Ctx(None, "BG", "", {}, None, STORE[0], CFG, mod, STORE[0].add_event))
-                    except Exception as e:              # noqa: BLE001 - one pane does not stop the rest
-                        sys.stderr.write("api: %s in the background: %s\n" % (getattr(mod, "NAME", "?"), e))
-        except Exception as e:                          # noqa: BLE001
-            sys.stderr.write("api: the background step: %s\n" % e)
+        _bg_one("upgrade look", look)
+        for mod in PN.MODULES:
+            if not hasattr(mod, "background"):
+                continue
+            name = getattr(mod, "NAME", "?")
+            was = BG["threads"].get(name)
+            if was is not None and was.is_alive():
+                _bg_say(name, "still busy with the minute before - not started again")
+                continue
+
+            def run(mod=mod, name=name):
+                _bg_one(name, lambda: mod.background(PN.Ctx(None, "BG", "", {}, None, STORE[0], CFG, mod,
+                                                            STORE[0].add_event)))
+            t = threading.Thread(target=run, name="bg-%s" % name, daemon=True)
+            BG["threads"][name] = t
+            t.start()
         time.sleep(60)
 
 

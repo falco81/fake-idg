@@ -328,8 +328,16 @@ BROWSER = Browser()
 
 def browse(ctx):
     import shutil
+    ctx.need("readonly")
     if not shutil.which("avahi-browse"):
-        raise ValueError("avahi-browse is missing - dnf install avahi-tools")
+        # an answer, not an HTTP error (1.7.5): the tab says it where the list is, and asks again later
+        try:
+            seq = int(ctx.arg("after", "0"))
+        except ValueError:
+            seq = 0
+        return {"running": False, "started": None, "ended": "avahi-browse is missing", "ended_at": None,
+                "seq": seq, "events": [], "services": [], "at": time.time(),
+                "error": "avahi-browse is missing - dnf install avahi-tools", "hint": ""}
     BROWSER.start(fresh=ctx.arg("fresh", "") == "1")
     try:
         after = int(ctx.arg("after", "0"))

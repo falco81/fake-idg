@@ -533,7 +533,9 @@ def alert_mail(ctx, new, still, gone, events, test=False, left=0):
     bad = [p for p in new + still if p["level"] == "bad"]
     if test:
         subject, band, title = "[fake-igd] A test alert - %s" % site, AL_COLORS["info"][0], "Alerts come through"
-    elif new or still:
+    elif new or (still and not gone):
+        # (otp's said "N problems" also when the mail is about something over - what is still wrong is
+        # named in it too; the subject then said nothing of what was over)
         n = len(new) + len(still)
         subject = "[fake-igd] %s %d %s - %s" % ("✖" if bad else "⚠", n, "problem" if n == 1 else "problems", site)
         band, title = AL_COLORS["bad" if bad else "warn"][0], "Something is wrong"
@@ -594,7 +596,8 @@ def send(ctx, subject, text, page, to, kind, keys):
     except Exception as e:                              # noqa: BLE001
         entry.update(ok=False, said=str(e)[:200])
     st = state(ctx.store)
-    if not entry["ok"] and entry.get("queued") != "waiting":
+    if not entry["ok"] and entry.get("queued") != "waiting" and kind != "test":
+        # mail failing holds the alerts back for 15 min - not a test to a wrong address (1.7.5)
         st["fail_at"] = entry["at"]
     st["log"] = ([entry] + st["log"])[:50]
     put_state(ctx.store, st)

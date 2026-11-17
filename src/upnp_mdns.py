@@ -221,7 +221,7 @@ def check(key, value, sysif=None):
     if kind == "int":
         if v == "":
             return ""
-        if not v.isdigit():
+        if not re.fullmatch(r"[0-9]{1,9}", v):
             raise MdnsError("%s takes a whole number" % key)
         return v
     items = [x.strip() for x in re.split(r"[,\s]+", v) if x.strip()]

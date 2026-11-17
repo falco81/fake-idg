@@ -16,6 +16,10 @@ echo "==> Stopping the services"
 for u in $APP fake-igd-api fake-igd-upgrade.path fake-igd-web.path; do
   systemctl disable --now "$u" 2>/dev/null || true
 done
+# root's helpers may be at work (a pane's ask, an upgrade): stopped too, not left running from /opt
+for u in fake-igd-web.service fake-igd-upgrade.service; do
+  systemctl stop "$u" 2>/dev/null || true
+done
 
 echo "==> The firewall"
 if [[ -x /usr/bin/python3 && -f /opt/$APP/fake_igd_web.py ]] && command -v iptables >/dev/null; then
@@ -49,11 +53,19 @@ for b in /usr/bin/upnp /usr/bin/$APP-ports /usr/local/bin/$APP-ports; do
 done
 systemctl daemon-reload
 rm -rf "/opt/${APP:?}"
+# SELinux: the label install.sh gave the API's run folder (so the pages read its token)
+if command -v semanage >/dev/null 2>&1; then
+  semanage fcontext -d '/run/fake-igd-api(/.*)?' 2>/dev/null || true
+fi
+rm -rf /run/fake-igd-api /run/fake-igd-osup-proxy.json /run/fake-igd-osup.lock
 
 if [[ $PURGE -eq 1 ]]; then
   echo "==> --purge: the configuration, the logs, the state, the database, the users"
   rm -rf "/etc/${APP:?}" "/var/log/${APP:?}" "/var/lib/${APP:?}" "/var/log/${APP:?}-python-build.log" \
-         /etc/upnp-console-login /etc/nginx/certs/$APP.pem /etc/nginx/certs/$APP.key
+         "/var/lib/${APP:?}-net" "/var/lib/${APP:?}-root" \
+         /etc/upnp-console-login /etc/nginx/certs/$APP.pem /etc/nginx/certs/$APP.key \
+         /etc/nginx/certs/$APP.pem.before-* /etc/nginx/certs/$APP.key.before-* \
+         /etc/nginx/conf.d/$APP.conf.before-* /etc/php-fpm.d/$APP.conf.before-*
   pkill -u "$APP" 2>/dev/null && sleep 1 || true
   for u in "$APP" "$APP-www"; do userdel "$u" 2>/dev/null || true; done
   for g in "$APP" "$APP-www" "$APP-web"; do groupdel "$g" 2>/dev/null || true; done
@@ -61,4 +73,9 @@ else
   echo "    kept: /etc/$APP, /var/log/$APP, /var/lib/$APP (the database with the accounts), the users (--purge takes them)"
 fi
 echo "    Python 3.14, nginx and php-fpm are kept."
+# What the panes changed of the machine itself is the machine's now, and stays: said, so it is known.
+for f in /etc/ssh/sshd_config.d/00-$APP.conf /etc/systemd/journald.conf.d/00-$APP.conf \
+         /etc/sysctl.d/90-$APP-ipv6.conf /etc/php.d/99-php2shell.ini; do
+  [[ -e "$f" ]] && echo "    kept (the machine's settings, made on the pages or by the installer): $f"
+done
 echo "Done."

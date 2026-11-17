@@ -163,7 +163,7 @@ function msDraw() {
       tr.appendChild(noI18n(el('td', 'muted small', msTxt(s.txt).join(' · ').slice(0, 120))));
       tr.onclick = function () { msPeek(s); };
       return tr;
-    }, 'plain|' + (b.hint || (all.length ? 'Nothing matches' : 'Nothing is shown on mDNS now - or avahi-daemon is not running')), {own: true}));
+    }, 'plain|' + (b.error || b.hint || (all.length ? 'Nothing matches' : 'Nothing is shown on mDNS now - or avahi-daemon is not running')), {own: true}));
   } else {
     var evs = AV.events.filter(function (e) { return e.event === 'start' || (!e.before && msMatch(e, q, ty, ifc, pr)); }).slice().reverse();
     $('ms-said').textContent = num(evs.filter(function (e) { return e.event !== 'start'; }).length) + ' change(s) · ' + state;
@@ -186,7 +186,7 @@ function msDraw() {
       tr.appendChild(noI18n(el('td', 'mono', e.address ? e.address + (e.port ? ':' + e.port : '') : '')));
       tr.onclick = function () { msPeek(e); };
       return tr;
-    }, 'plain|Nothing has come or gone since this page has been open' + (b.running ? ' - it is followed, new ones show here as they come' : ''), {own: true}));
+    }, 'plain|' + (b.error || 'Nothing has come or gone since this page has been open') + (b.running ? ' - it is followed, new ones show here as they come' : ''), {own: true}));
   }
   explainWhatWasDrawn(host);
 }

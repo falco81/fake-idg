@@ -41,6 +41,7 @@ SEALED = "sealed:1:"
 SEALED2 = "sealed:2:"
 _CACHE = {}
 _LOCK = threading.Lock()
+_SETTINGS_LOCK = threading.RLock()
 LOOK_S = 1.0
 
 
@@ -222,20 +223,26 @@ def seal_settings(store, keys):
     they were typed): called from a module's on_saved and background. Returns how many it sealed."""
     import json
     try:
-        saved = json.loads(store.get_meta("settings") or "{}")
-    except ValueError:
-        return 0
-    if not isinstance(saved, dict):
-        return 0
-    n = 0
-    for k in keys:
-        v = saved.get(k)
-        if isinstance(v, str) and v and not is_sealed(v):
-            saved[k] = seal(store, v)
-            n += 1
-    if n:
-        store.set_meta("settings", json.dumps(saved))
-    return n
+        import igd_panes as PN
+        lock = PN.SAVE_LOCK                                 # the same lock as a save of the pages
+    except (ImportError, AttributeError):
+        lock = _SETTINGS_LOCK
+    with lock:
+        try:
+            saved = json.loads(store.get_meta("settings") or "{}")
+        except ValueError:
+            return 0
+        if not isinstance(saved, dict):
+            return 0
+        n = 0
+        for k in keys:
+            v = saved.get(k)
+            if isinstance(v, str) and v and not is_sealed(v):
+                saved[k] = seal(store, v)
+                n += 1
+        if n:
+            store.set_meta("settings", json.dumps(saved))
+        return n
 
 
 def setting(store, key_, default=""):

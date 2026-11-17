@@ -304,6 +304,13 @@ def post(ctx):
     if act == "add":
         words += " (%s%s)" % ("sudo, " if a["sudo"] else "", "a password set" if a.get("hash") else "no password")
     ctx.event("%s %s" % (by, words), "warn")
+    if act in ("add", "drop", "set"):
+        # Who may sign in changed: SSH keys reads its users again after it (asks are served in order),
+        # or a user made here was "not a user who may sign in" there until its next read.
+        try:
+            ctx.ask_root({"do": "list", "user": "root"}, kind="sshkeys")
+        except (OSError, ValueError):
+            pass
     return dict(view(ctx), message="done within a few seconds")
 
 

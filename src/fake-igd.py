@@ -135,6 +135,7 @@ ALLOWED_NETS = []
 EXTERNAL_IP = ""
 UUID_ROOT = UUID_WAN = UUID_CONN = ""
 ADVERTS = []
+BOOTID = 1                       # BOOTID.UPNP.ORG: the start of the service (seconds), as miniupnpd - it grows
 
 
 # ================================================================ konfigurace
@@ -489,9 +490,9 @@ def device_xml(local_ip):
         "<deviceList><device><deviceType>%(conn)s</deviceType><friendlyName>WAN Connection Device</friendlyName>"
         "<manufacturer>fake-igd</manufacturer><modelName>WAN Connection Device</modelName><UDN>uuid:%(u3)s</UDN>"
         "<serviceList>%(ipc)s</serviceList></device></deviceList></device></deviceList>"
-        "<presentationURL>%(base)s/</presentationURL></device></root>"
+        "<presentationURL>https://%(ip)s/admin/</presentationURL></device></root>"
     ) % {
-        "base": base, "igd": T_IGD, "wan": T_WAN, "conn": T_CONN, "ver": VERSION,
+        "base": base, "ip": local_ip, "igd": T_IGD, "wan": T_WAN, "conn": T_CONN, "ver": VERSION,
         "u1": UUID_ROOT, "u2": UUID_WAN, "u3": UUID_CONN,
         "cic": svc(S_CIC, "urn:upnp-org:serviceId:WANCommonIFC1", "/WANCfg.xml", "/ctl/CmnIfCfg", "/evt/CmnIfCfg"),
         "ipc": svc(S_IPC, "urn:upnp-org:serviceId:WANIPConn1", "/WANIPCn.xml", "/ctl/IPConn", "/evt/IPConn"),
@@ -1023,24 +1024,36 @@ class SSDP:
             except Exception as e:  # noqa: BLE001
                 log.warning("net: checking the interfaces failed: %s", e)
 
-    # ---- NOTIFY ssdp:alive
-    def send_notify(self, name, ip):
+    # ---- NOTIFY ssdp:alive / ssdp:byebye (UDA 1.1: BOOTID.UPNP.ORG grows with each start, CONFIGID with
+    # each change of the descriptions - here the IGD version)
+    def send_notify(self, name, ip, nts="ssdp:alive"):
         try:
             self.tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(ip))
         except OSError as e:
             log.debug("ssdp: IP_MULTICAST_IF %s failed: %s", ip, e)
             return
         for nt, usn in ADVERTS:
-            msg = ssdp_message("NOTIFY * HTTP/1.1", [
-                ("HOST", "%s:%d" % (SSDP_GROUP, SSDP_PORT)), ("CACHE-CONTROL", "max-age=1800"),
-                ("LOCATION", location_url(ip)), ("SERVER", SERVER_HDR), ("NT", nt), ("NTS", "ssdp:alive"),
-                ("USN", usn), ("BOOTID.UPNP.ORG", "1"), ("CONFIGID.UPNP.ORG", "1")])
+            head = [("HOST", "%s:%d" % (SSDP_GROUP, SSDP_PORT))]
+            if nts == "ssdp:alive":
+                head += [("CACHE-CONTROL", "max-age=1800"), ("LOCATION", location_url(ip)), ("SERVER", SERVER_HDR)]
+            head += [("NT", nt), ("NTS", nts), ("USN", usn), ("BOOTID.UPNP.ORG", str(BOOTID)),
+                     ("CONFIGID.UPNP.ORG", str(IGD_V))]
             try:
-                self.tx.sendto(msg, (SSDP_GROUP, SSDP_PORT))
+                self.tx.sendto(ssdp_message("NOTIFY * HTTP/1.1", head), (SSDP_GROUP, SSDP_PORT))
             except OSError as e:
                 log.debug("ssdp: NOTIFY on %s failed: %s", name, e)
                 return
-        log.debug("ssdp: NOTIFY ssdp:alive sent on %s (%s)", name, ip)
+        log.debug("ssdp: NOTIFY %s sent on %s (%s)", nts, name, ip)
+
+    def byebye(self):
+        """ssdp:byebye on every interface - the service stops: the devices forget it at once, not after
+        CACHE-CONTROL's half an hour."""
+        if CFG.get("mode") != "active":
+            return
+        with self.lock:
+            for name, ip in list(self.joined.items()):
+                self.send_notify(name, ip, "ssdp:byebye")
+        log.info("ssdp: NOTIFY ssdp:byebye sent on %s", ", ".join(sorted(self.joined)) or "no interface")
 
     def notify_loop(self):
         while True:
@@ -1053,19 +1066,35 @@ class SSDP:
 
     # ---- M-SEARCH
     def listen(self):
-        while True:
+        pkt = getattr(socket, "IP_PKTINFO", None)
+        if pkt:
             try:
-                data, (src, sport) = self.rx.recvfrom(4096)
+                self.rx.setsockopt(socket.IPPROTO_IP, pkt, 1)
+            except OSError:
+                pkt = None
+        while True:
+            arrived = None
+            try:
+                if pkt:
+                    data, anc, _flags, (src, sport) = self.rx.recvmsg(4096, socket.CMSG_SPACE(12))
+                    for level, kind, raw in anc:
+                        if level == socket.IPPROTO_IP and kind == pkt and len(raw) >= 4:
+                            try:
+                                arrived = socket.if_indextoname(struct.unpack("i", raw[:4])[0])
+                            except OSError:
+                                arrived = None
+                else:
+                    data, (src, sport) = self.rx.recvfrom(4096)
             except OSError as e:
                 log.warning("ssdp: receiving failed: %s", e)
                 time.sleep(1)
                 continue
             try:
-                self.handle(data, src, sport)
+                self.handle(data, src, sport, arrived)
             except Exception as e:  # noqa: BLE001
                 log.warning("ssdp: a packet from %s failed: %s", src, e)
 
-    def handle(self, data, src, sport):
+    def handle(self, data, src, sport, arrived=None):
         lines = data.decode("utf-8", "ignore").split("\r\n")
         if not lines or not lines[0].upper().startswith("M-SEARCH"):
             if lines and lines[0].upper().startswith("NOTIFY") and src not in self.joined.values():
@@ -1102,6 +1131,16 @@ class SSDP:
             self.seen[k] = time.time()
         else:
             log.debug("ssdp: M-SEARCH %s ST=%s", src, st)
+        with self.lock:
+            joined = dict(self.joined)
+        own = src in joined.values()
+        if arrived and arrived not in joined and not own:
+            # a search that came in on an interface fake-igd does not use (interfaces / exclude_interfaces):
+            # not answered, as miniupnpd answers only on its listening interfaces
+            if loud:
+                log.info("ssdp: %s not answered - its search came in on %s, which fake-igd does not use "
+                         "(interfaces, exclude_interfaces)", src, arrived)
+            return
         if CFG["mode"] == "passive":
             if loud:
                 log.info("ssdp: %s not answered - the mode is passive (ST=%s)", src, st)
@@ -1113,6 +1152,10 @@ class SSDP:
                          IGD_V, "; igd_version 2 answers :2" if IGD_V == 1 and TYPE_RE.match(st) else "")
             return
         local_ip = local_ip_for(src)
+        if local_ip not in joined.values() and not own and arrived in joined:
+            # the way back to it goes out by another address (another subnet, a route): LOCATION is the
+            # address of the interface its search came in on, which it reached
+            local_ip = joined[arrived]
         try:
             mx = max(0, min(int(hdr.get("MX", "1")), 5))
         except ValueError:
@@ -1140,7 +1183,7 @@ class SSDP:
                 s.sendto(ssdp_message("HTTP/1.1 200 OK", [
                     ("CACHE-CONTROL", "max-age=1800"), ("DATE", formatdate(usegmt=True)), ("EXT", ""),
                     ("LOCATION", location_url(local_ip)), ("SERVER", SERVER_HDR), ("ST", st), ("USN", usn),
-                    ("BOOTID.UPNP.ORG", "1"), ("CONFIGID.UPNP.ORG", "1")]), (src, sport))
+                    ("BOOTID.UPNP.ORG", str(BOOTID)), ("CONFIGID.UPNP.ORG", str(IGD_V))]), (src, sport))
             (log.info if loud else log.debug)(
                 "ssdp: answered %s:%d - ST=%s USN=%s LOCATION=%s%s", src, sport, answers[0][0], answers[0][1],
                 location_url(local_ip), (" (and %d more)" % (len(answers) - 1)) if len(answers) > 1 else "")
@@ -1213,7 +1256,7 @@ def summary():
 
 # ================================================================ main
 def main():
-    global CFG, ALLOWED_NETS, UUID_ROOT, UUID_WAN, UUID_CONN, ADVERTS
+    global CFG, ALLOWED_NETS, UUID_ROOT, UUID_WAN, UUID_CONN, ADVERTS, BOOTID
     ap = argparse.ArgumentParser(description="fake-igd - fake UPnP IGD that only logs port mapping requests")
     ap.add_argument("--config", default=DEFAULT_CONFIG)
     ap.add_argument("--summary", action="store_true", help="print requested ports from the request log and exit")
@@ -1241,6 +1284,7 @@ def main():
         save_mappings()
 
     set_version(CFG.get("igd_version"))
+    BOOTID = max(1, int(time.time()) & 0x7FFFFFFF)
     host = socket.gethostname()
     UUID_ROOT = str(uuid.uuid5(uuid.NAMESPACE_DNS, "fake-igd-root-" + host))
     UUID_WAN = str(uuid.uuid5(uuid.NAMESPACE_DNS, "fake-igd-wan-" + host))
@@ -1285,6 +1329,10 @@ def main():
 
     def stop(signum, _frame):
         log.info("service: stopping (signal %d)", signum)
+        try:
+            ssdp.byebye()
+        except Exception as e:  # noqa: BLE001
+            log.debug("ssdp: byebye failed: %s", e)
         threading.Thread(target=httpd.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, stop)

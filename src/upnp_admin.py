@@ -823,6 +823,9 @@ def api(M, method, path, body=None, timeout=330.0, quiet=False):
     if status != 200:
         got["ok"] = False
         got.setdefault("error", "HTTP %d" % status)
+        if status in (401, 403) and got.get("code") in ("signed_out", ""):
+            got["error"] = ("fake-igd-api did not take the command line's key (%s) - it was restarted just now, or "
+                            "%s is not the one it wrote: try again" % (got["error"], os.path.join(RUN_DIR, "cli-token")))
         if not quiet:
             M.fail(str(got.get("error")))
     return got

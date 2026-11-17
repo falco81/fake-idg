@@ -412,8 +412,11 @@ def _say(ctx, kind, words, level="info", who=None):
     ctx.store.add_event(kind, words, level, who if who is not None else (ctx.me or {}).get("name", ""), ctx.addr)
 
 
-def _made_password():
-    return secrets.token_urlsafe(12)
+def _made_password(S):
+    """A password made here: 16 characters, or as many as "A password at least" asks when it is more
+    (it was always 16, and refused by the policy it was made for)."""
+    least = int(S.policy().get("password_min") or ST.MIN_PASSWORD)
+    return secrets.token_urlsafe(max(16, least) * 3 // 4 + 1)[:max(16, least)]
 
 
 def _is_me(ctx, name):
@@ -472,7 +475,7 @@ def users_post(ctx):
         pw = str(b.get("password") or "")
         made = ""
         if not pw:
-            pw = made = _made_password()
+            pw = made = _made_password(S)
         must = bool(b.get("must_change", 1))
         S.add_user(name, pw, role, str(b.get("note") or ""), must_change=must)
         _say(ctx, "account", "%s made the account %s (%s)%s" % (who, name, ST.ROLE_WORDS.get(role, role),
@@ -503,7 +506,7 @@ def users_post(ctx):
         pw = str(b.get("password") or "")
         made = ""
         if not pw:
-            pw = made = _made_password()
+            pw = made = _made_password(S)
         must = bool(b.get("must_change", 1))
         S.set_password(name, pw, must_change=must)
         n = S.end_sessions_of(name, but_token=_token(ctx) if _is_me(ctx, name) else None)

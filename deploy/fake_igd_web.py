@@ -847,11 +847,13 @@ def write_result(d):
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640, dir_fd=dfd)
         with os.fdopen(fd, "w") as f:
             json.dump(d, f)
-        try:
-            import grp
-            os.chown(name, 0, grp.getgrnam("fake-igd").gr_gid, dir_fd=dfd)
-        except (KeyError, OSError):
-            pass
+            # By the open file, never by its name (1.7.4): the folder is the API account's, which could
+            # put a link to a file of root's there between the write and a chown by name.
+            try:
+                import grp
+                os.fchown(f.fileno(), 0, grp.getgrnam("fake-igd").gr_gid)
+            except (KeyError, OSError):
+                pass
         os.replace(name, "result.json", src_dir_fd=dfd, dst_dir_fd=dfd)
     finally:
         os.close(dfd)
@@ -955,11 +957,11 @@ def write_kind_result(kind, d):
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640, dir_fd=dfd)
         with os.fdopen(fd, "w") as f:
             json.dump(d, f, default=str)
-        try:
-            import grp
-            os.chown(name, 0, grp.getgrnam("fake-igd").gr_gid, dir_fd=dfd)
-        except (KeyError, OSError):
-            pass
+            try:                                # by the open file, never by its name (see write_result)
+                import grp
+                os.fchown(f.fileno(), 0, grp.getgrnam("fake-igd").gr_gid)
+            except (KeyError, OSError):
+                pass
         os.replace(name, "result-%s.json" % kind, src_dir_fd=dfd, dst_dir_fd=dfd)
     finally:
         os.close(dfd)

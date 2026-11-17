@@ -1848,8 +1848,26 @@ def seal_old(ctx):
         put_targets(ctx, targets(ctx))
 
 
+AGAIN_BY = "the schedule, again"
+
+
+def again_due(ctx, today):
+    """otp's rb_tick_again (1.0.278): today's scheduled backup failed - tried again an hour later, three
+    times at most the same day. One failure (the destination down at 04:15) left a weekly schedule a week
+    more without a backup."""
+    if ctx.store.get_meta("backup:day") != today or not any(t.get("enabled") for t in targets(ctx)):
+        return False
+    mine = [r for r in runs(ctx) if str(r.get("by") or "") in ("", AGAIN_BY)
+            and time.strftime("%Y-%m-%d", time.localtime(float(r.get("at") or 0))) == today]
+    if not mine or mine[0].get("ok") or len(mine) >= 4:
+        return False
+    if time.time() - float(mine[0].get("at") or 0) < 3600:
+        return False
+    return time.time() - float(ctx.store.get_meta("backup:again:at") or 0) >= 3600
+
+
 def background(ctx):
-    """The scheduled backup, and the weekly try."""
+    """The scheduled backup (tried again when it failed), and the weekly try."""
     seal_old(ctx)
     if not ctx.setting("rbackup"):
         return
@@ -1865,6 +1883,13 @@ def background(ctx):
         ctx.store.set_meta("backup:day", today)
         try:
             start_job(ctx, "the backup", "the schedule", lambda p: run(ctx, "", None, p))
+        except ValueError:
+            pass
+        return
+    if again_due(ctx, today) and not job_view()["running"]:
+        ctx.store.set_meta("backup:again:at", str(time.time()))
+        try:
+            start_job(ctx, "the backup", "the schedule", lambda p: run(ctx, AGAIN_BY, None, p))
         except ValueError:
             pass
         return

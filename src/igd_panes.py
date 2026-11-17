@@ -36,6 +36,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import time
 import traceback
 
@@ -190,8 +191,18 @@ def check(key, raw):
     return v, None
 
 
+# meta "settings" is read, changed and written back: one at a time (1.7.5) - two saves at once (two
+# browsers, a pane and the background's sealing) each wrote back what it had read, and one was lost.
+SAVE_LOCK = threading.RLock()
+
+
 def save(store, changes):
     """{key: value} checked and kept; returns {module_name: {key: value}} of what changed."""
+    with SAVE_LOCK:
+        return _save(store, changes)
+
+
+def _save(store, changes):
     saved = values(store)
     changed = {}
     for key, raw in changes.items():

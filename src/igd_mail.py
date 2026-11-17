@@ -508,7 +508,10 @@ def smtp_talk(store, c, host, port, security, auth, msg, to, steps, verify=True,
                      "%s · it offers: %s" % (e, " ".join(offered) or "nothing"))
                 raise MailError("signing in failed: %s" % e, steps)
         if msg is not None:
-            refused = conn.send_message(msg, to_addrs=list(to))
+            # the envelope's sender: the mail's own, or - a mail without one (kept from before) - the one
+            # set now; never smtplib's "None"
+            env_from = email.utils.parseaddr(str(msg["Sender"] or msg["From"] or ""))[1] or sender(c)[1]
+            refused = conn.send_message(msg, from_addr=env_from, to_addrs=list(to))
             if refused:
                 step("handed the message over", False, "; ".join("%s: %s" % kv for kv in refused.items()))
                 err = MailError("the server refused %s" % ", ".join(refused), steps,
@@ -519,11 +522,13 @@ def smtp_talk(store, c, host, port, security, auth, msg, to, steps, verify=True,
     except smtplib.SMTPRecipientsRefused as e:
         step("handed the message over", False, "; ".join(
             "%s: %s %s" % (k, v[0], words(v[1])) for k, v in e.recipients.items()))
-        raise MailError("the server would not take mail for %s" % ", ".join(e.recipients), steps,
+        raise MailError("the server would not take mail for %s: %s" % (", ".join(e.recipients), "; ".join(
+            "%s %s" % (v[0], words(v[1])) for v in e.recipients.values())[:300]), steps,
                         permanent=all(int((v or (0,))[0] or 0) >= 500 for v in e.recipients.values()))
     except smtplib.SMTPSenderRefused as e:
         step("handed the message over", False, "%s %s" % (e.smtp_code, words(e.smtp_error or b"")))
-        raise MailError("the server would not take mail from %s" % e.sender, steps,
+        raise MailError("the server would not take mail from %s: %s %s" % (e.sender, e.smtp_code,
+                                                                       words(e.smtp_error or b"")), steps,
                         permanent=int(e.smtp_code or 0) >= 500)
     except (smtplib.SMTPException, OSError) as e:
         step("talking to it", False, e)

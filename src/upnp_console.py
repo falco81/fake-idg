@@ -435,6 +435,8 @@ class Console(object):
             ("13", "mDNS reflector (avahi)", self.m_mdns),
             ("14", "Upgrades", self.m_upgrade),
             ("15", "Web pages and accounts", self.m_web),
+            ("16", "Backups and the database", self.m_backups),
+            ("17", "Certificates, updates, time, tests", self.m_ops),
         ]
         os.environ.setdefault("ESCDELAY", "25")
         os.environ.setdefault("NCURSES_NO_UTF8_ACS", "1")
@@ -2408,16 +2410,80 @@ class Console(object):
             ("6", "Versions", lambda: self.act("version")),
             ("7", "Every part looked at (upnp check)", lambda: self.act("check")),
             ("8", "fake-igd's own events", lambda: self.act("events", "-n", "300")),
-            ("9", "The database", lambda: self.act("db")),
-            ("10", "Check the database", lambda: self.act("db", "check")),
-            ("11", "The backups", lambda: self.act("backup")),
-            ("12", "A backup now", lambda: self.run_here("backup", "now")),
-            ("13", "The operating system's updates", lambda: self.act("updates")),
-            ("14", "Look for system updates now", lambda: self.run_here("updates", "check")),
-            ("15", "The time and its servers", lambda: self.act("time")),
-            ("16", "The network of this machine", lambda: self.act("net")),
-            ("17", "The certificate of the pages", lambda: self.act("tls")),
         ])
+
+    # ---- 1.7.5: as otp's console - Backups; Certificates, updates, tests (through `upnp api`) ----
+    def m_backups(self):
+        def db_do(what, title, words):
+            if self.confirm(title, words, title):
+                self.act("db", what)
+        return self.sub("Backups and the database", [
+            ("1", "The database: its tables and copies", lambda: self.act("db")),
+            ("2", "A copy of the database now", lambda: self.act("db", "copy")),
+            ("3", "Check the database (integrity_check)", lambda: self.act("db", "check")),
+            ("4", "Forget the events kept long enough", lambda: db_do(
+                "tidy", "Tidy the database", "The events older than they are kept are forgotten.")),
+            ("5", "Give the disk back (VACUUM)", lambda: self.act("db", "vacuum")),
+            ("6", "Backups to other machines: how they went", lambda: self.act("backup")),
+            ("7", "Backups to other machines: one now", lambda: self.run_here("backup", "now")),
+            ("8", "Try the newest backup (fetched back)", lambda: self.run_here("backup", "verify")),
+        ])
+
+    def m_ops(self):
+        def mail_test():
+            got = self.form("A test mail", [
+                {"key": "to", "label": "To", "need": True, "help": "an address - every step of the sending is said",
+                 "check": lambda v, _a: None if "@" in v and " " not in v.strip() else "an e-mail address"},
+                {"key": "kind", "label": "What", "kind": "choice",
+                 "options": [("short", "a short test"), ("alert", "what an alert looks like"),
+                             ("report", "the report of the period so far")]}])
+            if got:
+                self.act("mail-test", got["to"].strip(), "--kind", got["kind"])
+
+        def proxy_test():
+            got = self.form("The way out (proxy): try it", [
+                {"key": "url", "label": "Address", "value": "https://github.com/",
+                 "help": "reached as fake-igd reaches it: through the proxy where one is set"}])
+            if got:
+                self.act("proxy-test", got["url"].strip())
+
+        def order():
+            if self.confirm("Order the certificate now", "The CA is asked for a certificate of the names set "
+                            "(Settings → Automatic certificates); nginx takes it when it comes.", "Order"):
+                self.run_here("acme", "order")
+
+        def updates_start():
+            if self.confirm("Update the operating system", "dnf puts every waiting update in; a restart is "
+                            "offered where one is needed.", "Update"):
+                self.run_here("updates", "start", "--yes")
+        return self.sub("Certificates, updates, time, tests", [
+            ("1", "The certificate of the pages", lambda: self.act("tls")),
+            ("2", "The certificate by ACME: how it stands", lambda: self.act("acme")),
+            ("3", "The certificate by ACME: order it now", order),
+            ("4", "The operating system's updates", lambda: self.act("updates")),
+            ("5", "Look for system updates now", lambda: self.run_here("updates", "check")),
+            ("6", "Put the system updates in", updates_start),
+            ("7", "The time and its servers", lambda: self.act("time")),
+            ("8", "Step the clock to the servers now", lambda: self.act("time", "sync")),
+            ("9", "The network of this machine", lambda: self.act("net")),
+            ("10", "A test mail", mail_test),
+            ("11", "A test line to the syslog servers (SIEM)", lambda: self.act("siem-test")),
+            ("12", "The way out (proxy): try it", proxy_test),
+            ("13", "SNMPv3: a test trap", lambda: self.act("snmp-trap")),
+            ("14", "Any question of the pages (upnp api)", self.api_ask),
+        ])
+
+    def api_ask(self):
+        got = self.form("A question of the pages", [
+            {"key": "method", "label": "Method", "kind": "choice", "options": [("GET", "GET - read"),
+                                                                              ("POST", "POST - change")]},
+            {"key": "path", "label": "Path", "value": "/api/", "need": True,
+             "check": lambda v, _a: None if v.startswith("/api/") else "a path of the API: /api/..."},
+            {"key": "body", "label": "Body (POST)", "value": "{}",
+             "when": lambda v: v.get("method") == "POST", "help": 'JSON, e.g. {"action": "check"}'}])
+        if got:
+            self.act("api", got["method"], got["path"].strip(),
+                     *([got["body"] or "{}"] if got["method"] == "POST" else []))
 
 
     # ---- 1.4.0: upgrades, the web pages and their accounts (otp's console: Upgrades, Accounts) ----
