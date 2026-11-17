@@ -592,7 +592,9 @@ def cmd_user(M, args, cfg):
                 M.table(["STATE", "WHO", "BY", "HOW MANY", "TRIED", "LAST"],
                         [[M.col("locked out, %s left" % _span(r["until"] - now), M.C.red) if r["locked"]
                           else M.col("counting, forgotten in %s" % _span(r["forgets"] - now), M.C.yellow),
-                          M.col(r["who"] or "(no name)", M.C.bold), r["by"], "%d / %d" % (r["fails"], r["limit"]),
+                          M.col(r["who"] or "(no name)", M.C.bold),
+                          r["by"] + (" - changing a password" if str(r.get("kind", "")).startswith("password") else ""),
+                          "%d / %d" % (r["fails"], r["limit"]),
                           ", ".join(r["others"][-4:]) or "-", _when(r["last"])] for r in rows],
                         "nobody is locked out, and no wrong attempt is being counted")
                 return 0

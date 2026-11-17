@@ -1145,6 +1145,7 @@ def main():
     CLI_TOKEN[0] = secrets.token_urlsafe(32)
     port = args.port or int(cfg.get("api_port") or 9862)
     try:
+        ThreadingHTTPServer.request_queue_size = 128     # a burst of the pages' requests is queued, not reset
         httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     except OSError as e:
         sys.stderr.write("api: 127.0.0.1:%d cannot be opened: %s\n" % (port, e))

@@ -299,12 +299,13 @@ def problems(ctx, c=None):
             for r in ctx.store.lockouts():
                 if r.get("locked"):
                     who = str(r.get("who") or "?")
-                    out["guard:%s:%s" % (r.get("by"), who)] = {
+                    pw = str(r.get("kind") or "").startswith("password")
+                    out["guard:%s:%s:%s" % (r.get("kind"), r.get("by"), who)] = {
                         "level": "warn", "title": "%s %s is held back for guessing" % (
                             "The name" if r.get("by") == "name" else "The address", who), "pane": "people",
-                        "said": "%d %s, %s - no sign-in %s until %s. Settings → Accounts lets it in again." % (
+                        "said": "%d %s, %s - no %s %s until %s. Settings → Accounts lets it in again." % (
                             int(r.get("fails") or 0), r.get("words") or "wrong passwords", r.get("what") or "",
-                            "by this name" if r.get("by") == "name" else "from it", _when(r.get("until")))}
+                            "change of the password" if pw else "sign-in", "by this name" if r.get("by") == "name" else "from it", _when(r.get("until")))}
         except Exception:                               # noqa: BLE001
             pass
     if c.get("alerts_acme", True):
