@@ -151,7 +151,12 @@
         probe.disabled = !first;
         probe.onclick = function () {
           busy(probe, true);
-          api('acme', {action: 'probe'}).then(function (x) {
+          /* A port 80 that does not answer is the probe's result ({ok: false, said} with 200), not a
+             failure of asking it (otp's apiAnswer, 1.0.278): api() threw it as "HTTP 200". */
+          api('acme', {action: 'probe'}).catch(function (e) {
+            if (e && e.status >= 200 && e.status < 300 && e.data && e.data.ok === false && !e.data.error) return e.data;
+            throw e;
+          }).then(function (x) {
             busy(probe, false); AC.probe = x; drawAcme();
           }).catch(function (e) { busy(probe, false); oops(e); });
         };
