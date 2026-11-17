@@ -26,10 +26,16 @@ PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_UNIX AF_NETLINK
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 RestrictRealtime=yes
+RestrictSUIDSGID=yes
 LockPersonality=yes
+# As otp.service (1.7.6): no capability at all (1900/udp and the SOAP port are above 1024), and only the
+# system calls a service makes. AF_INET6: an ntfy server reached over IPv6 failed with EAFNOSUPPORT.
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target

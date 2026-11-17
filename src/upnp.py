@@ -155,12 +155,13 @@ def check_value(key, raw):
         if raw.strip().startswith("["):
             try:
                 v = json.loads(raw)
-                if isinstance(v, list):
-                    return [str(x) for x in v], None
             except ValueError:
-                pass
-            return None, "%s: invalid JSON list" % key
-        v = [x.strip() for x in raw.split(",") if x.strip()]
+                v = None
+            if not isinstance(v, list):
+                return None, "%s: invalid JSON list" % key
+            v = [str(x).strip() for x in v if str(x).strip()]       # and checked as the comma-separated form
+        else:
+            v = [x.strip() for x in raw.split(",") if x.strip()]
         if any(CONTROL_RE.search(x) for x in v):
             return None, "%s: no control characters" % key
         if key in ("interfaces", "exclude_interfaces"):
@@ -1068,12 +1069,30 @@ def cmd_config(args, cfg):
         raw = load_config(path, strict=True)
         errs = []
         for k, v in raw.items():
-            if k not in DEFAULTS:
+            if k == "health_allow":
+                # Who may ask /healthz - a key of the pages' (Settings → Firewall and access) with no
+                # default on purpose: never set, it is web_allow's.
+                if not isinstance(v, list):
+                    errs.append("health_allow is a list of addresses and networks")
+                else:
+                    import ipaddress
+                    for x in v:
+                        try:
+                            ipaddress.ip_network(str(x), strict=False)
+                        except ValueError:
+                            errs.append("health_allow: %r is not an address or a network" % x)
+            elif k not in DEFAULTS:
                 errs.append("unknown key %s" % k)
             elif k in ALLOWED_VALUES and str(v).lower() not in [x.lower() for x in ALLOWED_VALUES[k]]:
                 errs.append("%s=%r (allowed: %s)" % (k, v, ", ".join(ALLOWED_VALUES[k])))
             elif type(DEFAULTS[k]) is not type(v) and not (isinstance(DEFAULTS[k], int) and isinstance(v, int)):
                 errs.append("%s has type %s, expected %s" % (k, type(v).__name__, type(DEFAULTS[k]).__name__))
+            elif k not in ("ntfy_ca_file",):
+                # The same checks as config set and the pages (ranges, addresses, no control characters).
+                _v, bad = check_value(k, json.dumps(v) if isinstance(v, list) else
+                                      ("on" if v is True else "off" if v is False else v))
+                if bad:
+                    errs.append(bad)
         if errs:
             for e in errs:
                 warn(e)
@@ -1618,10 +1637,10 @@ commands by purpose:
   firewall        firewall
   notifications   notify-test
   mDNS reflector  mdns (status, services, browse, reflector, interfaces, filters, log)
-  maintenance     check, events, db, backup, clear, version
+  maintenance     check, events, db, backup, export-config, import-config, clear, version
   upgrades        upgrade (check, online, file, status, follow, log, after), updates (the system's)
   web pages       web, tls, acme, user (list, add, passwd, role, del, sessions, lockouts)
-  the machine     net, time, updates
+  the machine     net, time, updates, power
   tests           test, notify-test, mail-test, siem-test, proxy-test, snmp-trap
   what the pages do, here too   api GET|POST /api/... (any pane's question, as JSON)
   console         --console (menus, live log), --console-at-login on|off|status
@@ -2181,6 +2200,39 @@ def build_parser():
             s.add_argument("--straight", action="store_true", help="straight to the server, not by the queue")
         s.add_argument("--json", action="store_true", help="JSON output")
         s.set_defaults(func=admin("cmd_pane_test"))
+
+    s = add("export-config", "everything of this installation into one file (otp --export-config)",
+            "The settings, the panes' settings, the accounts, the backups' destinations, the firewall's rules\n"
+            "and avahi's - as Settings → Export and import → Export. Without --with-secrets the secrets are\n"
+            "left out; with it they are in, the file locked with a passphrase printed once." + pages_note,
+            "examples:\n  sudo upnp export-config /root/fake-igd-config.json\n"
+            "  sudo upnp export-config /root/fake-igd-all.json --with-secrets")
+    s.add_argument("file", metavar="FILE", help="a new file (never written over)")
+    s.add_argument("--with-secrets", action="store_true", help="with the secrets, locked with a passphrase")
+    s.set_defaults(func=admin("cmd_carry"))
+
+    s = add("import-config", "a file of export-config (or of the pages) put in (otp --import-config)",
+            "What the file holds is shown first, then put in after a yes. A locked file asks for its\n"
+            "passphrase (or UPNP_PASSPHRASE). --replace: what is not in the file is taken away." + pages_note,
+            "examples:\n  sudo upnp import-config /root/fake-igd-config.json\n"
+            "  sudo upnp import-config /root/fake-igd-all.json --replace --yes")
+    s.add_argument("file", metavar="FILE")
+    s.add_argument("--replace", action="store_true", help="exactly the file: what is not in it goes")
+    s.add_argument("--yes", "-y", action="store_true", help="do not ask")
+    s.set_defaults(func=admin("cmd_carry"))
+
+    s = add("power", "restart or power off this machine, now or later (otp --restart-nodes, --restarts)",
+            "  status            what is set for later, the last ask, the restart on a schedule (default)\n"
+            "  reboot [--in N]   restart it now or in N minutes\n"
+            "  poweroff [--in N] power it off\n"
+            "  cancel            what was set for later does not happen" + pages_note,
+            "examples:\n  sudo upnp power\n  sudo upnp power reboot --in 10")
+    s.add_argument("what", nargs="?", choices=("status", "reboot", "poweroff", "cancel"),
+                   metavar="status|reboot|poweroff|cancel")
+    s.add_argument("--in", dest="minutes", type=int, default=0, metavar="MIN", help="in so many minutes (0-1440)")
+    s.add_argument("--yes", "-y", action="store_true", help="do not ask")
+    s.add_argument("--json", action="store_true", help="JSON output (status)")
+    s.set_defaults(func=admin("cmd_power"))
 
     s = add("help", "help for a command", "upnp help <command> = upnp <command> --help")
     s.add_argument("topic", nargs="?", metavar="COMMAND")

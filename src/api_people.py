@@ -37,6 +37,7 @@ import time
 import igd_store as ST
 
 NAME = "people"
+MFA_WRONG_MOST = 5          # wrong second-step codes of one sign-in, then the password again (otp 1.0.252)
 
 SETTINGS = [
     {"key": "session_hours", "name": "A sign-in lasts (h)", "kind": "int", "default": 12, "min": 1, "max": 168,
@@ -46,9 +47,10 @@ SETTINGS = [
      "says": "How long a sign-in may sit without anything being asked before it has to be done again."},
     {"key": "login_tries", "name": "Wrong passwords before a pause", "kind": "int", "default": 5, "min": 1,
      "max": 100,
-     "says": "Wrong passwords (and codes of the second step) for one name before it has to wait. One "
-             "address may make ten times as many, 50 at least - an office behind one address is not "
-             "locked out by one person's typos."},
+     "says": "Wrong passwords (and codes of the second step) before a pause, as otp counts them: one name "
+             "may make four times as many, one address ten times as many (50 at least) - an office behind "
+             "one address is not locked out by one person's typos. One's own password typed wrong where "
+             "it is changed is counted apart: this many from an address, for five minutes."},
     {"key": "login_wait_min", "name": "...and the pause (min)", "kind": "int", "default": 15, "min": 1,
      "max": 1440, "says": "How long it waits. Locked out, above, shows who waits, and lets them try again at once."},
     {"key": "admin_2fa", "name": "A second step when signing in to these pages", "kind": "bool",
@@ -614,10 +616,10 @@ def lockouts_post(ctx):
         return {"message": "cleared", "told": []}
     if act == "clear":
         kind, who = str(b.get("kind") or ""), str(b.get("who") or "")
-        if kind not in ("admin", "admin-name") or not who:
+        if kind not in ("admin", "admin-name", "password", "password-name") or not who:
             raise ValueError("which lockout?")
-        by = "address" if kind == "admin" else "name"
-        n = ctx.store.clear_fails(by, who)
+        by = "address" if kind in ("admin", "password") else "name"
+        n = ctx.store.clear_fails(by, who, own=kind.startswith("password"))
         if not n:
             raise ValueError("that is not counted any more")
         _say(ctx, "sign-in", "%s cleared the count of wrong attempts of %s %s" % (me["name"], "the address" if
@@ -689,13 +691,14 @@ def passwd(ctx):
     me = ctx.need("readonly")
     S = ctx.store
     b = ctx.body()
-    # Counted as sign-ins are (otp 1.0.57): a session left open was a way to guess the password
-    # without end.
-    if S.too_many(ctx.addr, me["name"]):
-        raise ValueError(S._locked_words())
+    # Counted (otp 1.0.57): a session left open was a way to guess the password without end. On a
+    # count of its own (otp's kind "password", 5 min) - a typo here never locks the account out of
+    # signing in, as it did when it was counted as a wrong sign-in.
+    if S.too_many(ctx.addr, me["name"], own=True):
+        raise ValueError(S._locked_words(own=True))
     full = S.user(me["name"])
     if not ST.check_password(str(b.get("old") or ""), full["hash"]):
-        S.fail(ctx.addr, me["name"])
+        S.fail(ctx.addr, me["name"], "own")
         raise ValueError("the password you have now is not right")
     new = str(b.get("new") or "")
     if new == str(b.get("old") or ""):
@@ -764,6 +767,18 @@ def mfa_post(ctx):
             S.fail(ctx.addr, name, "code")
             _say(ctx, "sign-in", "%s: a wrong code of the second step from %s (%s)" % (name, ctx.addr, e), "warn",
                  name)
+            # Counted on this sign-in too (otp 1.0.252): at the fifth its password is asked again - a
+            # sign-in with the password could go on guessing as long as the name's count let it.
+            n = int(s["data"].get("mfa_wrong") or 0) + 1
+            try:
+                S.pending_merge(_token(ctx), {"mfa_wrong": n})
+            except ST.StoreError:
+                n = MFA_WRONG_MOST
+            if n >= MFA_WRONG_MOST:
+                S.logout(_token(ctx))
+                _say(ctx, "account", "%s: %d wrong codes of the second step - the sign-in was ended, the password "
+                     "is asked again" % (name, MFA_WRONG_MOST), "warn", name)
+                raise ST.StoreError("too many wrong codes - sign in again")
         raise
     S.mfa_passed(_token(ctx))
     _say(ctx, "sign-in", "%s gave the second step (an app) from %s" % (name, ctx.addr), "info", name)

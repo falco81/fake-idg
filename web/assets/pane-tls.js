@@ -426,7 +426,8 @@
     var mm = function (sec) { sec = Math.round(sec); return Math.floor(sec / 60) + ':' + ('0' + (sec % 60)).slice(-2); };
     var where = (TLS.last && TLS.last.machine) || 'this server';
     box.appendChild(el('div', 'cert-prog-s', p.expect_s
-      ? 'on ' + where + ' - ' + mm(gone) + ' so far, usually about ' + Math.round(p.expect_s / 60 || 1) + ' min'
+      /* "usually about 0 min" for 2048 bits (15 s; otp says it so too): under a minute said as such. */
+      ? 'on ' + where + ' - ' + mm(gone) + ' so far, usually ' + (p.expect_s < 60 ? 'under a minute' : 'about ' + Math.round(p.expect_s / 60) + ' min')
       : 'on ' + where + ' - step ' + step + ' of ' + total));
     return box;
   }

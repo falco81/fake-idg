@@ -237,8 +237,18 @@ def upgrade_post(ctx):
                 ctx.event("%s threw the package of fake-igd %s away" % (by, meta.get("version")))
             return dict(view(ctx), message="the package is forgotten")
     except OSError as e:
-        raise ValueError("the address could not be read: %s" % (getattr(e, "reason", None) or e))
+        raise ValueError(_os_words(e))
     raise ValueError("no such thing to do")
+
+
+def _os_words(e):
+    """An OSError said for what it is: no room, no right to write, or the address not read."""
+    import errno
+    if getattr(e, "errno", None) in (errno.ENOSPC, errno.EDQUOT):
+        return "no room left in %s for the package - make room on that disk (Settings → Disks and logs)" % ON.UPGRADE_DIR
+    if getattr(e, "errno", None) in (errno.EACCES, errno.EPERM, errno.EROFS):
+        return "%s cannot be written: %s - install.sh --upgrade puts its owner right" % (ON.UPGRADE_DIR, e.strerror or e)
+    return "the address could not be read: %s" % (getattr(e, "reason", None) or e)
 
 
 def upgrade_package(ctx):
@@ -257,7 +267,10 @@ def upgrade_package(ctx):
         raise ValueError("an upgrade is going on: wait for it, or stop it first")
     by = _who(ctx)
     try:
-        info = ON.take_bytes(data, older=False)
+        try:
+            info = ON.take_bytes(data, older=False)
+        except OSError as e:
+            raise ValueError(_os_words(e))
     except ValueError as e:
         ctx.event("%s sent a package that was refused: %s" % (by, e), "warn")
         raise

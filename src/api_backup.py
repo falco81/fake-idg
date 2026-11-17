@@ -1584,11 +1584,24 @@ def get_job(ctx):
     return {"job": job_view()}
 
 
+def disk_words(e):
+    """No room / no right to write, said - not "the API broke" (1.7.6)."""
+    import errno
+    if getattr(e, "errno", None) in (errno.ENOSPC, errno.EDQUOT):
+        return "no room left on the disk of %s: %s" % (getattr(e, "filename", None) or "the state folder",
+                                                       e.strerror or e)
+    return "%s: %s" % (getattr(e, "filename", None) or "a file", e.strerror or e)
+
+
 def post_backup(ctx):
     try:
         return _post_backup(ctx)
     except RbError as e:            # a name or a destination refused before any job: said, not "the API broke"
         raise ValueError(str(e))
+    except OSError as e:
+        if isinstance(e, PermissionError) and e.errno is None:
+            raise                       # the role check (read only): a 403, as before
+        raise ValueError(disk_words(e))
 
 
 def _post_backup(ctx):
@@ -1797,6 +1810,15 @@ def _post_backup(ctx):
 
 
 def post_restore(ctx):
+    try:
+        return _post_restore(ctx)
+    except OSError as e:
+        if isinstance(e, PermissionError) and e.errno is None:
+            raise                       # the role check (read only): a 403, as before
+        raise ValueError(disk_words(e))
+
+
+def _post_restore(ctx):
     """A backup file sent from the browser (base64 in JSON) - kept for an hour; what it is said if the
     password opens it. Nothing is put back until action restore."""
     ctx.need("fulladmin")

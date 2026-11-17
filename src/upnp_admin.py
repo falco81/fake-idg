@@ -59,6 +59,39 @@ def as_app(fn):
     return os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
 
 
+def as_app_value(fn):
+    """fn()'s value (JSON) worked out as the fake-igd account, as as_app does - None when it fails."""
+    if os.geteuid() != 0:
+        try:
+            return fn()
+        except BaseException:                            # noqa: BLE001
+            return None
+    r, w = os.pipe()
+
+    def child():
+        try:
+            got = json.dumps(fn())
+        except BaseException:                            # noqa: BLE001
+            got = "null"
+        os.write(w, got.encode()[:65536])
+        return 0
+    with open(os.devnull, "w") as quiet:
+        old = os.dup(1)
+        os.dup2(quiet.fileno(), 1)
+        try:
+            as_app(child)
+        finally:
+            os.dup2(old, 1)
+            os.close(old)
+    os.close(w)
+    with os.fdopen(r, "rb") as f:
+        raw = f.read()
+    try:
+        return json.loads(raw.decode() or "null")
+    except ValueError:
+        return None
+
+
 def store_of(M, cfg):
     import igd_store as ST
     path = os.environ.get("FAKE_IGD_DB") or os.path.join(cfg["state_dir"], "fake-igd.db")
@@ -587,10 +620,9 @@ def cmd_user(M, args, cfg):
         M.fail("which account? upnp user %s NAME" % what)
     pw, made = ("", False)
     if what in ("add", "passwd"):
-        try:
-            least = store_of(M, cfg).policy()["password_min"]
-        except Exception:                           # noqa: BLE001 - the store says it again
-            least = None
+        # Read as the fake-igd account (as_app_value), never by root itself: root opening the database
+        # makes its -wal/-shm root's when they are not there, and the API may not write it after.
+        least = as_app_value(lambda: store_of(M, cfg).policy()["password_min"])
         pw, made = _password_from(M, args.password, name, least)
     if what == "del" and not args.yes and not _ask("take the account %s away?" % name):
         print("  nothing done")
@@ -1298,4 +1330,98 @@ def cmd_net(M, args, cfg):
                   ", ".join(x.get("ip4") or x.get("addresses") or [])] for x in devs])
     if d.get("trial"):
         M.warn("a change of the network is on trial - Settings → Network")
+    return 0
+
+
+def cmd_carry(M, args, cfg):
+    """upnp export-config FILE [--with-secrets] · import-config FILE [--replace] [--yes] (otp --export-config,
+    --import-config): everything that makes this installation what it is, as one file (Settings → Export and
+    import)."""
+    if args.cmd == "export-config":
+        if args.with_secrets:
+            M.info("root is asked for the pages' certificate and key too - a moment")
+        r = api(M, "POST", "/api/carry", {"action": "export", "secrets": bool(args.with_secrets)})
+        data = r.get("bundle") if args.with_secrets else r.get("config")
+        if data is None:
+            M.fail("the API gave nothing to write")
+        path = args.file
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            M.fail("%s is there already - not written over" % path)
+        except OSError as e:
+            M.fail("%s: %s" % (path, e))
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=1, ensure_ascii=False)
+            f.write("\n")
+        M.ok("written to %s (0600)" % path)
+        if args.with_secrets:
+            print(M.col("  the passphrase that opens it (shown once - keep it apart from the file):", M.C.yellow))
+            print("  " + M.col(r.get("passphrase") or "?", M.C.bold))
+            if not r.get("tls"):
+                M.warn("without the certificate of the pages: %s" % (r.get("tls_said") or "?"))
+        return 0
+    try:
+        with open(args.file, encoding="utf-8") as f:
+            conf = json.load(f)
+    except (OSError, ValueError) as e:
+        M.fail("%s: %s" % (args.file, e))
+    phrase = ""
+    if isinstance(conf, dict) and conf.get("kind") and "locked" in str(conf.get("kind")):
+        phrase = os.environ.get("UPNP_PASSPHRASE") or ""
+        if not phrase:
+            import getpass
+            phrase = getpass.getpass("the passphrase of %s: " % args.file)
+    body = {"config": conf, "passphrase": phrase, "replace": bool(args.replace)}
+    says = api(M, "POST", "/api/carry/import", dict(body, check=True)).get("says") or {}
+    print(M.col("%s" % args.file, M.C.bold))
+    for k in ("from", "version", "made", "secrets", "config", "settings", "users", "backup_targets", "avahi", "tls"):
+        print("  %-16s %s" % (k.replace("_", " "), says.get(k)))
+    if not args.yes and not _ask("put it in%s?" % (" - what is not in the file is taken away" if args.replace
+                                                    else "")):
+        print("  nothing done")
+        return 1
+    r = api(M, "POST", "/api/carry/import", body)
+    for ln in r.get("said") or []:
+        print(M.col("  " + str(ln), M.C.dim))
+    for m in r.get("made") or []:
+        print("  %s" % (m if isinstance(m, str) else json.dumps(m, ensure_ascii=False)))
+    M.ok(r.get("message") or "imported")
+    return 0
+
+
+def cmd_power(M, args, cfg):
+    """upnp power [status|reboot|poweroff|cancel] [--in MIN] - restart or power off this machine (otp
+    --restart-nodes / --restarts), as Settings → Restart and power off."""
+    what = args.what or "status"
+    if what in ("reboot", "poweroff"):
+        if not args.yes and not _ask("%s this machine%s?" % ("Restart" if what == "reboot" else "Power off",
+                                                              " in %d min" % args.minutes if args.minutes else " now")):
+            print("  nothing done")
+            return 1
+        r = api(M, "POST", "/api/power", {"how": what, "in": int(args.minutes or 0)})
+        M.info(r.get("message") or "asked")
+        got = follow_root(M, cfg, "power", r.get("id"), 60, "root")
+        return _said_root(M, got) if got else 1
+    if what == "cancel":
+        r = api(M, "POST", "/api/power", {"action": "cancel"})
+        M.info(r.get("message") or "asked")
+        got = follow_root(M, cfg, "power", r.get("id"), 60, "root")
+        return _said_root(M, got) if got else 1
+    d = api(M, "GET", "/api/power")
+    if _out(args, d):
+        return 0
+    print(M.col("Restart and power off", M.C.bold))
+    n = d.get("node") or {}
+    sc = d.get("scheduled") or {}
+    pl = d.get("plan") or {}
+    au = d.get("auto") or {}
+    print("  %-20s %s" % ("this machine", "%s, up since %s, fake-igd %s" % (n.get("name"), _when(n.get("started")),
+                                                                          n.get("version"))))
+    print("  %-20s %s" % ("set for later", ("%s at %s" % (sc.get("mode") or sc.get("how") or "?", _when(sc.get("at"))))
+                          if sc else "nothing"))
+    if pl:
+        print("  %-20s %s" % ("the last ask", "%s - %s, by %s at %s" % (pl.get("words"), pl.get("state"),
+                                                                       pl.get("by"), _when(pl.get("at")))))
+    print("  %-20s %s" % ("on a schedule", ("on, next %s" % _when(au.get("next"))) if au.get("on") else "off"))
     return 0

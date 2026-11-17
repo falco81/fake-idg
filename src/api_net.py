@@ -17,6 +17,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import threading
 import time
 
 NAME = "net"
@@ -434,23 +435,31 @@ def post_net(ctx):
     if act == "plan":
         return {"plan": got["plan"], "want": got}
     if act == "apply":
-        if t.get("state") == "trial":
-            raise ValueError("a change is on trial: keep it or put it back first")
-        j = job(ctx)
-        if j.get("state") == "asked":
-            raise ValueError("a change is under way already")
-        snap = secrets.token_hex(8)
-        ident = ctx.ask_root({"do": "apply", "con": got["con"], "hostname": got["hostname"],
-                              "ipv4": got["ipv4"], "ipv6": got["ipv6"], "trial_min": trial_min,
-                              "snapshot": snap})
-        ctx.store.set_meta("net:job", json.dumps({
-            "ask": ident, "state": "asked", "at": time.time(), "by": me["name"], "dev": got["dev"],
-            "con": got["con"], "plan": got["plan"], "old_ip": got["old_ip"], "new_ip": got["new_ip"],
-            "page": got["page"], "snapshot": snap}))
-        ctx.event("%s asked for a new network of %s: %s" % (me["name"], got["dev"], "; ".join(got["plan"])[:900]),
-                  "warn")
-        return {"message": "asked: root puts it in now", "id": ident, "plan": got["plan"]}
+        with APPLY_LOCK:                # two admins at once: one change asked of root, not two
+            return _apply(ctx, me, got, trial_min)
     raise ValueError("no such thing to do")
+
+
+APPLY_LOCK = threading.Lock()
+
+
+def _apply(ctx, me, got, trial_min):
+    if trial(ctx).get("state") == "trial":
+        raise ValueError("a change is on trial: keep it or put it back first")
+    j = job(ctx)
+    if j.get("state") == "asked":
+        raise ValueError("a change is under way already")
+    snap = secrets.token_hex(8)
+    ident = ctx.ask_root({"do": "apply", "con": got["con"], "hostname": got["hostname"],
+                          "ipv4": got["ipv4"], "ipv6": got["ipv6"], "trial_min": trial_min,
+                          "snapshot": snap})
+    ctx.store.set_meta("net:job", json.dumps({
+        "ask": ident, "state": "asked", "at": time.time(), "by": me["name"], "dev": got["dev"],
+        "con": got["con"], "plan": got["plan"], "old_ip": got["old_ip"], "new_ip": got["new_ip"],
+        "page": got["page"], "snapshot": snap}))
+    ctx.event("%s asked for a new network of %s: %s" % (me["name"], got["dev"], "; ".join(got["plan"])[:900]),
+              "warn")
+    return {"message": "asked: root puts it in now", "id": ident, "plan": got["plan"]}
 
 
 def background(ctx):

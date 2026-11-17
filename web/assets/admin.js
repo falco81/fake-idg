@@ -123,7 +123,12 @@ function paintHeader(s) {
   $('updated-at').textContent = clockWords(new Date());
   var st = s.stats || {};
   $('tabn-ports').textContent = st.ports ? num(st.ports) : '';
-  $('tabn-requests').textContent = st.requests ? num(st.requests) : '';
+  /* As otp's Log: the refused of the last 24 hours, red - none, no number (needs stats.refused_24h of
+     upnp.status_data; without it, every request as before). */
+  if (st.refused_24h !== undefined) {
+    $('tabn-requests').textContent = st.refused_24h ? num(st.refused_24h) : '';
+    $('tabn-requests').classList.toggle('hot', st.refused_24h > 0);
+  } else $('tabn-requests').textContent = st.requests ? num(st.requests) : '';
   $('tabn-clients').textContent = st.clients ? num(st.clients) : '';
   $('tabn-mappings').textContent = st.mappings ? num(st.mappings) : '';
   /* To be done by hand: a newer version waiting, beside Upgrades and Settings (otp's afterBadge). */

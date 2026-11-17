@@ -565,7 +565,35 @@ def get_db(ctx):
     return view(ctx)
 
 
+def _disk_words(e):
+    import errno
+    if getattr(e, "errno", None) in (errno.ENOSPC, errno.EDQUOT):
+        return "no room left on the disk of the database's folder: %s" % (e.strerror or e)
+    return "%s: %s" % (getattr(e, "filename", None) or "a file", e.strerror or e)
+
+
 def post_db(ctx):
+    try:
+        return _post_db(ctx)
+    except OSError as e:                # no room for a copy, a dump or a download: said (1.7.6)
+        if isinstance(e, PermissionError) and e.errno is None:
+            raise                       # the role check (read only): a 403, as before
+        raise ValueError(_disk_words(e))
+    except sqlite3.Error as e:          # "database or disk is full" while a dump is written
+        raise ValueError("SQLite could not do it: %s%s" % (e, " - make room on the disk of the database's folder"
+                                                         if "full" in str(e) else ""))
+
+
+def post_upload(ctx):
+    try:
+        return _post_upload(ctx)
+    except OSError as e:
+        if isinstance(e, PermissionError) and e.errno is None:
+            raise
+        raise ValueError(_disk_words(e))
+
+
+def _post_db(ctx):
     ctx.need("fulladmin")
     b = ctx.body()
     act = str(b.get("action") or "")
@@ -718,7 +746,7 @@ def post_db(ctx):
     raise ValueError("no such action")
 
 
-def post_upload(ctx):
+def _post_upload(ctx):
     """A database sent from the browser (base64 in JSON): kept for an hour, read and said - nothing
     else happens until restore_upload."""
     ctx.need("fulladmin")

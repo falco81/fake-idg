@@ -43,6 +43,7 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}\Z")
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 16384, 8, 1
 MIN_PASSWORD = 8
 SESSION_MOST_S = 24 * 3600            # a sign-in lasts a day at most (as it came before 1.6.1)
+OWN_SPAN_S = 300                      # one's own password typed wrong where it is changed: counted 5 min (otp)
 FAIL_WINDOW_S = 600                   # wrong passwords counted over ten minutes (as it came before 1.6.1)
 FAIL_MOST_ADDR = 10                   # ... from one address
 FAIL_MOST_NAME = 6                    # ... for one name
@@ -329,13 +330,17 @@ class Store(object):
     def password_problem(self, pw):
         return password_problem(pw, self.policy()["password_min"])
 
-    def fail_limits(self):
-        """(span s, tries for a name, tries for an address) - otp's: an address may make ten
-        times as many (50 at least), so an office behind one address is not locked out by
-        one person's typos; the name's own count stays."""
+    def fail_limits(self, own=False):
+        """(span s, tries for a name, tries for an address) - otp's throttle: a name may make four
+        times "Wrong passwords before a pause", an address ten times as many (50 at least), so an
+        office behind one address is not locked out by one person's typos. `own`: one's own
+        password typed wrong where it is changed (otp's kind "password") - a count of its own, never
+        the sign-in's: five minutes, the setting's tries for an address and four times it for a name."""
         p = self.policy()
         tries = max(1, int(p["login_tries"]))
-        return 60 * max(1, int(p["login_wait_min"])), tries, max(50, tries * 10)
+        if own:
+            return OWN_SPAN_S, tries * 4, tries
+        return 60 * max(1, int(p["login_wait_min"])), tries * 4, max(50, tries * 10)
 
     # ---- events ----------------------------------------------------------------------
     def add_event(self, kind, words, level="info", who="", addr=""):
@@ -408,13 +413,15 @@ class Store(object):
         bad = self.password_problem(password)
         if bad:
             raise StoreError(bad)
-        if self.user(name):
-            raise StoreError("%s is there already" % name)
-        now = time.time()
-        self.run("INSERT INTO users (name, role, hash, note, must_change, created, changed) "
-                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                 (name, role, hash_password(password), str(note or "")[:200], 1 if must_change else 0, now, now))
-        return self.user(name)
+        hashed = hash_password(password)
+        with self.lock:                     # two pages making the same name at once: one is told so
+            if self.user(name):
+                raise StoreError("%s is there already" % name)
+            now = time.time()
+            self.run("INSERT INTO users (name, role, hash, note, must_change, created, changed) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (name, role, hashed, str(note or "")[:200], 1 if must_change else 0, now, now))
+            return self.user(name)
 
     def set_password(self, name, password, must_change=False):
         if not self.user(name):
@@ -431,14 +438,15 @@ class Store(object):
         self.run("UPDATE users SET must_change = ?, changed = ? WHERE name = ?", (1 if on else 0, time.time(), name))
 
     def set_role(self, name, role):
-        u = self.user(name)
-        if not u:
-            raise StoreError("there is no account %s" % name)
-        if role not in ROLES:
-            raise StoreError("the role is one of: %s" % ", ".join(ROLES))
-        if role != "fulladmin" and self._last_admin(u):
-            raise StoreError("%s is the last full admin who can sign in - make another one first" % name)
-        self.run("UPDATE users SET role = ?, changed = ? WHERE name = ?", (role, time.time(), name))
+        with self.lock:
+            u = self.user(name)
+            if not u:
+                raise StoreError("there is no account %s" % name)
+            if role not in ROLES:
+                raise StoreError("the role is one of: %s" % ", ".join(ROLES))
+            if role != "fulladmin" and self._last_admin(u):
+                raise StoreError("%s is the last full admin who can sign in - make another one first" % name)
+            self.run("UPDATE users SET role = ?, changed = ? WHERE name = ?", (role, time.time(), name))
 
     def set_note(self, name, note):
         if not self.user(name):
@@ -447,23 +455,25 @@ class Store(object):
 
     def set_disabled(self, name, off=True):
         """Switched off: it cannot sign in, and its sign-ins now are ended."""
-        u = self.user(name)
-        if not u:
-            raise StoreError("there is no account %s" % name)
-        if off and not u["disabled"] and self._last_admin(u):
-            raise StoreError("%s is the last full admin who can sign in - make another one first" % name)
-        self.run("UPDATE users SET disabled = ?, changed = ? WHERE name = ?", (1 if off else 0, time.time(), name))
-        if off:
-            self.end_sessions_of(name)
+        with self.lock:
+            u = self.user(name)
+            if not u:
+                raise StoreError("there is no account %s" % name)
+            if off and not u["disabled"] and self._last_admin(u):
+                raise StoreError("%s is the last full admin who can sign in - make another one first" % name)
+            self.run("UPDATE users SET disabled = ?, changed = ? WHERE name = ?", (1 if off else 0, time.time(), name))
+            if off:
+                self.end_sessions_of(name)
 
     def delete_user(self, name):
-        u = self.user(name)
-        if not u:
-            raise StoreError("there is no account %s" % name)
-        if self._last_admin(u) and not u["disabled"]:
-            raise StoreError("%s is the last full admin who can sign in - make another one first" % name)
-        self.run("DELETE FROM sessions WHERE name = ?", (name,))
-        self.run("DELETE FROM users WHERE name = ?", (name,))
+        with self.lock:
+            u = self.user(name)
+            if not u:
+                raise StoreError("there is no account %s" % name)
+            if self._last_admin(u) and not u["disabled"]:
+                raise StoreError("%s is the last full admin who can sign in - make another one first" % name)
+            self.run("DELETE FROM sessions WHERE name = ?", (name,))
+            self.run("DELETE FROM users WHERE name = ?", (name,))
 
     def sign_ins(self, name, limit=50):
         """The sign-ins of one account, and the refused ones, as the events wrote them."""
@@ -514,15 +524,18 @@ class Store(object):
         self.run("INSERT INTO fails (at, addr, name, what) VALUES (?, ?, ?, ?)",
                  (time.time(), str(addr or "")[:64], str(name or "")[:64], what))
 
-    def too_many(self, addr, name):
-        span, most_name, most_addr = self.fail_limits()
+    def too_many(self, addr, name, own=False):
+        span, most_name, most_addr = self.fail_limits(own)
         since = time.time() - span
-        a = self.one("SELECT COUNT(*) AS n FROM fails WHERE at > ? AND addr = ?", (since, addr))["n"]
-        n = self.one("SELECT COUNT(*) AS n FROM fails WHERE at > ? AND name = ?", (since, name))["n"]
+        which = "what = 'own'" if own else "what <> 'own'"
+        a = self.one("SELECT COUNT(*) AS n FROM fails WHERE at > ? AND addr = ? AND " + which, (since, addr))["n"]
+        n = self.one("SELECT COUNT(*) AS n FROM fails WHERE at > ? AND name = ? AND " + which, (since, name))["n"]
         return a >= most_addr or n >= most_name
 
-    def _locked_words(self):
-        span = self.fail_limits()[0]
+    def _locked_words(self, own=False):
+        span = self.fail_limits(own)[0]
+        if own:
+            return "too many wrong passwords - try again in %d min" % max(1, span // 60)
         return "too many wrong attempts - try again in %d min" % max(1, span // 60)
 
     def login(self, name, password, addr="", agent="", idle_s=7200):
@@ -533,21 +546,29 @@ class Store(object):
         addr = str(addr or "")[:64]
         span = self.fail_limits()[0]
         self.run("DELETE FROM fails WHERE at < ?", (time.time() - max(span, FAIL_WINDOW_S),))
-        if self.too_many(addr, name):
+        # The attempt holds its place before the slow check (otp 1.0.33): counted only after it,
+        # many at once all slipped past the count. Given back when the password was right.
+        with self.lock:
+            locked = self.too_many(addr, name)
+            if not locked:
+                place = self.run("INSERT INTO fails (at, addr, name, what) VALUES (?, ?, ?, 'password')",
+                                 (time.time(), addr, name)).lastrowid
+        if locked:
             check_password(password, _dummy_hash())
             raise StoreError(self._locked_words())
         u = self.user(name) if name else None
         if not u or not check_password(password, u["hash"]):
             if not u:
                 check_password(password, _dummy_hash())
-            self.fail(addr, name)
             raise StoreError("wrong name or password")
         if u["disabled"]:
             # Said as a wrong password is, and counted as one (otp 1.0.57): the difference
             # told that the password was right.
-            self.fail(addr, name)
             raise StoreError("wrong name or password")
-        self.run("DELETE FROM fails WHERE name = ?", (u["name"],))
+        self.run("DELETE FROM fails WHERE rowid = ?", (place,))
+        # The wrong attempts before a right password stay counted until their time runs out (otp's
+        # throttle gives back only the place of the attempt that went well): forgotten here, four
+        # wrong and one right were a fresh start each time, for the name's guessing too.
         stage = self.mfa_stage(u["name"])
         token = secrets.token_urlsafe(32)
         now = time.time()
@@ -685,10 +706,19 @@ class Store(object):
     def lockouts(self):
         """One row per address and per name with a wrong attempt still counted, locked or not yet
         (the shape of otp's lockouts_view)."""
-        span, most_name, most_addr = self.fail_limits()
         now = time.time()
         rows = []
-        got = self.rows("SELECT at, addr, name, what FROM fails WHERE at > ? ORDER BY at", (now - span,))
+        for own in (False, True):
+            rows += self._lockouts(own, now)
+        rows.sort(key=lambda r: (not r["locked"], -r["last"]))
+        return rows
+
+    def _lockouts(self, own, now):
+        span, most_name, most_addr = self.fail_limits(own)
+        rows = []
+        got = self.rows("SELECT at, addr, name, what FROM fails WHERE at > ? AND %s ORDER BY at"
+                        % ("what = 'own'" if own else "what <> 'own'"), (now - span,))
+        kinds = ("password", "password-name") if own else ("admin", "admin-name")
         for by, col, other, limit in (("address", "addr", "name", most_addr), ("name", "name", "addr", most_name)):
             seen = {}
             for f in got:
@@ -704,25 +734,26 @@ class Store(object):
                         others.append(f[other])
                 whats = set(f["what"] or "password" for f in fs)
                 rows.append({
-                    "kind": "admin" if by == "address" else "admin-name", "who": fs[-1][col], "by": by,
-                    "what": "signing in to these pages",
+                    "kind": kinds[0] if by == "address" else kinds[1], "who": fs[-1][col], "by": by,
+                    "what": "changing a password" if own else "signing in to these pages",
                     "words": "wrong codes" if whats == {"code"} else ("wrong passwords and codes" if "code" in whats
                                                                      else "wrong passwords"),
                     "fails": len(times), "limit": limit, "locked": locked,
                     "until": (times[len(times) - limit] + span) if locked else None,
                     "forgets": times[-1] + span, "first": times[0], "last": times[-1], "others": others[-10:]})
-        rows.sort(key=lambda r: (not r["locked"], -r["last"]))
         return rows
 
-    def clear_fails(self, by, who):
+    def clear_fails(self, by, who, own=None):
         """How many wrong attempts of that address or name were forgotten. Only that count (otp's
         counters are one per address and one per name): clearing an address forgets its attempts
-        for the address, while the names tried from it keep theirs - and the other way round. A
-        wrong attempt counted for neither any more is gone."""
-        col = "addr" if by in ("address", "admin") else "name"
+        for the address, while the names tried from it keep theirs - and the other way round. The
+        wrong attempts counted for neither any more are gone. `own`: True the count of one's own password
+        typed wrong (kinds password, password-name), False the sign-in's, None both."""
+        col = "addr" if by in ("address", "admin", "password") else "name"
+        which = "" if own is None else (" AND what = 'own'" if own else " AND what <> 'own'")
         with self.lock:
-            n = self.run("UPDATE fails SET %s = '' WHERE %s = ?%s" % (col, col, " COLLATE NOCASE" if col == "name" else ""),
-                         (str(who),)).rowcount
+            n = self.run("UPDATE fails SET %s = '' WHERE %s = ?%s%s" % (col, col, " COLLATE NOCASE" if col == "name"
+                                                                      else "", which), (str(who),)).rowcount
             self.run("DELETE FROM fails WHERE addr = '' AND name = ''")
         return n
 

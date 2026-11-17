@@ -32,6 +32,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -476,6 +477,9 @@ def take_bytes(data, older=None):
     return info
 
 
+ASK_LOCK = threading.Lock()
+
+
 def ask_root(info, by, downgrade=False):
     """request.json beside the package: systemd's fake-igd-upgrade.path starts root's part.
     plan.json beside it is what the pages and `upnp upgrade follow` draw. `downgrade`: an older
@@ -494,18 +498,20 @@ def ask_root(info, by, downgrade=False):
     if not os.path.exists(PATH_UNIT):
         raise ValueError("fake-igd-upgrade.path is not installed - upgrade once on the command line "
                          "(install.sh --upgrade)")
-    now = status()
-    if now.get("busy"):
-        raise ValueError("an upgrade is going on already")
-    ident = "%d-%s" % (int(time.time()), secrets.token_hex(4))
-    at = time.time()
-    req = {"id": ident, "file": os.path.basename(info["file"]), "version": info["version"],
-           "sha": info["sha"], "by": str(by or "")[:100], "at": at, "downgrade": bool(downgrade)}
-    plan_row = {"id": ident, "version": info["version"], "sha": info["sha"], "by": str(by or "")[:100],
-                "at": at, "downgrade": bool(downgrade), "from_version": info.get("installed") or "",
-                "signed_by": info.get("signed_by") or ""}
-    _write_json("plan.json", plan_row)
-    _write_json("request.json", req)
+    # One at a time (two admins pressing at once): the check and the request under one lock.
+    with ASK_LOCK:
+        now = status()
+        if now.get("busy"):
+            raise ValueError("an upgrade is going on already")
+        ident = "%d-%s" % (int(time.time()), secrets.token_hex(4))
+        at = time.time()
+        req = {"id": ident, "file": os.path.basename(info["file"]), "version": info["version"],
+               "sha": info["sha"], "by": str(by or "")[:100], "at": at, "downgrade": bool(downgrade)}
+        plan_row = {"id": ident, "version": info["version"], "sha": info["sha"], "by": str(by or "")[:100],
+                    "at": at, "downgrade": bool(downgrade), "from_version": info.get("installed") or "",
+                    "signed_by": info.get("signed_by") or ""}
+        _write_json("plan.json", plan_row)
+        _write_json("request.json", req)
     return ident
 
 

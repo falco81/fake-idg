@@ -37,9 +37,14 @@ The installer does everything (each step says `==> what`, as otp's):
    - from the repositories with `dnf install python3.14 python3.14-pip` (in AppStream since AlmaLinux 9.8; on older 9.x run `sudo dnf upgrade` first),
    - if the package is not available, it **builds Python 3.14.9 from source** (python.org) into `/usr/local` (`make altinstall`, the system Python 3.9 stays untouched). The archive is verified with SHA-256. Building takes a few minutes, log: `/var/log/fake-igd-python-build.log`.
 3. Creates the virtualenv `/opt/fake-igd/venv` with **colorama** (from the bundled wheel in `vendor/`, works offline).
-4. Creates the system user and group `fake-igd`. Nobody is added to the group (it may change `config.json`, which root puts into nginx and the firewall); to read logs with `upnp` without sudo, add yourself by hand: `sudo usermod -aG fake-igd $USER` (and log in again).
+4. Creates the system user and group `fake-igd` (the service and the pages' API), `fake-igd-www` (the
+   pages' php-fpm pool) and the group `fake-igd-web` (who may read the API's token). The user who ran
+   `sudo ./install.sh` is added to `fake-igd`, to read the logs with `upnp` without sudo (after signing in
+   again) - that group may also change `config.json`, which root puts into nginx and the firewall, so add
+   nobody else you would not give it to.
 5. Installs the service (systemd, start on boot, sandboxed), the `upnp` command, bash completion and log rotation.
-6. Checks for port collisions and opens 1900/udp and 5000/tcp in **firewalld**. If firewalld is not running but iptables/nftables rules are active, it does **not** touch them and tells you to run `upnp firewall`.
+6. Checks for port collisions and opens 1900/udp and 5000/tcp (and http/https for the pages) in **firewalld**
+   where it runs; where iptables is in use instead, see 10.
 7. Starts the service and shows `upnp status`.
 8. The web pages: PHP 8.3 (AppStream), a php-fpm pool of its own (`fake-igd-www`), nginx with TLS
    (a self-signed certificate unless `--cert`/`--key`), SELinux (`httpd_can_network_connect`, the API's
@@ -54,7 +59,9 @@ The installer does everything (each step says `==> what`, as otp's):
 | `--upgrade` | upgrade an existing installation (see below) |
 | `--server-name HOST` | the pages' hostname (default: this machine's) |
 | `--admin-allow CIDR,...` | who may reach the pages (default: the RFC 1918 networks) |
-| `--admin-user NAME` `--admin-password -` | the first account (the password asked for; else one is made and printed) |
+| `--admin-user NAME` `--admin-password -` | the first account (the password asked for, or `FAKE_IGD_ADMIN_PASSWORD`; else one is made and printed) |
+| `--site-name NAME` | what to call this installation on the pages |
+| `--rewrite-nginx` | write nginx's `fake-igd.conf` afresh even where one is there (it is kept otherwise, with what a newer version needs added) |
 | `--cert FILE --key FILE` | the TLS certificate for nginx |
 | `--no-web` | no pages, no nginx, no PHP - the service and the command line only |
 | `--firewall` | put `FAKE-IGD-IN` in place even where iptables does not look in use |
@@ -97,8 +104,9 @@ Ed25519 signature by a key in `/opt/fake-igd/release-keys/` - root's alone, put 
 every file the one signed and nothing else in it (no links, no paths outside its folder), and **not
 older** than what is installed. Then it runs the package's own `install.sh --upgrade --yes` and writes
 what it said to `/var/lib/fake-igd/upgrade/last.log`. When the new version does not start, the one
-before is put back. Going back to an older version is only by hand, as root:
-`sudo upnp upgrade file OLDER.tar.gz --downgrade`.
+before is put back. Going back to an older version is only asked for by name, as root - and only as far
+back as this machine's database allows: `upnp upgrade check --downgrade` lists them,
+`sudo upnp upgrade online VERSION --downgrade` or `sudo upnp upgrade file OLDER.tar.gz --downgrade` does it.
 
 `--upgrade` replaces the application, CLI, completion, systemd unit and logrotate config, refreshes the virtualenv (and recreates it if the Python minor version changed), **keeps** the configuration, logs, state and firewall, **adds new configuration keys** with their default values, restarts the service and prints `old → new` version. The new default config is always saved as `config.json.dist` for comparison.
 
@@ -114,10 +122,10 @@ before is put back. Going back to an older version is only by hand, as root:
 | Service | `fake-igd.service` (`upnp status`) |
 | Log rotation | `/etc/logrotate.d/fake-igd` (weekly, 12 weeks) |
 | Uninstall | `sudo /opt/fake-igd/uninstall.sh [--purge]` (keeps Python 3.14) |
-| The pages' API | `/opt/fake-igd/fake_igd_api.py`, `fake-igd-api.service`, 127.0.0.1:9862, token in `/run/fake-igd-api/` |
+| The pages' API | `/opt/fake-igd/fake_igd_api.py` and `api_*.py` (a module for each pane), `fake-igd-api.service`, 127.0.0.1:9862; in `/run/fake-igd-api/`: `api-token` (the pages' group may read it) and `cli-token` (root's and the API's alone: `sudo upnp api ...`) |
 | The pages | `/var/www/fake-igd/`, `/etc/nginx/conf.d/fake-igd.conf`, `/etc/php-fpm.d/fake-igd.conf`, `/etc/nginx/certs/fake-igd.pem` |
-| Database | `/var/lib/fake-igd/fake-igd.db` (SQLite: the accounts, sign-ins, events) |
-| Root's helpers | `/opt/fake-igd/fake_igd_upgrade.py`, `/opt/fake-igd/fake_igd_web.py`, `/opt/fake-igd/release-keys/` |
+| Database | `/var/lib/fake-igd/fake-igd.db` (SQLite: the accounts, sign-ins, events, the panes' settings); `secrets.key` beside it seals the secrets kept in it - a backup carries it, keep it with the database |
+| Root's helpers | `/opt/fake-igd/fake_igd_upgrade.py`, `/opt/fake-igd/fake_igd_web.py` and `root_*.py` (a part for each pane, asked through `/var/lib/fake-igd/web/ask/`), `/opt/fake-igd/release-keys/` |
 | Upgrades | `/var/lib/fake-igd/upgrade/` (`status.json`, `last.log`) |
 
 ---
@@ -158,17 +166,21 @@ come back by themselves unless kept.
 
 ### Accounts (local, SQLite)
 
-**full admin** may change everything, **read only** may look. Passwords are kept as scrypt hashes;
-ten wrong passwords from one address (six for one name) in ten minutes block signing in from there
-for a while; a sign-in ends after `session_idle_minutes` without a request (and after a day).
+**full admin** may change everything, **read only** may look. Passwords are kept as scrypt hashes, 8
+characters at least (*Settings → Accounts*: the least length, the second step by an authenticator app for
+every account). Five wrong passwords for one name (an address: ten times as many, 50 at least) hold that
+name back for 15 minutes; a sign-in ends after 120 minutes without a request and after 12 hours however busy
+(all of these are set under *Settings → Accounts*). `sudo upnp user lockouts` shows who is held back, `sudo
+upnp user clear [NAME|ADDRESS]` lets them try again at once.
 
 ```bash
 sudo upnp user add alice                   # full admin; a password is made and printed once
 sudo upnp user add bob --role readonly --password -
 sudo upnp user passwd admin                # a new password, its sign-ins end
 sudo upnp user role bob --role fulladmin
-sudo upnp user del bob
-sudo upnp user list                        # upnp user sessions - who is signed in now
+sudo upnp user del bob                     # its sign-ins and its own layout of the tables go with it
+sudo upnp user off bob                     # it may not sign in (on: again); must-change NAME, reset-2fa NAME
+sudo upnp user list                        # upnp user sessions - who is signed in now; end ID ends one
 upnp web                                   # the pages' address, nginx, php-fpm, the API
 ```
 
@@ -204,7 +216,7 @@ instead, install.sh opens the ports in its zones as before.
 The same console as `otp --console` - everything by its menus, on the server's own screen or over SSH.
 
 ```
- upnp 1.3  mdsn   service active      mode active | accept | 4 interfaces | 2 clients | 5 ports | mDNS refl. on
+ upnp 1.7.5  mdsn   service active      mode active | accept | 4 interfaces | 2 clients | 5 ports | mDNS refl. on
 
   Main menu
 
@@ -223,6 +235,8 @@ The same console as `otp --console` - everything by its menus, on the server's o
     13  mDNS reflector (avahi)
     14  Upgrades
     15  Web pages and accounts
+    16  Backups and the database
+    17  Certificates, updates, time, tests
 
  Up/Down move   Enter choose   Esc back   ! shell   q leave
 ```
@@ -375,10 +389,32 @@ upnp <command> [options]        upnp --help        upnp <command> --help        
 | `notify-test` | `nt` | send a test notification with the configured ntfy |
 | `start` `stop` `restart` `enable` `disable` | | service control |
 | `clear` | | truncate logs (`--requests`, `--log`, `--all`) |
-| `upgrade` | `up` | new versions: `check`, `online [VERSION]`, `file PATH`, `status`, `follow`, `log` |
-| `user` | `users` | the pages' accounts: `list`, `add`, `passwd`, `role`, `note`, `del`, `sessions`, `end` |
+| `upgrade` | `up` | new versions: `check`, `online [VERSION]`, `file PATH`, `status`, `follow`, `log`, `after [ID]`; `--downgrade` |
+| `user` | `users` | the pages' accounts: `list`, `add`, `passwd`, `role`, `note`, `must-change`, `off`, `on`, `reset-2fa`, `del`, `sessions`, `end`, `lockouts`, `clear` |
 | `web` | | the pages: `status`, `apply [--restart]` |
 | `version` | | versions of the CLI, Python and colorama |
+
+**What the pages do, here too** (otp's `--api` and its commands, 1.7.4) - asked of `fake-igd-api` as a full
+administrator, so as root (`sudo`), with a key only root and the API's account may read
+(`/run/fake-igd-api/cli-token`); each is written down in the events as *root (command line)*. For a server
+reached over SSH only, or whose pages are down while the API runs:
+
+| Command | What it does |
+|---|---|
+| `api GET\|POST /api/... [BODY\|-]` | any question of the pages, the answer as JSON (`-`: the body on stdin - a body holding a secret is taken only so) |
+| `check` | every part: the API, the database, the service and every problem the pages' alerts see; exit 1 on one |
+| `events` (`ev`) | fake-igd's own events: `--search`, `--kind`, `--hours`, `-n` |
+| `backup` | `status`, `now` (followed with its progress), `verify` (the newest fetched back and tried) |
+| `db` | `status`, `check`, `copy`, `tidy`, `vacuum` |
+| `updates` | the operating system's: `status`, `check`, `start [--security] [--reboot auto]`, `stop`, `reboot` |
+| `time` | the clock and chrony's servers; `sync` steps it now |
+| `tls` · `acme` | the pages' certificate and TLS settings · ACME: `status`, `order` (followed) |
+| `net` | the machine's network as the pages read it |
+| `mail-test ADDRESS` · `siem-test` · `proxy-test [URL]` · `snmp-trap` | the tests of their panes, every step said |
+| `export-config FILE [--with-secrets]` · `import-config FILE [--replace]` | everything of this installation as one file, and back (*Export and import*); with the secrets it is locked with a passphrase printed once |
+| `power` | `status`, `reboot` / `poweroff` `[--in MIN]`, `cancel` |
+
+Most of them take `--json`.
 
 Common options: `--config FILE`, `--color auto|always|never`, `--no-color` (or the `NO_COLOR` variable), `--no-dns`.
 Console: `upnp --console`, `upnp --console-at-login on|off|status`, `upnp --console-users USERS`.
@@ -408,7 +444,11 @@ sudo upnp config edit                               # $EDITOR + JSON validation
 sudo upnp mode passive                              # changes restart the service automatically (--no-restart)
 ```
 
-Reading (status, ports, log, ...) works without sudo for members of the `fake-igd` group. Configuration changes and `clear` require `sudo`.
+Reading (status, ports, log, ...) works without sudo for members of the `fake-igd` group (install.sh adds
+the user who ran it; that group may also write `config.json`). Configuration changes, `clear`, `user` changes
+and every command that asks the API (`api`, `check`, `events`, `backup`, `db` ...) require `sudo`.
+A value with a control character (a new line, a tab, NUL) is refused; `interfaces` and `exclude_interfaces`
+take interface names only.
 
 ---
 
@@ -465,6 +505,7 @@ If the real router (UPnP enabled) or another device answers as well, the PS5 use
 |---|---|---|
 | `mode` | `"active"` | `active` = answer like a UPnP router, `passive` = only listen and log |
 | `mapping_response` | `"accept"` | `accept` = confirm AddPortMapping (nothing is opened), `reject` = refuse with error 501 |
+| `igd_version` | `1` | `1` = InternetGatewayDevice:1 (what fake-igd always was), `2` = InternetGatewayDevice:2 with WANIPConnection:2 (as miniupnpd built with IGD2) |
 | `http_port` | `5000` | TCP port for the device description and SOAP (update the firewall when changing it) |
 | `external_ip` | `"auto"` | Public IP reported to clients. `auto` = detect via api.ipify.org / ifconfig.me |
 | `interfaces` | `[]` | Interfaces to listen on (`["ens18", "ens19.20"]`). Empty = all |
@@ -484,11 +525,12 @@ If the real router (UPnP enabled) or another device answers as well, the PS5 use
 | `session_idle_minutes` | `120` | a sign-in to the pages ends after this long without a request |
 | `api_port` | `9862` | the pages' API, on 127.0.0.1 only |
 | `firewall` | `false` | iptables: the chain `FAKE-IGD-IN` (install.sh switches it on where iptables is in use) |
-| `firewall_ssh` / `firewall_icmp` | `true` | the chain lets SSH (tcp 22) / ping in |
+| `firewall_ssh` / `firewall_icmp` | `true` | the chain lets SSH (its ports as *Settings → SSH server* set them, 22 otherwise) / ping in |
+| `health_allow` | (not set) | who may ask `/healthz` (*Settings → Firewall and access*); not set = as `web_allow`, `[]` = everybody |
 | `upgrade_url` | this repository's `release/` | where new versions are looked for: a GitHub folder, a page with links, or one package |
 | `upgrade_check` | `true` | look there once a day (for the pages; nothing is put in by itself) |
 
-After changing the configuration: `sudo systemctl restart fake-igd` - or use `sudo upnp config set KEY VALUE`, which restarts the service automatically.
+After changing the configuration by hand: `sudo upnp config validate` (the same checks as `config set` and the pages), then `sudo systemctl restart fake-igd` - or use `sudo upnp config set KEY VALUE`, which checks it and restarts the service automatically.
 
 > The service runs in a systemd sandbox (`ProtectSystem=strict`). It can only write to `/var/log/fake-igd` and `/var/lib/fake-igd`. If you move `log_file` or `state_dir` elsewhere, add the path to the unit as `ReadWritePaths=`.
 
@@ -533,7 +575,9 @@ Example `/var/log/fake-igd/fake-igd.log`:
 | The pages say the token is unreadable | `ls -l /run/fake-igd-api/` (group `fake-igd-web`), SELinux: `ausearch -m avc -ts recent` |
 | `upnp upgrade` waits for root | `systemctl enable --now fake-igd-upgrade.path`; `journalctl -u fake-igd-upgrade` |
 | An upgrade was refused | `upnp upgrade status` says why (not signed by a trusted key, a file changed, older than installed) |
-| Locked out by wrong passwords | wait ten minutes, or `sudo upnp user passwd NAME` |
+| Locked out by wrong passwords | wait (15 minutes as it comes - *Settings → Accounts*), or let them try again now: `sudo upnp user lockouts`, `sudo upnp user clear NAME` |
+| `sudo upnp check` / `events` / `db` ... say fake-igd-api is not running | `systemctl start fake-igd-api`; they ask the running API (with `/run/fake-igd-api/cli-token`) |
+| The pages are down, the server is reached over SSH | `sudo upnp --console` (16, 17) or the commands of *What the pages do, here too*: `sudo upnp check`, `sudo upnp api GET /api/...` |
 | A client searches (`ssdp:`) but never fetches the description (`http:`) | Our SSDP answer does not reach it: a firewall on the way back, the client in another VLAN than the interface that answered, or another UPnP device answering first (`upnp test --st ssdp:all`). Look at its lines: `upnp log --grep 192.168.x.y -n 0` |
 | `upnp notify-test` says 401 / 403 | Wrong or missing `ntfy_token` / `ntfy_user` + `ntfy_password`, or the token may not write to the topic. |
 | `upnp notify-test` says TLS | A private server with its own CA: `sudo upnp config set ntfy_ca_file /path/to/ca.pem`. |

@@ -972,6 +972,21 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, "", "text/plain")
 
 
+class Server(ThreadingHTTPServer):
+    # socketserver's listen backlog is 5: many devices at once (a flood, a LAN starting up) were reset
+    request_queue_size = 128
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # a device that went away mid-answer is not a traceback on stderr (the journal); anything else is
+        # said once, in the log
+        e = sys.exc_info()[1]
+        if isinstance(e, (ConnectionError, TimeoutError, socket.timeout)):
+            log.debug("http: %s went away: %s", client_address[0], e)
+        else:
+            log.warning("http: a request of %s failed: %s: %s", client_address[0], type(e).__name__, e)
+
+
 # ================================================================ SSDP
 def ssdp_message(first_line, headers):
     return (first_line + "\r\n" + "".join("%s: %s\r\n" % (k, v) for k, v in headers) + "\r\n").encode()
@@ -1092,18 +1107,23 @@ class SSDP:
             try:
                 self.handle(data, src, sport, arrived)
             except Exception as e:  # noqa: BLE001
-                log.warning("ssdp: a packet from %s failed: %s", src, e)
+                # once in 10 min for the same address: made-up packets are no flood in the log
+                (log.warning if once(("pkt", src)) else log.debug)("ssdp: a packet from %s failed: %s", src, e)
 
     def handle(self, data, src, sport, arrived=None):
         lines = data.decode("utf-8", "ignore").split("\r\n")
         if not lines or not lines[0].upper().startswith("M-SEARCH"):
             if lines and lines[0].upper().startswith("NOTIFY") and src not in self.joined.values():
                 nt = next((ln.split(":", 1)[1].strip() for ln in lines if ln.upper().startswith("NT:")), "")
-                k = (src, "NOTIFY", nt[:200])
+                nt = nt[:200]
+                router = "InternetGatewayDevice" in nt or "WANIPConnection" in nt
+                # a router announces several types (IGD, WANDevice, WANIPConnection...): one warning and one
+                # notification an hour for it, not one for each type
+                k = (src, "NOTIFY", "router" if router else nt)
                 self._prune()
                 if time.time() - self.seen.get(k, 0) > 3600:
                     self.seen[k] = time.time()
-                    if "InternetGatewayDevice" in nt or "WANIPConnection" in nt:
+                    if router:
                         log.warning("ssdp: OTHER UPnP ROUTER on the network: %s announces NT=%s", src, nt)
                         if CFG.get("notify_other_router", True):
                             notify("UPnP: another router", "%s announces itself as a UPnP router (%s) - "
@@ -1312,7 +1332,7 @@ def main():
     log.info("service: log %s, requests %s, state %s", CFG["log_file"], CFG["request_log"], map_file())
 
     try:
-        httpd = ThreadingHTTPServer(("0.0.0.0", CFG["http_port"]), Handler)
+        httpd = Server(("0.0.0.0", CFG["http_port"]), Handler)
     except OSError as e:
         log.error("service: HTTP port %d cannot be opened: %s", CFG["http_port"], e)
         sys.exit(1)

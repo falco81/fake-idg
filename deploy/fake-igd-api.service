@@ -41,6 +41,8 @@ ProtectControlGroups=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 

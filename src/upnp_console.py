@@ -2427,7 +2427,18 @@ class Console(object):
             ("6", "Backups to other machines: how they went", lambda: self.act("backup")),
             ("7", "Backups to other machines: one now", lambda: self.run_here("backup", "now")),
             ("8", "Try the newest backup (fetched back)", lambda: self.run_here("backup", "verify")),
+            ("9", "Everything of this installation into a file", self.export_conf),
         ])
+
+    def export_conf(self):
+        got = self.form("Everything of this installation into a file", [
+            {"key": "path", "label": "The file", "value": "/root/fake-igd-config-%s.json" % time.strftime("%Y%m%d"),
+             "need": True, "help": "a new file, 0600 - never written over",
+             "check": lambda v, _a: None if v.startswith("/") and not os.path.exists(v) else "a new file, a whole path"},
+            {"key": "secrets", "label": "With the secrets", "kind": "choice",
+             "options": [("no", "no - the secrets left out"), ("yes", "yes - locked with a passphrase shown once")]}])
+        if got:
+            self.run_here("export-config", got["path"], *(["--with-secrets"] if got["secrets"] == "yes" else []))
 
     def m_ops(self):
         def mail_test():
@@ -2470,8 +2481,15 @@ class Console(object):
             ("11", "A test line to the syslog servers (SIEM)", lambda: self.act("siem-test")),
             ("12", "The way out (proxy): try it", proxy_test),
             ("13", "SNMPv3: a test trap", lambda: self.act("snmp-trap")),
-            ("14", "Any question of the pages (upnp api)", self.api_ask),
+            ("14", "Restart or power off: what is set", lambda: self.act("power")),
+            ("15", "Restart this machine now", self.reboot_now),
+            ("16", "Any question of the pages (upnp api)", self.api_ask),
         ])
+
+    def reboot_now(self):
+        if self.confirm("Restart this machine", "fake-igd, the pages and every other service on it are away "
+                        "for a minute or two.", "Restart", danger=True):
+            self.act("power", "reboot", "--yes")
 
     def api_ask(self):
         got = self.form("A question of the pages", [
