@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
-__version__ = '1.7.13'
+__version__ = '1.7.14'
 VERSION = __version__
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
 DEFAULTS = {
@@ -109,6 +109,9 @@ def set_version(v):
 # device that asks again and again is seen, without a line every second.
 _SAID = {}
 _SAID_LOCK = threading.Lock()
+
+
+SEARCH_EVERY = 30
 
 
 def once(key, every=600):
@@ -877,7 +880,7 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/rootDesc.xml", "/WANIPCn.xml", "/WANCfg.xml"):
             # Each step of a device on its way to a port, at info (1.7.4) - once in 10 minutes for the
             # same client and file: where a console stopped is seen in the log and on the Clients tab.
-            (log.info if once(("get", client, path)) else log.debug)(
+            (log.info if once(("get", client, path), SEARCH_EVERY) else log.debug)(
                 "http: %s fetched %s (%s, via %s, UA=%s)", client, path,
                 {"/rootDesc.xml": "the device description", "/WANIPCn.xml": "the description of WANIPConnection:%d"
                  % IGD_V, "/WANCfg.xml": "the description of WANCommonInterfaceConfig:1"}[path], local_ip, ua)
@@ -1144,7 +1147,10 @@ class SSDP:
             return
         k = (src, st)
         self._prune()
-        loud = time.time() - self.seen.get(k, 0) > 600
+        # Each search written down (1.7.14) - once in 30 s per device and what it searched for (a device
+        # sends the same search two or three times at once): the Clients tab counts every look, a test of
+        # the PS5's connection shows at once. It was once in 10 minutes.
+        loud = time.time() - self.seen.get(k, 0) > SEARCH_EVERY
         if loud:
             log.info("ssdp: %s is looking for a UPnP device (ST=%s, MX=%s, UA=%s)", src, st,
                      ua_words(hdr.get("MX", "-"))[:8], ua_words(hdr.get("USER-AGENT")))

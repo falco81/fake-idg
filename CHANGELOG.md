@@ -2,6 +2,13 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.7.14 (2026-11-17)
+
+- **Every search of a device is written down** - once in 30 s per device and what it searched for (a device
+  sends the same search two or three times at once), and so each fetch of the description. It was once in
+  10 minutes, so a PS5's connection test right after an earlier search did not show at all on the Clients
+  tab.
+
 ## 1.7.13 (2026-11-17)
 
 - **The UPnP service answers a search within 50 ms.** It waited a random time up to MX seconds (UDA spreads
