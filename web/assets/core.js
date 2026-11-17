@@ -1740,7 +1740,37 @@ function suggestBox(input) {
   };
   window.addEventListener('scroll', onMove, true);
   window.addEventListener('resize', onMove);
-  return {wrap: wrap, drop: drop, said: said, place: place};
+  /* In the box itself (1.9.2): a cross that empties it and the button that offers what can be typed -
+     the same as Ctrl+Space - in every search box of the pages alike. */
+  var tools = el('span', 'qs-tools');
+  var wipe = el('button', 'qs-tool qs-wipe');
+  wipe.type = 'button'; wipe.tabIndex = -1;
+  wipe.title = 'Empty the box';
+  wipe.innerHTML = iconMarkup('close', 14);
+  wipe.onmousedown = function (e) { e.preventDefault(); };
+  wipe.onclick = function () {
+    input.value = '';
+    input.dispatchEvent(new Event('input', {bubbles: true}));
+    input.focus();
+    paintTools();
+  };
+  var offerB = el('button', 'qs-tool qs-offer');
+  offerB.type = 'button'; offerB.tabIndex = -1;
+  offerB.title = 'What can be typed here (Ctrl+Space)';
+  offerB.innerHTML = iconMarkup('list', 15);
+  offerB.onmousedown = function (e) { e.preventDefault(); };
+  offerB.onclick = function () {
+    input.focus();
+    if (input._qsOpen) input._qsOpen();
+  };
+  tools.appendChild(wipe);
+  tools.appendChild(offerB);
+  wrap.appendChild(tools);
+  wrap.classList.add('qs-has-tools');
+  var paintTools = function () { wipe.hidden = !input.value; };
+  input.addEventListener('input', paintTools);
+  paintTools();
+  return {wrap: wrap, drop: drop, said: said, place: place, paintTools: paintTools};
 }
 function suggestEngine(input, box, offer, foot) {
   var st = {items: [], at: -1, moved: false, asked: 0, hold: false, typed: false,
@@ -1821,7 +1851,17 @@ function suggestEngine(input, box, offer, foot) {
   input.addEventListener('focus', function () { st.hold = false; soon(); });
   input.addEventListener('click', function () { st.hold = false; soon(); });
   input.addEventListener('blur', function () { setTimeout(close, 150); });
+  /* Ctrl+Space, or the button in the box (1.9.2): offered now, even what was picked already */
+  input._qsOpen = function () {
+    st.hold = false; st.taken = null; st.typed = true;
+    ask();
+  };
   input.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) && (e.code === 'Space' || e.key === ' ')) {
+      e.preventDefault(); e.stopPropagation();
+      input._qsOpen();
+      return;
+    }
     var open = !box.drop.hidden && st.items.length;
     if (!open) return;
     if (e.key === 'ArrowDown') { e.preventDefault(); st.moved = true; mark(Math.min(st.items.length - 1, st.at + 1)); }
@@ -1925,6 +1965,95 @@ function qSuggest(input, list, extra) {
     });
   }, foot);
   return me;
+}
+
+/** A search box over rows the page already holds (1.9.2): `field:value` offered as qSuggest offers it,
+    the values from the rows themselves. fields = [[name, about, example, function (row) -> value(s)]];
+    rows() gives the rows now; words() (optional) what is offered with no field typed besides the fields. */
+function localSuggest(input, fields, rows, words) {
+  if (!input || input._qs) return input && input._qs;
+  var box = suggestBox(input);
+  var me = {said: function (w) { box.said.textContent = w || ''; box.said.hidden = !w; input.classList.toggle('qs-bad', !!w); }};
+  input._qs = me;
+  var known = {};
+  fields.forEach(function (f) { known[f[0]] = f; });
+  var foot = function () {
+    var f = el('div', 't-sug-foot');
+    (fields.length ? [['field:a,b', 'any of them'], ['-field:value', 'not'], ['field~part', 'contains']] : []).forEach(function (p) {
+      f.appendChild(noI18n(el('code', 'qs-syn', p[0])));
+      f.appendChild(el('span', 'qs-syn-says', p[1]));
+    });
+    f.appendChild(el('span', '', '↑ ↓ and Tab or Enter take one · Esc closes · Ctrl+Space offers'));
+    return f;
+  };
+  suggestEngine(input, box, function (st) {
+    var where = qCaret(input, known);
+    if (where.field) {
+      st.typed = true;
+      var got = {}, typed = (where.typed || '').toLowerCase();
+      (rows() || []).forEach(function (r) {
+        var v = known[where.field][3](r);
+        (Array.isArray(v) ? v : [v]).forEach(function (x) {
+          if (x === null || x === undefined || x === '') return;
+          x = String(x);
+          if (!typed || x.toLowerCase().indexOf(typed) >= 0) got[x] = (got[x] || 0) + 1;
+        });
+      });
+      var items = Object.keys(got).sort(function (a, b) { return got[b] - got[a]; }).slice(0, 30).map(function (v) {
+        var quoted = /[\s(),"]/.test(v) || where.quoted;
+        return {show: v, n: got[v], data: true, put: quoted ? '"' + v.replace(/"/g, '') + '"' : v,
+                from: where.valueAt - (where.quoted ? 1 : 0), to: where.end, done: true};
+      });
+      return {title: 'What ' + where.field + ' holds, most first', items: items, about: known[where.field][1]};
+    }
+    var body = where.body.toLowerCase();
+    st.typed = st.typed || !!body;
+    if (/["]/.test(body)) return null;
+    var items = [];
+    fields.forEach(function (f) {
+      if (!body || f[0].indexOf(body) === 0) {
+        items.push({show: f[0] + ':', note: f[1], ex: f[2] || '', put: where.lead + f[0] + ':', from: where.start,
+                    to: where.end, done: false});
+      }
+    });
+    (words ? words() : []).forEach(function (w) {
+      if (body && String(w.val).toLowerCase().indexOf(body) < 0) return;
+      items.push({show: w.val, note: w.note || '', n: w.n, data: true, put: where.lead + w.val, from: where.start,
+                  to: where.end, done: true, picked: w.picked, mono: w.mono});
+    });
+    return {title: !fields.length ? (body ? 'What fits' : 'What can be typed here')
+                                  : (body ? 'Fields and what the rows hold' : 'Fields - or type a word to find it anywhere'),
+            items: items.slice(0, 40)};
+  }, foot);
+  return me;
+}
+/** A row against `field:value` terms (local lists, 1.9.2): field:a,b any of them, field~part contains,
+    -term not, a bare word anywhere in the row. */
+function localMatches(row, q, fields) {
+  q = String(q || '').trim();
+  if (!q) return true;
+  var known = {};
+  (fields || []).forEach(function (f) { known[f[0]] = f; });
+  var terms = q.match(/-?[\w.-]+(?:[:~]|!=)(?:"[^"]*"|\S*)|-?"[^"]*"|\S+/g) || [];
+  var whole = JSON.stringify(row).toLowerCase();
+  return terms.every(function (term) {
+    var not = term.charAt(0) === '-' && term.length > 1;
+    if (not) term = term.slice(1);
+    var m = term.match(/^([\w.-]+)([:~])(.*)$/);
+    var ok;
+    if (m && known[m[1].toLowerCase()]) {
+      var v = known[m[1].toLowerCase()][3](row);
+      var have = (Array.isArray(v) ? v : [v]).map(function (x) { return String(x === null || x === undefined ? '' : x).toLowerCase(); });
+      var wants = m[3].replace(/^"|"$/g, '').toLowerCase().split(',').filter(Boolean);
+      ok = !wants.length || wants.some(function (w) {
+        if (w === '*') return have.some(function (h) { return h !== ''; });
+        return have.some(function (h) { return m[2] === '~' ? h.indexOf(w) >= 0 : (h === w || (w.slice(-1) === '*' && h.indexOf(w.slice(0, -1)) === 0)); });
+      });
+    } else {
+      ok = whole.indexOf(term.replace(/^"|"$/g, '').toLowerCase()) >= 0;
+    }
+    return not ? !ok : ok;
+  });
 }
 
 /** A box for a person's name: the realms after an @, and while a name is

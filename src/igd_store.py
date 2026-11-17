@@ -5,7 +5,7 @@ One SQLite file, /var/lib/fake-igd/fake-igd.db, owned by the fake-igd account:
   users      the local accounts of the web pages - a name, a role, a password
              hash (scrypt), when it was made and last signed in, switched off
              or not, and its second step of signing in (an authenticator app, or
-             the passkeys of its devices - their public halves only, 1.9.1)
+             the passkeys of its devices - their public halves only, 1.9.2)
   sessions   who is signed in now - only the SHA-256 of each session's token
              is kept, the token itself lives in the browser's cookie alone; a
              sign-in still to give its second step is kept too, and is good
@@ -494,7 +494,7 @@ class Store(object):
     # a reset (Accounts, upnp user reset-2fa NAME) takes it all away, passkeys too:
     #   {"kind": "app", "secret", "step": the last code's step, used once, "at", "by"}
     #   {"kind": "passkey", "keys": [{"id", "alg", "pub", "count", "host", "name", "at", "used",
-    #    "backed_up"}], "at", "by"}                                   (1.9.1, as otp's adm2fa:<name>)
+    #    "backed_up"}], "at", "by"}                                   (1.9.2, as otp's adm2fa:<name>)
     def mfa_get(self, name):
         u = self.user(name)
         return _jload(u["mfa"]) if u else {}
@@ -670,7 +670,7 @@ class Store(object):
         return got
 
     def session_merge(self, token, data):
-        """Values kept with a sign-in that is good (Your account's passkey question, 1.9.1)."""
+        """Values kept with a sign-in that is good (Your account's passkey question, 1.9.2)."""
         sid = _sid(token or "")
         with self.lock:
             s = self.one("SELECT data FROM sessions WHERE id = ?", (sid,))

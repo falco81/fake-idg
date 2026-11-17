@@ -571,7 +571,7 @@ def users_post(ctx):
     if act == "mfa_reset":
         was = S.mfa_get(name).get("kind")
         had = S.mfa_reset(name)
-        # Its passkeys go with it (1.9.1): they are the second step, kept in the same place.
+        # Its passkeys go with it (1.9.2): they are the second step, kept in the same place.
         _say(ctx, "account", "%s reset the second step of %s%s; their sign-ins are ended" % (
             who, name, " (it was %s)" % KIND_SAID.get(was, was) if was else ""), "warn")
         return {"message": ("the second step of %s is reset: they set it up again at the next sign-in; their "

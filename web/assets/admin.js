@@ -67,8 +67,12 @@ window.optShowTab = function (name) {
 document.querySelectorAll('.tabs button[data-tab]').forEach(function (b) {
   b.onclick = function () { showTab(b.getAttribute('data-tab')); };
 });
+/* A tab's own part of the address (1.9.2): TAB_HASH[tab]() -> 'mikrotik/192.168.40.95' after '#gateway/';
+   TAB_ROUTE[tab](parts) follows such an address. */
+var TAB_HASH = {}, TAB_ROUTE = {};
 function writeHash() {
-  var want = '#' + TAB + (TAB === 'settings' ? '/' + PANE : '');
+  var sub = TAB !== 'settings' && typeof TAB_HASH[TAB] === 'function' ? TAB_HASH[TAB]() : '';
+  var want = '#' + TAB + (TAB === 'settings' ? '/' + PANE : (sub ? '/' + sub : ''));
   if (location.hash !== want) try { history.replaceState(null, '', want); } catch (e) { }
 }
 function onTab(name) {
@@ -1429,6 +1433,63 @@ function openRequests(f) {
   if ($('rq-q')._sbPaint) $('rq-q')._sbPaint();
   if (TAB === 'requests') loadRequests(); else showTab('requests');
 }
+/* Links between the tabs of the main menu (1.9.2): one device, or one port of it, shown where it is -
+   goTab('clients', {ip}) · ('requests'|'ports', {ip, proto, port}) · ('mappings', {ip, port}) ·
+   ('gateway', {sub: 'devices'|'mikrotik', ip, proto, port}). The filters are written into the boxes as
+   their own words, so the page says what it shows and every part can be cleared; the window is widened
+   to everything. The same from the address: #clients/IP, #ports/IP/udp/9308, #gateway/mikrotik/IP … */
+function goTab(tab, f) {
+  f = f || {};
+  var wide = function (id) { var tp = $(id); if (tp && tp._set) { tp._quiet = true; tp._set({k: 'all'}); tp._quiet = false; } };
+  var put = function (id, v) { var b = $(id); if (!b) return; b.value = v; if (b._sbPaint) b._sbPaint(); };
+  var proto = f.proto ? String(f.proto).toLowerCase() : '';
+  if (tab === 'gateway') {
+    if (typeof TAB_ROUTE.gateway === 'function') TAB_ROUTE.gateway([f.sub || 'devices'].concat(f.ip ? [f.ip] : [], f.port ? [proto || 'any', String(f.port)] : []));
+    else showTab('gateway');
+    return;
+  }
+  if (tab === 'requests') {
+    var q = [];
+    if (f.port) q.push('port:' + f.port);
+    if (proto) q.push('proto:' + proto);
+    openRequests({client: f.ip || '', q: q.join(' '), result: f.port ? 'ports' : '', since: Date.now() / 1000 - 30 * 86400, until: 0});
+    return;
+  }
+  if (tab === 'clients') {
+    put('cl-q', f.ip ? 'client:' + f.ip : '');
+    wide('cl-hours');
+    PAGE.clients = 0;
+    if (TAB === 'clients') loadClients(); else showTab('clients');
+    if (f.ip) setTimeout(function () { clientPeek(f.ip); }, 150);
+    return;
+  }
+  if (tab === 'ports') {
+    put('pt-q', [f.ip ? 'client:' + f.ip : '', f.port ? 'port:' + f.port : '', proto && proto !== 'any' ? 'proto:' + proto : ''].filter(Boolean).join(' '));
+    if ($('pt-proto')) $('pt-proto').value = '';
+    if ($('pt-result')) $('pt-result').value = '';
+    wide('pt-hours');
+    PAGE.ports = 0;
+    if (TAB === 'ports') loadPorts(); else showTab('ports');
+    return;
+  }
+  if (tab === 'mappings') {
+    put('mp-q', [f.ip || '', f.port ? String(f.port) : ''].filter(Boolean).join(' '));
+    if ($('mp-proto')) $('mp-proto').value = '';
+    if (TAB === 'mappings') loadMappings(); else showTab('mappings');
+    return;
+  }
+  showTab(tab);
+}
+function followHash(parts) {
+  var t = parts[0], rest = parts.slice(1).map(function (x) { try { return decodeURIComponent(x); } catch (e) { return x; } });
+  if (TABS.indexOf(t) < 0) { showTab('overview'); return; }
+  if (typeof TAB_ROUTE[t] === 'function') { TAB_ROUTE[t](rest); return; }
+  var f = {ip: rest[0] || ''};
+  if (t === 'mappings') f.port = rest[1] || '';
+  else { f.proto = rest[1] || ''; f.port = rest[2] || ''; }
+  if (!f.ip) { showTab(t); return; }
+  goTab(t, f);
+}
 /* The requests as a table; `leave` the columns a popup already says (its port, its client) - left out
    there, so the table fits the popup without a scroller of its own. */
 function requestsTable(rows, leave) {
@@ -1706,13 +1767,23 @@ function loadMappings() {
 function drawMappings() {
   var d = MAPS || {mappings: []};
   var q = $('mp-q').value.trim(), pr = $('mp-proto').value;
-  var rows = d.mappings.filter(function (m) { return (!pr || String(m.protocol).toUpperCase() === pr) && matches(m, q); });
+  var rows = d.mappings.filter(function (m) { return (!pr || String(m.protocol).toUpperCase() === pr) && localMatches(m, q, MP_FIELDS); });
   $('mp-said').textContent = num(rows.length) + ' held';
   var host = $('mp-table');
   clear(host);
   host.appendChild(mappingsTable(rows, d.now));
   explainWhatWasDrawn(host);
 }
+/* The fields of the mappings' search (1.9.2): offered in the box, Ctrl+Space or its button */
+var MP_FIELDS = [
+  ['client', 'the device it is held for', '192.168.40.95', function (m) { return m.internal_client; }],
+  ['name', 'the name of that device', 'PS5', function (m) { return m.name; }],
+  ['port', 'the outside port', '9308', function (m) { return m.external_port; }],
+  ['to', 'the port on the device', '9308', function (m) { return m.internal_port; }],
+  ['proto', 'TCP or UDP', 'udp', function (m) { return String(m.protocol || '').toLowerCase(); }],
+  ['description', 'what the device called it', 'PS5', function (m) { return m.description; }],
+  ['by', 'who asked for it', '192.168.40.95', function (m) { return m.requested_by; }]];
+localSuggest($('mp-q'), MP_FIELDS, function () { return (MAPS || {}).mappings || []; });
 $('mp-q').addEventListener('input', debounce(drawMappings, 200));
 $('mp-proto').onchange = drawMappings;
 function mapPeek(m, now) {
@@ -1754,6 +1825,7 @@ function logWords(host, text, tone, hit) {
   put(text.slice(at), tone);
 }
 function drawLog(lines, q) {
+  LOGV.shown = lines || [];
   var out = $('lg-out'), box = $('lg-scroll');
   var atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
   clear(out);
@@ -1784,6 +1856,21 @@ function loadLog(first) {
     if (first) box.scrollTop = box.scrollHeight;
   }).catch(oops);
 }
+/* The log's search is a grep on the server: offered the parts of fake-igd's lines and the addresses in the
+   lines shown (1.9.2) */
+LOGV.shown = [];
+localSuggest($('lg-q'), [], function () { return []; }, function () {
+  var got = {};
+  (LOGV.shown || []).forEach(function (l) {
+    (String(l).match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g) || []).forEach(function (a) { got[a] = (got[a] || 0) + 1; });
+  });
+  var out = [['ssdp:', 'searches and answers'], ['soap:', 'what devices asked for'], ['port:', 'ports given and taken'],
+             ['http:', 'the description fetched'], ['service:', 'started, stopped'], ['net:', 'interfaces, the public IP'],
+             ['notify:', 'what was announced'], ['config:', 'the settings read'], ['WARNING', 'warnings'],
+             ['ERROR', 'errors']].map(function (p) { return {val: p[0], note: p[1]}; });
+  return out.concat(Object.keys(got).sort(function (a, b) { return got[b] - got[a]; }).slice(0, 20)
+    .map(function (a) { return {val: a, n: got[a], note: 'an address in the lines shown'}; }));
+});
 $('lg-q').addEventListener('input', debounce(function () { loadLog(true); }, 300));
 $('lg-lines').onchange = function () { loadLog(true); };
 $('lg-pause').onclick = function () {
@@ -1945,6 +2032,20 @@ function pinRail(on) {
   try { was = localStorage.getItem('fake-igd-rail-pinned') || '0'; } catch (e) { }
   pinRail(was === '1');
 }());
+/* Ctrl+Space or the button in the box (1.9.2): every part of Settings, to go to */
+localSuggest($('ctl-find'), [], function () { return []; }, function () {
+  return Array.prototype.map.call(document.querySelectorAll('.ctl-nav [data-pane]'), function (b) {
+    if (b.offsetParent === null && b.closest('[hidden]')) return null;
+    var grp = b.previousElementSibling;
+    while (grp && !grp.classList.contains('ctl-group')) grp = grp.previousElementSibling;
+    return {val: b.textContent.trim(), note: grp ? grp.textContent.trim() : '', mono: false,
+            picked: function () {
+              showPane(b.getAttribute('data-pane'));
+              $('ctl-find').value = '';
+              if ($('ctl-found')) $('ctl-found').hidden = true;
+            }};
+  }).filter(Boolean);
+});
 $('ctl-find').addEventListener('input', function () {
   var want = $('ctl-find').value.trim().toLowerCase();
   var box = $('ctl-found');
@@ -2254,7 +2355,11 @@ function applyOnlyWhenNow() {
     item.classList.toggle('asleep', !w.live);
     var says = item.querySelector('.asleep-why');
     if (says) says.remove();
-    if (!w.live) {
+    /* hide_asleep (1.9.2): a field that does not apply to the way chosen - Settings → MikroTik's certificate
+       while it is reached over ssh - is not shown at all; asleep because a switch is off, it is dimmed. */
+    var gone = !w.live && !!(settingByKey(key) || {}).hide_asleep && !isBool(settingByKey(w.by) || {});
+    item.classList.toggle('only-hidden', gone);
+    if (!w.live && !gone) {
       var other = settingByKey(w.by) || {};
       (item.querySelector('.set-tail') || item).appendChild(el('div', 'says asleep-why', w.want === '*' ? 'Not in use until ' + other.name + ' is filled in.'
         : (isBool(other) ? 'Not in use while ' + other.name + ' is ' + (w.now === 'true' ? 'on' : 'off') + '.'
@@ -2391,7 +2496,8 @@ document.addEventListener('DOMContentLoaded', function start() {
   var h = (location.hash || '#overview').slice(1).split('/');
   if (h[0] === 'settings' && h[1]) PANE = h[1];
   if (STATUS) paintHeader(STATUS);
-  showTab(h[0] || 'overview');
+  if (h[0] !== 'settings' && h.length > 1) followHash(h);
+  else showTab(h[0] || 'overview');
   setInterval(tick, 5000);
   document.addEventListener('visibilitychange', function () { if (!document.hidden) tick(); });
   explainWhatWasDrawn(document);
@@ -2400,7 +2506,8 @@ document.addEventListener('DOMContentLoaded', function start() {
     var g = (location.hash || '#overview').slice(1).split('/');
     if (TABS.indexOf(g[0]) < 0) return;
     if (g[0] === 'settings' && g[1] && g[1] !== PANE && TAB === 'settings') { showPane(g[1]); return; }
-    if (g[1]) PANE = g[1];
+    if (g[0] !== 'settings' && g.length > 1) { followHash(g); return; }
+    if (g[0] === 'settings' && g[1]) PANE = g[1];
     if (g[0] !== TAB) showTab(g[0]);
   });
 });

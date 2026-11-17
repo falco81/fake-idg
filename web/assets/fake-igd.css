@@ -4570,3 +4570,13 @@ td.mt-why{max-width:520px;color:var(--tx-dim);white-space:normal}
 .gt-device > .facts{display:grid;grid-template-columns:repeat(8,minmax(0,1fr))}
 @media (max-width:1500px){.gt-device > .facts{grid-template-columns:repeat(4,minmax(0,1fr))}}
 @media (max-width:700px){.gt-device > .facts{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* 1.9.2: every search box alike - the cross that empties it and the button that offers what can be typed
+   (Ctrl+Space) inside the box, at its right end */
+.qs-wrap.qs-has-tools > input{padding-right:62px}
+.qs-wrap > input[type=search]::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none;display:none}
+.qs-tools{position:absolute;top:50%;right:6px;transform:translateY(-50%);display:inline-flex;align-items:center;gap:2px;z-index:2}
+.qs-tool{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;padding:0;margin:0;
+  border:0;border-radius:6px;background:transparent;color:var(--tx-mut);cursor:pointer;box-shadow:none}
+.qs-tool:hover{background:var(--bg);color:var(--tx)}
+.qs-tool[hidden]{display:none}
+.qs-wrap.qs-open .qs-offer{color:var(--info);background:var(--bg)}

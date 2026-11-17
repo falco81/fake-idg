@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""test_webauthn.py - a passkey as the second step of the pages (1.9.1), against a device made here.
+"""test_webauthn.py - a passkey as the second step of the pages (1.9.2), against a device made here.
 
   python3 test/webauthn/test_webauthn.py         (from the source tree; `cryptography` is used when the
                                                  system has it for RS256 and EdDSA, ES256 is signed here)

@@ -18,6 +18,7 @@ every deploy/root_*.py beside it. A module of the API:
       kind: bool | int | text | choice | list | secret | textarea
       int: min, max · choice: choices [(value, words)] · text: check (fn value -> words or "")
       only_when: (other_key, value) - asleep unless that one is so (as otp's)
+      hide_asleep: True - hidden rather than dimmed while its own only_when does not hold (1.9.2)
       restarts / root: what a change does (said on the pages)
   ROUTES = { ("GET", "/api/tls"): fn, ("POST", "/api/tls"): fn, ... }
       fn(ctx) -> dict (the answer). ctx: me, q, body(), need("fulladmin"), store, cfg,
@@ -165,6 +166,8 @@ def view(store, secret_set=None, full=False):
             row["min"], row["max"] = s.get("min", 0), s.get("max", 10 ** 9)
         if s.get("only_when"):
             row["only_when"] = list(s["only_when"])
+            if s.get("hide_asleep"):
+                row["hide_asleep"] = True      # not dimmed but hidden while its own only_when does not hold (1.9.2)
         out.append(row)
         panes.setdefault(s["pane"], []).append(key)
     return out, panes

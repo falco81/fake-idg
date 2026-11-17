@@ -8,8 +8,9 @@ of Gateway for devices) is checked against it (igd_mtcheck): open, no dst-nat, n
 rule, disabled, forwarded elsewhere, or cannot tell - with the RouterOS commands that would add what is
 missing, shown and NEVER sent. Nothing that changes the router ever leaves this machine (igd_mikrotik).
 
-  GET  /api/mikrotik          the settings' state, the last read, the checks (the pane, Overview, Ports)
-  GET  /api/mikrotik/rules    the whole firewall as read, for the visual view
+  GET  /api/mikrotik          the settings' state, the last read, the checks with each device's way out
+                              (Settings → MikroTik, Gateway → MikroTik, Overview, Ports) - read-only accounts too
+  GET  /api/mikrotik/rules    the whole firewall as read, for Gateway → MikroTik - read-only accounts too
   POST /api/mikrotik {do: read | test | trust {fingerprint} | trust-forget | hostkey-scan |
                       hostkey-trust {fingerprint} | hostkey-forget | keygen | key {key} | key-forget}
 
@@ -75,7 +76,7 @@ _SETTINGS = [
      "says": "REST: RouterOS 7's own HTTPS API, GET only. The API: RouterOS's API, also on RouterOS 6 - over TLS "
              "(api-ssl) or plain. Over ssh: the same questions asked on its console, signed in with a key made "
              "here or a password. Whichever: the account may only read, and fake-igd only prints."},
-    {"key": "mikrotik_tls", "name": "Its certificate", "kind": "choice", "default": "pin",
+    {"key": "mikrotik_tls", "hide_asleep": True, "name": "Its certificate", "kind": "choice", "default": "pin",
      "only_when": ("mikrotik_mode", "ssh-not"),
      "choices": [("pin", "trusted by its fingerprint (shown, then trusted here)"),
                  ("ca", "checked by an authority, and its name"),
@@ -86,11 +87,11 @@ _SETTINGS = [
              "Checked by an authority: as a browser checks a site - signed by one this machine trusts, or by the "
              "one given below, and for the router's name. Not checked / no TLS: only on a network that is yours "
              "alone."},
-    {"key": "mikrotik_ca", "name": "The authority (PEM)", "kind": "textarea", "default": "", "check": _ca_check,
+    {"key": "mikrotik_ca", "hide_asleep": True, "name": "The authority (PEM)", "kind": "textarea", "default": "", "check": _ca_check,
      "most": 20000, "only_when": ("mikrotik_tls", "ca"),
      "says": "The certificate of the authority that signed the router's - empty: the authorities this machine "
              "trusts."},
-    {"key": "mikrotik_tls_name", "name": "The name on its certificate", "kind": "text", "default": "",
+    {"key": "mikrotik_tls_name", "hide_asleep": True, "name": "The name on its certificate", "kind": "text", "default": "",
      "check": _host_check, "most": 255, "only_when": ("mikrotik_tls", "ca"),
      "says": "The name the router's certificate is checked for. Empty: its address above - write the name here "
              "when it is reached by its address and the certificate carries a name (gw.example.com)."},
@@ -102,7 +103,7 @@ _SETTINGS = [
      "check": _user_check, "most": 64, "only_when": ON,
      "says": "An account on the router in a group that may only read - \"How to set it up on the router\" says "
              "how. Never the administrator's."},
-    {"key": "mikrotik_auth", "name": "Sign in with", "kind": "choice", "default": "key",
+    {"key": "mikrotik_auth", "hide_asleep": True, "name": "Sign in with", "kind": "choice", "default": "key",
      "only_when": ("mikrotik_mode", "ssh"),
      "choices": [("key", "a key made here (ed25519)"), ("password", "a password")],
      "says": "With a key fake-igd holds - its private half never leaves this machine, the router holds only the "

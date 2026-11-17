@@ -1,4 +1,4 @@
-"""igd_webauthn.py - a passkey (Face ID, Touch ID, Windows Hello) as the second step of the pages (1.9.1).
+"""igd_webauthn.py - a passkey (Face ID, Touch ID, Windows Hello) as the second step of the pages (1.9.2).
 
 otp's WebAuthn (otp.py 1.0.254-1.0.262: wa_b64 ... wa_login_finish), taken whole: the rules
 of WebAuthn checked here, in Python, with nothing but the standard library - no package, nothing
@@ -325,7 +325,7 @@ def wa_host(host):
         is_ip = True
     except ValueError:
         is_ip = False
-    # Every part of the name a label (1.9.1): ".." or a name of dots and digits alone is no name.
+    # Every part of the name a label (1.9.2): ".." or a name of dots and digits alone is no name.
     if is_ip or not name or any(not p or len(p) > 63 or p.startswith("-") or p.endswith("-")
                                 for p in name.split(".")) or re.fullmatch(r"[0-9.]+", name):
         raise ValueError(HOST_WORDS)

@@ -208,6 +208,7 @@ function aboutPicker(cur, names, o) {
     find = el('input', 'acct-find');
     find.type = 'search'; find.placeholder = 'find a user'; find.spellcheck = false; find.autocomplete = 'off';
     panel.appendChild(find);
+    localSuggest(find, [], function () { return []; }, function () { return all.map(function (n) { return {val: n}; }); });
   }
   panel.appendChild(nob);
   var ev = el('label', 'acct-row acct-row-every');

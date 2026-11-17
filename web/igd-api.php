@@ -82,7 +82,7 @@ function igd_call(string $path, string $method = 'GET', array|object|null $paylo
     }
     $headers = ['Accept: application/json', 'X-IGD-Token: ' . $token,
                 'X-IGD-Client: ' . preg_replace('/[^0-9a-fA-F:.]/', '', (string) ($_SERVER['REMOTE_ADDR'] ?? ''))];
-    /* The name the pages were reached by (1.9.1, otp's X-Otp-Host): a passkey is bound to it - the
+    /* The name the pages were reached by (1.9.2, otp's X-Otp-Host): a passkey is bound to it - the
        API builds the name and the origin it checks from this, never from what the page sent. */
     $host = (string) ($_SERVER['HTTP_HOST'] ?? '');
     if (preg_match('/^([A-Za-z0-9.-]{1,253}|\[[0-9A-Fa-f:.]{2,45}\])(:[0-9]{1,5})?\z/', $host)) {
