@@ -765,11 +765,12 @@ def firewall(cfg):
                     kept = kept or CHAIN in f.read()
             except OSError:
                 pass
+        gw = gateway_said(cfg)
         if not live and not kept:
-            return ["firewall: off"]
+            return ["firewall: off"] + gw
         fw_live_off()
         said = fw_file(None)
-        return ["firewall: off - %s and its jump taken away" % CHAIN] + ([said] if said else [])
+        return ["firewall: off - %s and its jump taken away" % CHAIN] + ([said] if said else []) + gw
     conf = load_fw_conf()
     # As it was, live and in the files, to go back to when anything fails half way (as otp's):
     # never a machine left half done.
@@ -783,11 +784,200 @@ def firewall(cfg):
             said.append("firewall: %d rule(s) of fake-igd 1.3 taken out of INPUT (--comment fake-igd) - "
                         "%s does what they did" % (old, CHAIN))
         said.append(fw_file(cfg, conf))
+        said += fwd_sync(cfg)
     except BaseException:
         fw_put_live_back(was_live)
         fw_file_put_back(was_file)
         raise
     return said
+
+
+def gateway_said(cfg):
+    """With fake-igd's firewall off: the gateway's chain out, and why (the system's FORWARD decides)."""
+    try:
+        said = fwd_sync(cfg)
+    except (Refused, OSError, subprocess.SubprocessError) as e:
+        return ["gateway: %s" % e]
+    if gateway_applied()[0]:
+        said.append("gateway: fake-igd's firewall is off - the system's own FORWARD rules decide whether the "
+                    "devices' packets are forwarded")
+    return said
+
+
+# ---- the gateway mode (1.7.15): FAKE-IGD-FWD, first in FORWARD --------------------------------
+# Settings → Gateway mode: chosen devices use this server as their default gateway (a PS5 asks UPnP
+# only of its gateway). Root's part is deploy/root_gateway.py; the chain is built here beside
+# FAKE-IGD-IN, from what root_gateway.py put in (its state file - never from an ask), and kept in
+# /etc/sysconfig/iptables between marks of its own. Addresses only, no conntrack state: the way
+# back goes from the router to the device directly (asymmetric), so this server sees one half of
+# each connection - a state match would call the device's packets INVALID. IPv4 only: IPv6
+# forwarding is not turned on.
+FWD_CHAIN = "FAKE-IGD-FWD"
+GW_BEGIN = "%s gateway begin - fake-igd's gateway mode (Settings → Gateway mode); do not change these lines" % MARK
+GW_END = "%s gateway end" % MARK
+GW_STATE = os.path.join(WEB_DIR, "gateway.json")
+
+
+def gateway_applied():
+    """What root_gateway.py put in: (on, [clients]) - read from its own file, each value checked again."""
+    try:
+        with open(GW_STATE, encoding="utf-8") as f:
+            st = json.load(f)
+    except (OSError, ValueError):
+        return False, []
+    if not isinstance(st, dict) or st.get("mode") is not True:
+        return False, []
+    return True, nets_of(st.get("clients") if isinstance(st.get("clients"), list) else [], 4)
+
+
+def fwd_rules(clients):
+    out = []
+    for c in clients:
+        out.append("-A %s -s %s -m comment --comment \"fake-igd: gateway for %s\" -j ACCEPT" % (FWD_CHAIN, c, c))
+        out.append("-A %s -d %s -m comment --comment \"fake-igd: gateway back to %s\" -j ACCEPT" % (FWD_CHAIN, c, c))
+    return out
+
+
+def fwd_live(clients):
+    """The chain as it should be, live, and its jump first in FORWARD (before EL's -j REJECT)."""
+    body = "*filter\n:%s - [0:0]\n%s\nCOMMIT\n" % (FWD_CHAIN, "\n".join(fwd_rules(clients)))
+    run(["iptables-restore", "--test", "--noflush"], body)
+    run(["iptables-restore", "--noflush"], body)
+    rules = [x for x in run(["iptables", "-S", "FORWARD"]).stdout.splitlines() if x.startswith("-A FORWARD")]
+    if not rules or rules[0] != "-A FORWARD -j %s" % FWD_CHAIN:
+        while subprocess.run(["iptables", "-D", "FORWARD", "-j", FWD_CHAIN], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL).returncode == 0:
+            pass
+        run(["iptables", "-I", "FORWARD", "1", "-j", FWD_CHAIN])
+
+
+def fwd_live_off():
+    """The jump and the chain taken away (live); whether there was anything to take."""
+    if not shutil.which("iptables"):
+        return False
+    had = subprocess.run(["iptables", "-S", FWD_CHAIN], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL).returncode == 0
+    while subprocess.run(["iptables", "-D", "FORWARD", "-j", FWD_CHAIN], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL).returncode == 0:
+        pass
+    subprocess.run(["iptables", "-F", FWD_CHAIN], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["iptables", "-X", FWD_CHAIN], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return had
+
+
+def fwd_file_with(text, clients):
+    """/etc/sysconfig/iptables with the gateway's lines (clients a list) - or without them (None)."""
+    lines, inside = [], False
+    for ln in text.splitlines():
+        if ln.startswith(MARK + " gateway begin"):
+            inside = True
+            continue
+        if ln.startswith(GW_END):
+            inside = False
+            continue
+        if inside or FWD_CHAIN in ln:
+            continue
+        lines.append(ln)
+    if clients is None:
+        return "\n".join(lines) + "\n"
+    ours = [GW_BEGIN, ":%s - [0:0]" % FWD_CHAIN, "-A FORWARD -j %s" % FWD_CHAIN] + fwd_rules(clients) + [GW_END]
+    try:
+        top = lines.index("*filter")
+    except ValueError:
+        return "\n".join(lines + ["*filter", ":INPUT ACCEPT [0:0]", ":FORWARD ACCEPT [0:0]",
+                                  ":OUTPUT ACCEPT [0:0]"] + ours + ["COMMIT"]) + "\n"
+    at = top + 1
+    while at < len(lines) and (lines[at].startswith(":") or lines[at].startswith("#")):
+        at += 1
+    return "\n".join(lines[:at] + ours + lines[at:]) + "\n"
+
+
+def fwd_file(clients):
+    """The gateway's lines into /etc/sysconfig/iptables (None: out of it) - checked with --test first."""
+    path = IPT_FILE
+    if not os.path.exists(path):
+        return "" if clients is None else \
+            "%s is not there (iptables-services not installed?) - the gateway's rules are live, not kept over a " \
+            "reboot" % path
+    if os.path.islink(path) or not os.path.isfile(path):
+        return "%s is not a plain file - left as it is" % path
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    new = fwd_file_with(text, clients)
+    if new == text:
+        return ""
+    t = subprocess.run(["iptables-restore", "--test"], input=new, stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT, universal_newlines=True)
+    if t.returncode != 0:
+        raise Refused("%s would not load with the gateway's lines (iptables-restore --test): %s - left as it was"
+                      % (path, t.stdout.strip()[:300]))
+    st = os.stat(path)
+    fd, tmp = tempfile.mkstemp(prefix=".iptables.", dir=os.path.dirname(path))
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(new)
+    os.chmod(tmp, stat.S_IMODE(st.st_mode))
+    os.replace(tmp, path)
+    if shutil.which("restorecon"):
+        subprocess.run(["restorecon", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return "%s: the gateway's rules %s" % (path, "taken out" if clients is None else "kept over a reboot")
+
+
+def fwd_sync(cfg):
+    """FAKE-IGD-FWD as root_gateway.py put the mode in, and fake-igd's firewall is: live and in the file.
+    Called after every change of the firewall too (turned off: the chain goes with FAKE-IGD-IN)."""
+    on, clients = gateway_applied()
+    use = on and bool(clients) and flag(cfg.get("firewall"), False) and fw_backend() == "iptables"
+    said = []
+    if use:
+        fwd_live(clients)
+        said.append("gateway: %s first in FORWARD - %s may use this server as their gateway"
+                    % (FWD_CHAIN, ", ".join(clients)))
+        f = fwd_file(clients)
+        if f:
+            said.append(f)
+        return said
+    if fwd_live_off():
+        said.append("gateway: %s and its jump taken out of FORWARD" % FWD_CHAIN)
+    f = fwd_file(None) if os.path.isfile(IPT_FILE) else ""
+    if f:
+        said.append(f)
+    return said
+
+
+def forward_view():
+    """FORWARD as the kernel has it: its policy, the first rules, ours first, and the packets and bytes of
+    each rule of FAKE-IGD-FWD (iptables -vnx: root's)."""
+    out = {"iptables": have_iptables(), "backend": fw_backend(), "policy": "", "first": [], "ours_first": False,
+           "chain": False, "rejects": False, "counters": {}}
+    if not out["iptables"]:
+        return out
+    r = subprocess.run(["iptables", "-S", "FORWARD"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                       universal_newlines=True)
+    lines = r.stdout.splitlines()
+    for ln in lines:
+        if ln.startswith("-P FORWARD "):
+            out["policy"] = ln.split()[2]
+    rules = [x for x in lines if x.startswith("-A FORWARD")]
+    out["first"] = rules[:8]
+    out["ours_first"] = bool(rules) and rules[0] == "-A FORWARD -j %s" % FWD_CHAIN
+    out["rejects"] = out["policy"] in ("DROP", "REJECT") or any(re.search(r"-j (REJECT|DROP)\b", x) for x in rules)
+    v = subprocess.run(["iptables", "-v", "-x", "-n", "-L", FWD_CHAIN], stdout=subprocess.PIPE,
+                       stderr=subprocess.DEVNULL, universal_newlines=True)
+    out["chain"] = v.returncode == 0
+    for ln in v.stdout.splitlines()[2:]:
+        f = ln.split()
+        if len(f) < 9 or not f[0].isdigit():
+            continue
+        pk, by, src, dst = int(f[0]), int(f[1]), f[7], f[8]
+        if src != "0.0.0.0/0":
+            c = out["counters"].setdefault(src, {"out_pkts": 0, "out_bytes": 0, "back_pkts": 0, "back_bytes": 0})
+            c["out_pkts"] += pk
+            c["out_bytes"] += by
+        elif dst != "0.0.0.0/0":
+            c = out["counters"].setdefault(dst, {"out_pkts": 0, "out_bytes": 0, "back_pkts": 0, "back_bytes": 0})
+            c["back_pkts"] += pk
+            c["back_bytes"] += by
+    return out
 
 
 def fw_full(fam):
