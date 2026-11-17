@@ -632,6 +632,78 @@ allow_lines() {         # allow_lines "a,b" -> nginx allow lines, or the default
     printf '%s' "${out%$'\n'}"
 }
 
+# The tools SELinux is looked after with (otp 1.0.236), where the system has them in its own repositories:
+# put in when missing, at every install and upgrade, with SELinux disabled too - "Make it ready" and
+# `upnp selinux` need them; the mode is not touched. auditd started where SELinux is on (without it nothing
+# refused is written down). Offline: said, not fatal.
+selinux_tools() {
+    command -v dnf >/dev/null 2>&1 || return 0
+    [[ -d /etc/selinux || -x /usr/sbin/getenforce ]] || return 0
+    local want=() p
+    for p in policycoreutils libselinux-utils policycoreutils-python-utils audit selinux-policy-targeted; do
+        rpm -q "$p" >/dev/null 2>&1 || want+=("$p")
+    done
+    if (( ${#want[@]} )); then
+        if dnf install -y -q "${want[@]}" >/dev/null 2>&1; then
+            good "SELinux: put in ${want[*]}"
+        else
+            warn "SELinux: ${want[*]} could not be put in (no repository reached?) - dnf install -y ${want[*]}"
+        fi
+    fi
+    if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce 2>/dev/null)" != "Disabled" ]] &&
+            command -v auditd >/dev/null 2>&1 && ! systemctl is-active --quiet auditd 2>/dev/null; then
+        # auditd refuses to be started by systemctl on some releases: service(8) then.
+        { systemctl enable --now auditd >/dev/null 2>&1 || service auditd start >/dev/null 2>&1; } &&
+            good "SELinux: auditd started - what SELinux refuses is written down" ||
+            warn "SELinux: auditd could not be started - systemctl enable --now auditd"
+    fi
+    return 0
+}
+
+# fake-igd's SELinux module (1.7.7, otp's otp_server 1.0.233): only labels - /run/fake-igd-api as the web
+# server's own run files, so the pages may read the API's token under enforcing. Kept beside the program
+# always; put into the policy where SELinux is on, and only when it changed (semodule takes its time) -
+# compared with the one last put in, not with the copy beside the program (otp 1.0.234). Where SELinux is
+# disabled nothing is done: "Make it ready" on the pages (Settings → SELinux) puts it in.
+selinux_module() {
+    selinux_tools
+    [[ -f "$SOURCE_DIR/deploy/fake_igd_server.cil" ]] || return 0
+    local had=""
+    cmp -s "$SOURCE_DIR/deploy/fake_igd_server.cil" "$OPT_DIR/fake_igd_server.cil.in-policy" 2>/dev/null && had=1
+    install -D -m 0644 -o root -g root "$SOURCE_DIR/deploy/fake_igd_server.cil" "$OPT_DIR/fake_igd_server.cil"
+    command -v getenforce >/dev/null 2>&1 || return 0
+    command -v semodule >/dev/null 2>&1 || return 0
+    if [[ "$(getenforce)" == "Disabled" ]]; then FACT_SELINUX_MODULE=off; return 0; fi
+    if [[ -z "$had" ]] || ! semodule -l 2>/dev/null | awk '$1=="fake_igd_server"{f=1} END{exit !f}'; then
+        if semodule -i "$OPT_DIR/fake_igd_server.cil" 2>/dev/null; then
+            install -m 0644 "$OPT_DIR/fake_igd_server.cil" "$OPT_DIR/fake_igd_server.cil.in-policy"
+            good "SELinux: fake-igd's module (fake_igd_server) is in the policy"
+            FACT_SELINUX_MODULE=in
+        else
+            warn "SELinux: fake-igd's module could not be put in: semodule -i $OPT_DIR/fake_igd_server.cil"
+            FACT_SELINUX_MODULE=failed
+        fi
+    else
+        FACT_SELINUX_MODULE=in
+    fi
+    # The label of before 1.7.7 (a local rule of semanage fcontext): the module says the same now.
+    if [[ "$FACT_SELINUX_MODULE" == in ]] && command -v semanage >/dev/null 2>&1 &&
+            semanage fcontext -l -C 2>/dev/null | grep -q '^/run/fake-igd-api(/\.\*)?'; then
+        semanage fcontext -d '/run/fake-igd-api(/.*)?' 2>/dev/null || true
+    fi
+    [[ -d /run/fake-igd-api ]] && command -v restorecon >/dev/null 2>&1 && restorecon -R /run/fake-igd-api 2>/dev/null || true
+    # Said when the policy does not label it (otp 1.0.234): the pages could not read the API's token under
+    # enforcing - Settings → SELinux says what else is missing.
+    if command -v matchpathcon >/dev/null 2>&1; then
+        local want=""
+        want="$(matchpathcon /run/fake-igd-api 2>/dev/null || true)"
+        case "$want" in
+            *httpd_var_run_t*|*httpd_runtime_t*) ;;
+            *) warn "SELinux: the policy does not label /run/fake-igd-api for the pages (${want:-nothing}) - sudo upnp selinux check";;
+        esac
+    fi
+}
+
 install_pages() {
     step "The web pages (nginx, php-fpm)"
     install -d -m 0755 "$WEB_DIR" "$WEB_DIR/admin" "$WEB_DIR/assets"
@@ -754,20 +826,13 @@ PY
     systemctl restart nginx || warn "nginx could not be started again - systemctl status nginx; journalctl -u nginx -n 30"
 
     # ---- SELinux ---------------------------------------------------------------
+    selinux_module
     if command -v getenforce >/dev/null && [[ "$(getenforce)" != "Disabled" ]]; then
         say "SELinux is $(getenforce)"
         setsebool -P httpd_can_network_connect 1 2>/dev/null || warn "could not set httpd_can_network_connect"
-        if command -v semanage >/dev/null; then
-            # The API's token is read by the pages (httpd_t): the folder systemd makes is labelled for them.
-            semanage fcontext -a -t httpd_var_run_t '/run/fake-igd-api(/.*)?' 2>/dev/null \
-                || semanage fcontext -m -t httpd_var_run_t '/run/fake-igd-api(/.*)?' 2>/dev/null || true
-            [[ -d /run/fake-igd-api ]] && restorecon -R /run/fake-igd-api 2>/dev/null || true
-        else
-            warn "semanage is missing (policycoreutils-python-utils) - the pages may not read the API's token"
-        fi
         restorecon -R "$WEB_DIR" "$CERT_DIR" "$NGINX_CONF" /etc/php-fpm.d 2>/dev/null || true
         good "the pages may talk to the API on 127.0.0.1"
-        note "If the pages say the token is unreadable: ausearch -m avc -ts recent | audit2allow -M fake-igd-local"
+        note "If the pages say the token is unreadable: sudo upnp selinux check (or Settings → SELinux)"
     fi
 }
 
@@ -882,7 +947,7 @@ does_it_work() {
 root_facts_write() {
     [[ -d "$OPT_DIR" && ! -L "$OPT_DIR" ]] || return 0
     FACT_VERSION="$VERSION" FACT_KIND="${DO_UPGRADE:+upgrade}" FACT_NGINX_ADD="$FACT_NGINX_ADD" \
-        FACT_FIREWALL="$FACT_FIREWALL" "$VENV/bin/python" -I "$SOURCE_DIR/deploy/write_root_facts.py" "$OPT_DIR/root-facts.json" \
+        FACT_FIREWALL="$FACT_FIREWALL" FACT_SELINUX_MODULE="$FACT_SELINUX_MODULE" "$VENV/bin/python" -I "$SOURCE_DIR/deploy/write_root_facts.py" "$OPT_DIR/root-facts.json" \
         || warn "$OPT_DIR/root-facts.json could not be written"
     chown root:root "$OPT_DIR/root-facts.json" 2>/dev/null || true
     local floor=1.4.0 was=""
@@ -955,6 +1020,7 @@ ADDED_KEYS=""
 ADDED_USER=""
 FACT_NGINX_ADD=""
 FACT_FIREWALL=""
+FACT_SELINUX_MODULE=""
 
 if [[ -z "$FORCE" ]]; then
     [[ "$OS_MAJOR" == "9" && " $OS_FAMILY " =~ (rhel|almalinux|centos|rocky) ]] \
@@ -1083,6 +1149,8 @@ if [[ -n "$DO_UPGRADE" ]]; then
     if [[ -n "$WITH_WEB" ]]; then
         install_pages
         first_account
+    else
+        selinux_module          # without the pages too (otp 1.0.265): the labels of root's parts
     fi
     open_firewall
     root_facts_write
@@ -1141,6 +1209,8 @@ install_units || fail "sort that out and run this again (journalctl -u fake-igd 
 if [[ -n "$WITH_WEB" ]]; then
     install_pages
     first_account
+else
+    selinux_module              # without the pages too (otp 1.0.265)
 fi
 open_firewall
 root_facts_write

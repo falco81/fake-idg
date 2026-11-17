@@ -2,6 +2,33 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.7.7 (2026-11-17)
+
+**SELinux, as otp's** (otp 1.0.288's, for one server):
+- **Its own policy module** `fake_igd_server` (deploy/fake_igd_server.cil, as otp_server.cil): the API's
+  run folder (/run/fake-igd-api - its token and port) labelled as the web server's own run files, so the
+  pages (php-fpm, httpd_t) read it under enforcing; systemd may set owner and mode in it. Compiled with
+  secilc against a full reference policy.
+- **install.sh** (install and every upgrade, --no-web too): puts in what SELinux needs (policycoreutils,
+  libselinux-utils, policycoreutils-python-utils, audit, selinux-policy-targeted) and starts auditd where
+  SELinux is on - never changes its mode; loads the module only when it changed (semodule -i, the copy
+  last put in kept as .in-policy); takes the old hand-made fcontext rule away; says when the folder is still
+  not labelled; root-facts.json says whether the module is in. **uninstall.sh** takes the module away.
+- **Settings → SELinux** (Access): otp's SELinux card - the mode, fake-igd's module, the labels of the
+  API's folder, its token and the pages, the boolean that lets the pages ask the API
+  (httpd_can_network_connect), the SSH server's port, and what SELinux refused since fake-igd's needs were
+  put in (from the audit log, less what the policy allows now - audit2why); the steps as otp's: Make it
+  ready (and permissive), Enforce (only from permissive, with nothing missing and nothing refused),
+  Permissive again; the report to download. Looked at two minutes after the start, then every half hour;
+  every step in the events. Done by root (deploy/root_selinux.py), which works out what fake-igd needs
+  itself - never from the request.
+- **Command line**: `sudo upnp selinux [check|prepare|apply|enforce|permissive|report [FILE]]`; the
+  console's "Certificates, updates, time, tests" has otp's three items.
+- **Alert** "SELinux refusing" (off as it comes, as otp's); **To be done by hand**: the module in the
+  policy is not this version's; SELinux refuses fake-igd something.
+- Not ported (otp's only): RADIUS, PostgreSQL and load-balancer labels, the cluster's cards, High security's
+  rows, the SELinux part of a backup.
+
 ## 1.7.6 (2026-11-17)
 
 Round 4, run 3 of 3 (the last): everything of runs 1-2 checked again, a last side-by-side with otp, a bug

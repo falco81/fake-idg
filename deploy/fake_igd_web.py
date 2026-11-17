@@ -1069,6 +1069,37 @@ def main(argv):
     if os.geteuid() != 0:
         print("fake_igd_web.py: run as root")
         return 1
+    if argv[:1] in (["--selinux-check"], ["--selinux-do"], ["--selinux-report"]):
+        # `sudo upnp selinux ...` (1.7.7, otp's otp_web.py --selinux-check / --selinux-do / --selinux-report):
+        # this machine's SELinux, worked out and done here - what fake-igd needs is read by root itself.
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import root_selinux as SE
+        try:
+            if argv[0] == "--selinux-report":
+                if len(argv) < 2:
+                    print("fake_igd_web.py --selinux-report FILE", file=sys.stderr)
+                    return 2
+                node = re.sub(r"[^A-Za-z0-9._-]", "", os.uname()[1].split(".")[0])[:60] or "server"
+                SE.se_report_write(SE.se_report_bytes(node), argv[1])
+                print(argv[1])
+                return 0
+            if argv[0] == "--selinux-do":
+                step = {"apply": "prepare"}.get(argv[1] if len(argv) > 1 else "", argv[1] if len(argv) > 1 else "")
+                if step not in ("prepare", "enforce", "permissive"):
+                    print("fake_igd_web.py --selinux-do prepare|apply|enforce|permissive", file=sys.stderr)
+                    return 2
+                c = SE.se_do(step)
+                said = c.pop("said", [])
+                print(json.dumps(c) if "--json" in argv else "\n".join(["done: " + x for x in said] + [SE.se_text(c)]))
+                return 0
+            c = SE.se_check()
+        except (SE.Refused, OSError) as e:
+            print("fake_igd_web.py: %s" % e, file=sys.stderr)
+            return 2
+        print(json.dumps(c) if "--json" in argv else SE.se_text(c))
+        return 0 if (c["mode"] in ("absent", "Disabled") or not c["problems"]) else 1
     if argv[:1] == ["--kind"] and len(argv) >= 2:
         # A module's part by hand (install.sh, tests): --kind NAME [JSON]
         payload = json.loads(argv[2]) if len(argv) > 2 else {}

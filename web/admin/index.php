@@ -545,6 +545,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     <button type="button" class="fulladmin-only" data-pane="sshd" data-icon="shield" title="How the SSH server lets people in - root, passwords, the port - and the notice shown before and after signing in.">SSH server and notices</button>
     <button type="button" class="fulladmin-only" data-pane="sshkeys" data-icon="key" title="The keys that may sign in over SSH - as root or as a user who may sign in here: made here, added or taken away.">SSH keys</button>
     <button type="button" class="fulladmin-only" data-pane="osusers" data-icon="people" title="The users of this machine's own system: root shown, the others made, given a password or sudo, locked or taken away.">Local users</button>
+    <button type="button" class="fulladmin-only" data-pane="selinux" data-icon="shield" title="SELinux on this server: the mode now and after a restart, what fake-igd needs of it, what it refused - and the steps to permissive and enforcing.">SELinux</button>
     <div class="ctl-group">Server</div>
     <button type="button" class="fulladmin-only" data-pane="net" data-icon="ethernet" title="This machine's addresses, gateway, DNS servers, host name and IPv6 - each interface.">Network</button>
     <button type="button" class="fulladmin-only" data-pane="proxy" data-icon="globe" title="An HTTP proxy, for what you switch on: the new versions, the system updates, ACME, notifications.">Proxy</button>

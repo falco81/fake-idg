@@ -25,6 +25,10 @@ out = {"installer": re.sub(r"[^0-9.]", "", env("FACT_VERSION") or "")[:20], "at"
        "firewall": was.get("firewall") if isinstance(was.get("firewall"), dict) else {}}
 if env("FACT_NGINX_ADD") in ("ok", "failed"):
     out["nginx"] = {"additions": env("FACT_NGINX_ADD"), "at": now}
+# fake-igd's SELinux module (1.7.7, otp's selinux_module fact): in the policy, failed, or not looked at.
+out["selinux_module"] = re.sub(r"[^a-z]", "", str(was.get("selinux_module") or ""))[:10]
+if env("FACT_SELINUX_MODULE") in ("in", "failed", "off"):
+    out["selinux_module"] = env("FACT_SELINUX_MODULE")
 if env("FACT_FIREWALL") in ("firewalld", "iptables", "none"):
     out["firewall"] = {"state": env("FACT_FIREWALL"), "at": now}
 if os.path.islink(path):

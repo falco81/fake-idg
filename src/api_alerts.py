@@ -124,6 +124,9 @@ SETTINGS = [
     {"key": "alerts_trial", "name": "A change on trial that went back", "kind": "bool", "default": True,
      "only_when": ON, "says": "A change of the network, the firewall or the SSH server on trial that was not kept "
                               "and went back by itself - whoever made it may have lost the way in."},
+    {"key": "alerts_selinux", "name": "SELinux refusing", "kind": "bool", "default": False, "only_when": ON,
+     "says": "The SELinux card (Settings → SELinux) finds something not as fake-igd needs it - a refusal, a "
+             "label, a boolean, the module."},
     {"key": "alerts_url", "name": "The administration\u2019s address in the mails", "kind": "text", "default": "",
      "check": _url, "most": 300,
      "says": "Where the links in the mails lead, <code>https://fake-igd.example.cz/admin/</code>. "
@@ -316,6 +319,17 @@ def problems(ctx, c=None):
                 if st.get("ok") is False and time.time() - float(st.get("failed_at") or 0) <= 14 * 86400:
                     out["acme"] = {"level": "warn", "title": "The CA did not renew the certificate", "pane": "acme",
                                    "said": str(st.get("said") or "see Settings → Automatic certificates")[:300]}
+        except Exception:                               # noqa: BLE001
+            pass
+    # SELinux (off by default, as otp's alerts_selinux).
+    if c.get("alerts_selinux"):
+        try:
+            import api_selinux as SEL
+            probs = [p for p in SEL.problems(ctx.store) if "ready for enforcing" not in p]
+            if probs:
+                n = SEL.node_name()
+                out["selinux:" + n] = {"level": "warn", "title": "SELinux on %s: something is not as fake-igd needs it"
+                                       % n, "pane": "selinux", "said": "; ".join(probs)[:300]}
         except Exception:                               # noqa: BLE001
             pass
     if c.get("alerts_snmp", True):

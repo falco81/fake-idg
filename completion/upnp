@@ -5,7 +5,7 @@ _upnp() {
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local cmds="status ports requests mappings clients log dnat firewall mdns notify-test config mode response test start stop restart enable disable clear upgrade user web version api events check backup db updates time tls acme net mail-test siem-test proxy-test snmp-trap export-config import-config power help"
+  local cmds="status ports requests mappings clients log dnat firewall mdns notify-test config mode response test start stop restart enable disable clear upgrade user web version api events check backup db updates time tls acme net mail-test siem-test proxy-test snmp-trap export-config import-config power selinux help"
   local keys="mode mapping_response http_port external_ip interfaces exclude_interfaces allowed_clients ntfy_url notify_on_renew log_level log_file request_log state_dir interface_rescan_seconds notify_interval_seconds site_name api_port session_idle_minutes web_allow firewall firewall_ssh firewall_icmp upgrade_url upgrade_check ntfy_token ntfy_user ntfy_password ntfy_priority ntfy_tags ntfy_ca_file notify_other_router"
   local glob="--config --color --no-color --no-dns -h --help"
 
@@ -91,6 +91,7 @@ _upnp() {
     export-config)  COMPREPLY=($(compgen -f -W "--with-secrets" -- "$cur")) ;;
     import-config)  COMPREPLY=($(compgen -f -W "--replace --yes" -- "$cur")) ;;
     power)          COMPREPLY=($(compgen -W "status reboot poweroff cancel --in --yes --json $glob" -- "$cur")) ;;
+    selinux)        COMPREPLY=($(compgen -W "check prepare apply enforce permissive report --yes --json $glob" -- "$cur")) ;;
     firewall|fw)    COMPREPLY=($(compgen -W "--format --interface --source --zone --apply --off --status $glob" -- "$cur")) ;;
     test|t)         COMPREPLY=($(compgen -W "--st --timeout --target --add $glob" -- "$cur")) ;;
     clear)          COMPREPLY=($(compgen -W "--requests --log --all -y --yes" -- "$cur")) ;;

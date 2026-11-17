@@ -17,7 +17,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from xml.etree import ElementTree as ET
 
-VERSION = "1.7.6"
+VERSION = "1.7.7"
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 APP = "fake-igd"
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
@@ -1642,6 +1642,7 @@ commands by purpose:
   mDNS reflector  mdns (status, services, browse, reflector, interfaces, filters, log)
   maintenance     check, events, db, backup, export-config, import-config, clear, version
   upgrades        upgrade (check, online, file, status, follow, log, after), updates (the system's)
+  security        selinux (check, prepare, enforce, permissive, report), firewall
   web pages       web, tls, acme, user (list, add, passwd, role, del, sessions, lockouts)
   the machine     net, time, updates, power
   tests           test, notify-test, mail-test, siem-test, proxy-test, snmp-trap
@@ -2236,6 +2237,28 @@ def build_parser():
     s.add_argument("--yes", "-y", action="store_true", help="do not ask")
     s.add_argument("--json", action="store_true", help="JSON output (status)")
     s.set_defaults(func=admin("cmd_power"))
+
+    s = add("selinux", "SELinux on this server: how it stands, a step, the report (otp --selinux-check, --selinux)",
+            "  check             the mode now and after a restart, fake-igd's module, the labels of its files,\n"
+            "                    the boolean and ports it needs, what SELinux refused since the machine started\n"
+            "                    (nothing is changed; exit 1 when something is not as fake-igd needs it)\n"
+            "  prepare           disabled: permissive at the next start, every file labelled then, the module in\n"
+            "                    (the machine is not restarted now); permissive: what fake-igd needs put in\n"
+            "  apply             the same as prepare while permissive: module, labels, boolean, ports\n"
+            "  enforce           permissive -> enforcing, now and after a restart - only when nothing is missing\n"
+            "                    and nothing was refused\n"
+            "  permissive        enforcing -> permissive, now and after a restart\n"
+            "  report [FILE]     what SELinux says here, for whoever writes fake-igd's module, as one file\n"
+            "                    (/root/fake-igd-selinux-report-NODE-DATE.tar.gz unless named); nothing changed\n"
+            "As root; root's helper does it, the same as Settings → SELinux on the pages.",
+            "examples:\n  sudo upnp selinux\n  sudo upnp selinux prepare --yes\n  sudo upnp selinux enforce\n"
+            "  sudo upnp selinux report")
+    s.add_argument("what", nargs="?", choices=("check", "prepare", "apply", "enforce", "permissive", "report"),
+                   metavar="check|prepare|apply|enforce|permissive|report")
+    s.add_argument("file", nargs="?", metavar="FILE", help="report: where to write it")
+    s.add_argument("--yes", "-y", action="store_true", help="do not ask")
+    s.add_argument("--json", action="store_true", help="JSON output (check and the steps)")
+    s.set_defaults(func=admin("cmd_selinux"))
 
     s = add("help", "help for a command", "upnp help <command> = upnp <command> --help")
     s.add_argument("topic", nargs="?", metavar="COMMAND")

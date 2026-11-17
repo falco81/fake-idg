@@ -26,6 +26,7 @@ SELinux's boolean and label (/sys/fs/selinux, the run folder's label), PHP's php
 Each thing is an entry of AFTER: words, the commands with a Copy button, a check; one that can
 be checked goes by itself, one that cannot waits for Done.
 """
+import hashlib
 import json
 import os
 import re
@@ -394,6 +395,18 @@ def after_facts(ctx):
         except (OSError, AttributeError):
             se["label"] = ""
     f["selinux"] = se
+    # The SELinux card's last look (1.7.7, root_selinux.py): mode, module, refusals - and the module beside the
+    # program against the one last put into the policy (otp's cil / cil_in).
+    try:
+        f["se_now"] = (json.loads(ctx.store.get_meta("selinux:now") or "{}") or {}).get("data") or {}
+    except (ValueError, AttributeError):
+        f["se_now"] = {}
+
+    def sha(p):
+        raw = _read(p, 1 << 20)
+        return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest() if raw is not None else ""
+    f["cil"] = sha(os.path.join(LIB, "fake_igd_server.cil"))
+    f["cil_in"] = sha(os.path.join(LIB, "fake_igd_server.cil.in-policy"))
     php = None
     if os.path.isdir(PHP_D):
         php = {"guard": _read(os.path.join(PHP_D, "99-php2shell.ini"), 8192)}
@@ -469,9 +482,25 @@ def _ck_selinux(ctx, f):
                        "args": {"mode": se["mode"].lower(), "what": "; ".join(what)}})
 
 
+def _ck_se_module(ctx, f):
+    """fake-igd's module in the policy not the one beside this version (install.sh's semodule -i failed, or
+    never ran while SELinux is on) - otp's selinux-module."""
+    d = f.get("se_now") or {}
+    mode = d.get("mode")
+    if mode not in ("Enforcing", "Permissive"):
+        return "na"
+    off = d.get("module") is False
+    old = bool(f.get("cil")) and f.get("cil_in") != f.get("cil")
+    if not (off or old):
+        return "done"
+    return ("needed", {"sig": str(f.get("cil") or "")[:16], "level": "bad" if mode == "Enforcing" else "warn",
+                       "args": {"mode": mode.lower(),
+                                "how": "is not in its policy" if off else
+                                "in its policy is older than the one of this version"}})
+
+
 def _ck_se_refused(ctx, f):
-    rf = f.get("root") or {}
-    d = rf.get("selinux") or {}
+    d = f.get("se_now") or ((f.get("root") or {}).get("selinux") or {})
     if d.get("mode") != "Enforcing":
         return "na"
     try:
@@ -565,17 +594,34 @@ after_entry(
     foot="This band goes by itself once it is so (looked at every ten minutes; Look again asks now).")
 
 after_entry(
+    id="selinux-module", since="1.7.7", level="warn", ack="auto", check=_ck_se_module,
+    title="SELinux: fake-igd's module is not the one this version needs",
+    why="SELinux is {mode} on this server, and fake-igd's module (fake_igd_server) {how}: the labels it gives "
+        "fake-igd's files are missing, and the pages may not read what they need. Do not switch SELinux off for "
+        "it - put the module in, as install.sh does.",
+    steps=[{"where": "root", "lead": "As root, on the server:",
+            "cmd": "semodule -i /opt/fake-igd/fake_igd_server.cil && install -m 0644 /opt/fake-igd/fake_igd_server.cil "
+                   "/opt/fake-igd/fake_igd_server.cil.in-policy"},
+           {"where": "root", "lead": "Then see that nothing else is missing:", "cmd": "upnp selinux check"},
+           {"where": "pages", "pane": "selinux",
+            "words": "Or on Settings → SELinux: Put in what fake-igd needs (while permissive)."}],
+    foot="This band goes by itself once the module is in (SELinux is looked at every half hour; Look again asks "
+         "sooner).")
+
+after_entry(
     id="selinux-refused", since="1.6.1", level="bad", ack="auto", check=_ck_se_refused,
     title="SELinux refuses fake-igd something on this server",
-    why="SELinux is enforcing and refused {n} thing(s) to fake-igd or to the programs it works with (nginx, "
-        "php-fpm, the API): what was refused does not work. Do not switch SELinux off for it: see what it is, and "
-        "allow that alone.",
-    steps=[{"where": "root", "lead": "As root, on the server - what is refused:",
-            "cmd": "ausearch -m avc -ts recent"},
-           {"where": "root", "lead": "A local module that allows exactly that:",
-            "cmd": "ausearch -m avc -ts recent | audit2allow -M fake-igd-local && semodule -i fake-igd-local.pp"}],
-    foot="This band goes by itself once nothing is refused any more. Done takes it away until something more is "
-         "refused.")
+    why="SELinux is enforcing and refused {n} thing(s) to fake-igd or to the programs it works with (since "
+        "fake-igd's needs were last put in, or since the machine started): what was refused does not work - the "
+        "pages, root's helper, the SSH server on its port. Do not switch SELinux off for it: see what it is, put in "
+        "what fake-igd needs, or send the report to whoever looks after fake-igd's module.",
+    steps=[{"where": "root", "lead": "As root, on the server - what is refused:", "cmd": "upnp selinux check"},
+           {"where": "root", "lead": "The report, for whoever looks after fake-igd's module:",
+            "cmd": "upnp selinux report"},
+           {"where": "pages", "pane": "selinux",
+            "words": "Settings → SELinux says the same, with what fake-igd needs."}],
+    foot="This band goes by itself once nothing is refused any more (put right, or after the next start of the "
+         "machine). Done takes it away until something more is refused.")
 
 after_entry(
     id="php2shell", since="1.6.1", level="bad", ack="auto", check=_ck_php,

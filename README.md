@@ -1,4 +1,4 @@
-# fake-igd 1.7.6
+# fake-igd 1.7.7
 
 A fake UPnP router (IGD) for reconnaissance: it finds out **which ports a PS5 (or any other device) wants to open**, without enabling UPnP on your real router. Everything is logged to `/var/log/fake-igd/` and controlled with the **`upnp`** command - or by its menus with **`upnp --console`**. It also shows and controls the **mDNS reflector (avahi-daemon)** running on the same server, and sends notifications to **ntfy** (ntfy.sh or your private server).
 
@@ -20,8 +20,8 @@ packages only, checked and put in by root, exactly as otp does it.
 ## Installation (AlmaLinux 9)
 
 ```bash
-tar xzf fake-igd-1.7.6.tar.gz
-cd fake-igd-1.7.6
+tar xzf fake-igd-1.7.7.tar.gz
+cd fake-igd-1.7.7
 sudo ./install.sh
 ```
 
@@ -47,8 +47,9 @@ The installer does everything (each step says `==> what`, as otp's):
    where it runs; where iptables is in use instead, see 10.
 7. Starts the service and shows `upnp status`.
 8. The web pages: PHP 8.3 (AppStream), a php-fpm pool of its own (`fake-igd-www`), nginx with TLS
-   (a self-signed certificate unless `--cert`/`--key`), SELinux (`httpd_can_network_connect`, the API's
-   token labelled for the pages), the API service `fake-igd-api`, and the first account.
+   (a self-signed certificate unless `--cert`/`--key`), SELinux (fake-igd's module `fake_igd_server`, which
+   labels the API's token for the pages, and `httpd_can_network_connect` - see *SELinux*), the API service
+   `fake-igd-api`, and the first account.
 9. Upgrades: root's helpers `/opt/fake-igd/fake_igd_upgrade.py` and `fake_igd_web.py`, the release key
    in `/opt/fake-igd/release-keys/`, and the path units `fake-igd-upgrade.path`, `fake-igd-web.path`.
 10. The firewall - **iptables, as otp**: where iptables is in use (iptables.service, or rules in INPUT)
@@ -91,7 +92,7 @@ Or on the pages: *Settings → Upgrades* - *Look now*, *Upgrade to X now*, or dr
 console: menu **14 Upgrades**. Or by hand, as before:
 
 ```bash
-tar xzf fake-igd-1.7.6.tar.gz && cd fake-igd-1.7.6
+tar xzf fake-igd-1.7.7.tar.gz && cd fake-igd-1.7.7
 sudo ./install.sh --upgrade
 ```
 
@@ -157,7 +158,7 @@ their own and stay); `web_allow` and the firewall's settings are put in place by
 *Settings* holds otp's panes that fit fake-igd, each as otp draws it: **How it answers**, **UPnP network**,
 **Notifications (ntfy)**, **Logs and state**, **mDNS reflector (avahi)** · **Accounts**, **Certificates and
 TLS**, **Automatic certificates (ACME)**, **Firewall and access**, **SSH server and notices**, **SSH keys**,
-**Local users** · **Network**, **Proxy**, **Time**, **The service**, **Restart and power off**, **Disks and
+**Local users**, **SELinux** · **Network**, **Proxy**, **Time**, **The service**, **Restart and power off**, **Disks and
 logs** · **The database**, **Backups**, **Export and import** · **Mail**, **Outgoing mail**, **Alerts and
 reports**, **Monitoring** (Prometheus `/metrics`), **Syslog and SIEM**, **System updates**, **Upgrades**,
 **About**. Whatever changes the system is done by root (`/opt/fake-igd/root_*.py`, asked through
@@ -267,6 +268,76 @@ upnp --console-users "alice bob"  # normal users too - through sudo, their own p
 ```
 
 `/etc/profile.d/zz-upnp-console.sh` opens it in an interactive login shell only - never for a command run over SSH, scp/sftp, a script, a shell opened from the console itself (`!`), or with `UPNP_NO_CONSOLE=1`. The choice is `/etc/upnp-console-login`; an upgrade keeps it. The installer leaves it **off**.
+
+## SELinux
+
+*Settings → SELinux* (1.7.7, otp's SELinux card of *Settings → High security*); on the server `sudo upnp
+selinux` (check). **Nothing changes unless somebody asks:** a machine where SELinux is disabled stays
+disabled, and fake-igd runs on it exactly as before.
+
+### What fake-igd needs of it
+
+With SELinux enforcing (AlmaLinux, Rocky, RHEL - the *targeted* policy), `fake-igd.service`,
+`fake-igd-api.service`, root's helpers and the upgrade run unconfined, as every service started from `/opt`
+does - their own ports (1900/udp, the SOAP port, the API on 127.0.0.1, SNMP) need no label. Confined are the
+programs around them, and these need a few things the system's policy does not say by itself:
+
+| What | Why | How |
+|---|---|---|
+| `/run/fake-igd-api` and the API token labelled `httpd_var_run_t` | the pages (php-fpm, `httpd_t`) read the token; systemd makes `/run/fake-igd-api` as `var_run_t`, which `httpd_t` may not read | fake-igd's module **`fake_igd_server`** (`/opt/fake-igd/fake_igd_server.cil`): file labels, for `/run/fake-igd-api` and `/var/run/fake-igd-api` both (the policy reads one as the other) |
+| systemd may change the owner of what is in `/run/fake-igd-api` | before every command of the unit systemd hands the folder back to the service's account (`init_t → httpd_var_run_t file { setattr }`) | a rule of `fake_igd_server`: owner and mode only, nothing read or written |
+| `httpd_can_network_connect` on | the pages ask the API on `127.0.0.1:9862` (`api_port`) | a boolean |
+| sshd's port as `ssh_port_t` | sshd on a port other than 22 (*Settings → SSH server*, which labels it itself when it changes it) | `semanage port` |
+| `/var/www/fake-igd` | the pages | the system's own label (`restorecon`) |
+
+`install.sh` and every upgrade copy the module beside the program - without the pages too - and put it into
+the policy where SELinux is on (only when it changed), and say so when the policy still does not label
+`/run/fake-igd-api` for the pages (`matchpathcon`). The local rule of before 1.7.7 (`semanage fcontext`) is
+taken away once the module is in. `--uninstall` takes the module out; the mode, the booleans and the ports
+are the machine's and stay as they are. Every install and upgrade puts in what is missing of
+`policycoreutils`, `libselinux-utils`, `policycoreutils-python-utils`, `audit` and `selinux-policy-targeted`
+(with SELinux disabled too - the mode is not touched) and starts auditd where SELinux is on.
+
+### The card
+
+The mode now and after the next restart, fake-igd's module, the labels of its files, the boolean and ports
+above, and **what SELinux refused since the machine started** (`ausearch -m AVC,USER_AVC -ts boot`, for the
+web server, sshd, chronyd, avahi, logrotate, NetworkManager, firewalld and anything with fake-igd in it),
+grouped and counted. Looked at two minutes after the API starts and every half hour after that, and at once
+with *Look again*; `semanage`, `semodule -l` and `ausearch` run at the lowest CPU and disk priority. **What was
+refused before fake-igd's needs were last put in no longer counts**, nor what the policy loaded now allows
+(`audit2why`: *would be allowed by active policy*). **auditd** must run: without it nothing is written down,
+and enforcing is refused.
+
+1. **Make it ready (permissive)** - from *disabled*: `SELINUX=permissive` in `/etc/selinux/config`, every file
+   labelled at the next start (`/.autorelabel`), `selinux=0` taken off the kernel's command line (`grubby`),
+   fake-igd's module put in. **The machine is not restarted**: restart it when it suits (*Settings → Restart
+   and power off*). It comes up permissive: nothing is refused, what would be is written down. On a
+   permissive machine the same button (*Put in what fake-igd needs*) puts in the module, the boolean and the
+   ports and labels fake-igd's files again.
+2. Let it run a day or two as it is used - the pages, the PS5 asking for ports, an upgrade - then *Look again*.
+3. **Switch to enforcing** - only from permissive, and only once nothing is missing **and nothing was refused**:
+   `setenforce 1` and `SELINUX=enforcing`. Refused otherwise, with what is missing.
+4. **Back to permissive** - at once (`setenforce 0`) and after a restart.
+
+Every step is written in Events with who asked. *Settings → Alerts and reports → SELinux refusing* (off as
+it comes) mails what the card finds; *Settings → Upgrades → To be done by hand* says when fake-igd's module in
+the policy is not this version's, or SELinux refuses something while enforcing.
+
+**The report** (*Download the report*, or `sudo upnp selinux report`): what SELinux refused (raw, readable,
+`audit2why`, `audit2allow`'s suggestion - a hint, never loaded), the card's state, the labels of fake-igd's
+files and what the policy says they should be, the domains the programs run in, the ports, the booleans, the
+system's and the policy's versions and what fake-igd uses (switches and ports - no password, key or token).
+Nothing is changed to make it. The audit log holds the command lines of the programs something was refused to
+- look through `avc*.txt` before sending it on.
+
+```bash
+sudo upnp selinux                 # how it stands; exit 1 when something is missing (--json)
+sudo upnp selinux prepare         # check | prepare | apply | enforce | permissive - asked first (--yes)
+sudo upnp selinux report          # /root/fake-igd-selinux-report-NODE-DATE.tar.gz
+```
+
+The console has the same in **17 Certificates, updates, time, tests**.
 
 ---
 
@@ -413,6 +484,7 @@ reached over SSH only, or whose pages are down while the API runs:
 | `mail-test ADDRESS` · `siem-test` · `proxy-test [URL]` · `snmp-trap` | the tests of their panes, every step said |
 | `export-config FILE [--with-secrets]` · `import-config FILE [--replace]` | everything of this installation as one file, and back (*Export and import*); with the secrets it is locked with a passphrase printed once |
 | `power` | `status`, `reboot` / `poweroff` `[--in MIN]`, `cancel` |
+| `selinux` | SELinux on this server: `check`, `prepare`, `apply`, `enforce`, `permissive`, `report [FILE]` (see *SELinux*) |
 
 Most of them take `--json`.
 
@@ -565,7 +637,7 @@ Example `/var/log/fake-igd/fake-igd.log`:
 | No `SEARCH` from the PS5 | Server not in the same VLAN; switch with IGMP snooping and no querier drops multicast; firewall blocks 1900/udp (`upnp firewall`); the interface is in `exclude_interfaces`. |
 | `SEARCH` but no `DESC` | Firewall blocks `http_port`/tcp; another device also answers SSDP (look for "OTHER UPnP ROUTER" in the log, `upnp test --st ssdp:all`). |
 | Service does not start | `journalctl -u fake-igd -e` - typically port 5000 or 1900 is in use (`ss -lunp \| grep 1900`, e.g. another UPnP/DLNA server) or invalid JSON in config.json. |
-| SELinux | `ausearch -m avc -ts recent` |
+| SELinux | `sudo upnp selinux` (or *Settings → SELinux*): what is missing, what was refused - `sudo upnp selinux report` for whoever writes fake-igd's module |
 | Test without a PS5 | `upnp test` or `upnp test --add 40000/udp`; alternatively `dnf install epel-release miniupnpc` and `upnpc -s` |
 | `upnp: command not found` with `sudo` | The CLI lives in `/usr/bin/upnp` - check the installation finished (`ls -l /usr/bin/upnp`). |
 | `upnp` says "Permission denied" | Join the group: `sudo usermod -aG fake-igd $USER` and log in again, or use `sudo upnp ...` |

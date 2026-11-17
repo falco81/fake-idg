@@ -2484,7 +2484,28 @@ class Console(object):
             ("14", "Restart or power off: what is set", lambda: self.act("power")),
             ("15", "Restart this machine now", self.reboot_now),
             ("16", "Any question of the pages (upnp api)", self.api_ask),
+            ("17", "SELinux: how it stands on this machine", lambda: self.act("selinux", "check")),
+            ("18", "SELinux: a step on this machine", self.se_step),
+            ("19", "SELinux: the report for fake-igd's module (a file)", lambda: self.run_here("selinux", "report")),
         ])
+
+    def se_step(self):
+        """otp's console se_step (1.0.236): one of the SELinux steps of Settings → SELinux, on this machine."""
+        st = self.choose("SELinux: a step on this machine", [
+            ("prepare", "make it ready - permissive at the next start (from disabled)"),
+            ("apply", "put in what fake-igd needs (while permissive)"),
+            ("enforce", "switch to enforcing"),
+            ("permissive", "back to permissive")])
+        if st and self.confirm("SELinux on this machine", {
+                "prepare": "The configuration says permissive, and every file is labelled at the next start of "
+                           "the machine. The machine is not restarted now.",
+                "apply": "fake-igd's module, the labels of its files, the boolean and the ports it needs are put "
+                         "in. Still permissive: nothing is refused.",
+                "enforce": "From now on SELinux refuses what its policy does not allow - and stays enforcing after "
+                           "a restart. Refused while anything is missing or was refused.",
+                "permissive": "SELinux no longer refuses anything, now and after a restart."}[st],
+                "Do it", danger=st in ("enforce", "prepare")):
+            self.act("selinux", st, "--yes")
 
     def reboot_now(self):
         if self.confirm("Restart this machine", "fake-igd, the pages and every other service on it are away "

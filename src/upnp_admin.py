@@ -1427,3 +1427,76 @@ def cmd_power(M, args, cfg):
                                                                        pl.get("by"), _when(pl.get("at")))))
     print("  %-20s %s" % ("on a schedule", ("on, next %s" % _when(au.get("next"))) if au.get("on") else "off"))
     return 0
+
+
+# ---- SELinux (1.7.7, otp's --selinux-check, --selinux STEP, --selinux-report) ------------------------
+def _web_helper():
+    for p in (WEB_HELPER, os.path.join(os.path.dirname(LIB_DIR), "deploy", "fake_igd_web.py")):
+        if os.path.isfile(p):
+            return p
+    return ""
+
+
+def cmd_selinux(M, args, cfg):
+    """upnp selinux [check|prepare|apply|enforce|permissive|report [FILE]] - SELinux on this server, as
+    Settings → SELinux: root's helper does it, and works out itself what fake-igd needs."""
+    if os.geteuid() != 0:
+        M.fail("SELinux is root's - sudo upnp selinux %s" % (args.what or "check"))
+    helper = _web_helper()
+    if not helper:
+        M.fail("root's helper (fake_igd_web.py) is not installed - ./install.sh --upgrade")
+    py = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else sys.executable
+    step = args.what or "check"
+    if step == "report":
+        node = (os.uname()[1].split(".")[0] or "server")
+        out = args.file or "/root/fake-igd-selinux-report-%s-%s.tar.gz" % (node, time.strftime("%Y%m%d-%H%M"))
+        print(M.col("gathering what SELinux says here - a minute or two (ausearch, semanage)...", M.C.dim))
+        got = subprocess.run([py, "-I", helper, "--selinux-report", out], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, universal_newlines=True, timeout=1200)
+        sys.stderr.write(got.stderr)
+        if got.returncode != 0:
+            return got.returncode
+        M.ok("the report is in %s (%d kB)" % (out, os.path.getsize(out) >> 10))
+        print("  look through avc*.txt in it before sending it on: the audit log holds the command lines of the "
+              "programs SELinux refused something to")
+        return 0
+    if step == "check":
+        argv = [py, "-I", helper, "--selinux-check"] + (["--json"] if args.json else [])
+    else:
+        words = {"prepare": "SELinux permissive at the next start of this machine, every file labelled then "
+                            "(the machine is not restarted now)",
+                 "apply": "fake-igd's module, the labels of its files, the boolean and ports it needs put in "
+                          "(still permissive)",
+                 "enforce": "SELinux ENFORCING on this machine, now and after a restart",
+                 "permissive": "SELinux permissive on this machine, now and after a restart"}[step]
+        if not args.yes:
+            if not sys.stdin.isatty():
+                M.fail("%s - add --yes to do it without a terminal" % words)
+            if not _ask("%s. Go on?" % words):
+                print("  nothing done")
+                return 1
+        argv = [py, "-I", helper, "--selinux-do", step] + (["--json"] if args.json else [])
+    got = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                         timeout=1200)
+    if args.json:
+        sys.stdout.write(got.stdout)
+    else:
+        for ln in got.stdout.splitlines():
+            low = ln.strip()
+            if low.startswith("FAIL") or low.startswith("not ready"):
+                print(M.col(ln, M.C.red if low.startswith("FAIL") else M.C.yellow))
+            elif low.startswith("ok ") or low.startswith("done:") or low in ("ready for enforcing", "enforcing"):
+                print(M.col(ln, M.C.green))
+            elif ln.startswith("SELinux:"):
+                print(M.col(ln, M.C.bold))
+            else:
+                print(ln)
+    sys.stderr.write(got.stderr)
+    if step != "check":
+        # The card on the pages looks again now, not in half an hour (the API, where it runs).
+        try:
+            if os.path.exists(os.path.join(RUN_DIR, "cli-token")):
+                api(M, "POST", "/api/selinux", {"action": "check"}, timeout=10, quiet=True)
+        except SystemExit:
+            pass
+    return got.returncode
