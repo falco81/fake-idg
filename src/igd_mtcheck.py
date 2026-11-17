@@ -257,27 +257,52 @@ def walk(rules, chain, pkt, depth=0, seen=None):
 
 # ---- the router's WAN, as far as it can be told ----------------------------------------------------------
 def wan_of(snap):
-    """{ifs, lists_of: fn(set of ifs) -> set of lists, addrs4, how}: the members of the interface list WAN,
-    else the interface of the default route; its IPv4 addresses."""
+    """{ifs, addrs4, how}: the members of the interface list WAN; else the interface of the default route
+    of the main table (its immediate-gw's interface, an interface named as the gateway, or the interface
+    whose network holds the gateway's address); else the interface that carries the public address fake-igd
+    knows (1.9.2); else the one interface with a public address. Its IPv4 addresses."""
     members = snap.get("iflists") or {}
+    addrs = [a for a in snap.get("addresses4") or [] if not a.get("disabled")]
+
+    def _ip(a):
+        try:
+            return ipaddress.ip_interface(a["address"])
+        except (ValueError, KeyError):
+            return None
     ifs, how = set(members.get("WAN") or []), "the interface list WAN"
     if not ifs:
-        for r in snap.get("routes4") or []:
-            if r.get("active") and not r.get("disabled"):
-                im = str(r.get("immediate") or "")
-                if "%" in im:
-                    ifs.add(im.split("%", 1)[1])
-                elif r.get("gateway") and not re.match(r"^[0-9.]+$", r["gateway"]):
-                    ifs.add(r["gateway"])
+        routes = [r for r in snap.get("routes4") or [] if r.get("active") and not r.get("disabled")]
+        main = [r for r in routes if str(r.get("table") or "main") == "main"] or routes
+        for r in main:
+            im = str(r.get("immediate") or "")
+            gw = str(r.get("gateway") or "").split("%")[0].split(",")[0]
+            if "%" in im:
+                ifs.add(im.split("%", 1)[1].split(",")[0])
+            elif gw and not re.match(r"^[0-9.]+$", gw):
+                ifs.add(gw)
+            elif gw:
+                for a in addrs:
+                    x = _ip(a)
+                    if x and ipaddress.ip_address(gw) in x.network:
+                        ifs.add(a.get("interface"))
         how = "the interface of the default route"
-    addrs = []
-    for a in snap.get("addresses4") or []:
-        if a.get("interface") in ifs and not a.get("disabled"):
-            try:
-                addrs.append(ipaddress.ip_interface(a["address"]).ip)
-            except ValueError:
-                pass
-    return {"ifs": ifs, "addrs4": addrs, "how": how if ifs else ""}
+    pub = str(snap.get("public_ip") or "")
+    if not ifs and pub:
+        for a in addrs:
+            x = _ip(a)
+            if x and str(x.ip) == pub:
+                ifs.add(a.get("interface"))
+        how = "the interface that carries %s (this network's public address)" % pub
+    if not ifs:
+        glob = {a.get("interface") for a in addrs if _ip(a) and _ip(a).ip.is_global}
+        if len(glob) == 1:
+            ifs, how = glob, "the only interface with a public address"
+    out = []
+    for a in addrs:
+        x = _ip(a)
+        if x and a.get("interface") in ifs:
+            out.append(x.ip)
+    return {"ifs": ifs, "addrs4": out, "how": how if ifs else ""}
 
 
 def lists_of(snap, ifs):
@@ -559,8 +584,9 @@ def check_all(snap, wants):
                         "the MikroTik instead of fake-igd, and the MikroTik opens what it is asked. "
                         "/ip upnp set enabled=no")
     if not wan["ifs"]:
-        warnings.append("Which interface is the router's WAN cannot be told: no interface list WAN and no default "
-                        "route read - the checks of the interfaces are \"cannot tell\"")
+        warnings.append("Which interface is the router's WAN cannot be told: no interface list WAN, no default "
+                        "route read, no interface with the public address - the checks of the interfaces are "
+                        "\"cannot tell\" (/interface list member add list=WAN interface=... tells it)")
     counts = {}
     for r in rows:
         counts[r["state"]] = counts.get(r["state"], 0) + 1

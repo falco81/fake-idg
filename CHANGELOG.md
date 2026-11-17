@@ -2,6 +2,16 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.9.2 (2026-11-17)
+
+- MikroTik: the router's WAN is told without an interface list WAN too. RouterOS 7 calls the default route's
+  next hop `immediate-gw` (6 said `immediate-gateway`) - it was not read, so on a router with no list WAN every
+  rule with in-interface or dst-address came out "cannot tell". Now, in this order: the interface list WAN, the
+  default route of the main table (its immediate-gw's interface, an interface named as its gateway, or the
+  interface whose network holds the gateway), the interface that carries the public address fake-igd knows,
+  the only interface with a public address. A dst-nat to the public address on that interface (dst-address=,
+  in-interface=) is then checked as it is.
+
 ## 1.9.1 (2026-11-17)
 
 - The Gateway tab no longer comes apart: its heading card was marked as the page's one long card, so opened

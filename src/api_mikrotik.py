@@ -292,11 +292,26 @@ def wants(ctx):
     return out[:400]
 
 
+def _public_ip(ctx):
+    """The public address fake-igd knows (set by hand, or the last one it looked up) - the MikroTik's WAN
+    is the interface that carries it when nothing else tells (1.9.2)."""
+    try:
+        cfg = ctx.cfg or {}
+        ext = str(cfg.get("external_ip") or "auto")
+        if ext != "auto":
+            return ext
+        import api_upnp as AU
+        return AU.since_start(AU.log_tail(cfg)).get("public") or ""
+    except Exception:                                    # noqa: BLE001 - only a hint
+        return ""
+
+
 def checks(ctx, snap=None):
     snap = snap or _meta_json(ctx.store, "mikrotik:snap")
     if not snap:
         return None
     ws = wants(ctx)
+    snap = dict(snap, public_ip=_public_ip(ctx))
     res = C.check_all(snap, ws)
     for row, w in zip(res["rows"], ws):
         row.update(asked=w.get("asked", 0), last=w.get("last") or "", description=w.get("description") or "",

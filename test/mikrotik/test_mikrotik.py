@@ -284,6 +284,47 @@ class Checks(unittest.TestCase):
         self.assertEqual(C.merged_commands(rows)[0]["ports"], "3478-3480,9308")
 
 
+
+class WanWithoutList(unittest.TestCase):
+    """1.9.2: a router with no interface list WAN (as the one this was made for): the WAN told by the
+    default route of RouterOS 7 (immediate-gw), by the gateway's network, or by the public address."""
+
+    def snap(self, routes, public=""):
+        return {"iflists": {"all": ["VLAN108", "bridge"]}, "public_ip": public,
+                "addresses4": [{"address": "195.189.0.26/29", "interface": "VLAN108", "disabled": False},
+                               {"address": "192.168.40.1/24", "interface": "bridge", "disabled": False}],
+                "routes4": routes}
+
+    def test_immediate_gw(self):
+        raw = {"routes4": [{"dst-address": "0.0.0.0/0", "gateway": "195.189.0.25",
+                            "immediate-gw": "195.189.0.25%VLAN108", "active": "true", "routing-table": "main"}]}
+        snap = M.snapshot(raw, {}, "test")
+        self.assertEqual(snap["routes4"][0]["immediate"], "195.189.0.25%VLAN108")
+        w = C.wan_of(dict(self.snap(snap["routes4"])))
+        self.assertEqual(w["ifs"], {"VLAN108"})
+        self.assertEqual([str(a) for a in w["addrs4"]], ["195.189.0.26"])
+
+    def test_gateway_network(self):
+        w = C.wan_of(self.snap([{"dst": "0.0.0.0/0", "gateway": "195.189.0.25", "immediate": "", "active": True,
+                                 "disabled": False, "table": "main"}]))
+        self.assertEqual(w["ifs"], {"VLAN108"})
+
+    def test_public_address(self):
+        w = C.wan_of(self.snap([], public="195.189.0.26"))
+        self.assertEqual(w["ifs"], {"VLAN108"})
+        self.assertIn("195.189.0.26", w["how"])
+
+    def test_dst_address_rule(self):
+        snap = self.snap([], public="195.189.0.26")
+        snap.update({"rules": {"ip": {"nat": [{"chain": "dstnat", "action": "dst-nat", "protocol": "udp",
+                                               "dst-port": "9308", "dst-address": "195.189.0.26",
+                                               "in-interface": "VLAN108", "to-addresses": "192.168.40.95",
+                                               "n": 71, ".id": "*47", "disabled": False}],
+                                      "filter": [], "raw": [], "mangle": []}}, "lists": {}})
+        res = C.check_all(snap, [{"device": "192.168.40.95", "proto": "udp", "port": 9308, "to_port": 9308}])
+        self.assertEqual(res["rows"][0]["state"], "ok", res["rows"][0])
+        self.assertFalse(any("cannot be told" in w for w in res["warnings"]))
+
 class Live(unittest.TestCase):
     """The three ways, each against a fake router."""
 

@@ -1072,9 +1072,12 @@ def snapshot(raw, missing, via):
                         "disabled": _bool(r.get("disabled"))} for r in raw.get("addresses4") or []],
         "addresses6": [{"address": str(r.get("address") or ""), "interface": str(r.get("interface") or ""),
                         "disabled": _bool(r.get("disabled"))} for r in raw.get("addresses6") or []],
+        # RouterOS 7 says immediate-gw, 6 immediate-gateway (1.9.2); the routing table kept - main is the one
         "routes4": [{"dst": str(r.get("dst-address") or ""), "gateway": str(r.get("gateway") or ""),
-                     "immediate": str(r.get("immediate-gateway") or ""), "active": _bool(r.get("active", "true")),
-                     "disabled": _bool(r.get("disabled"))}
+                     "immediate": str(r.get("immediate-gw") or r.get("immediate-gateway") or ""),
+                     "active": _bool(r.get("active", "true")), "disabled": _bool(r.get("disabled")),
+                     "table": str(r.get("routing-table") or r.get("routing-mark") or "main"),
+                     "distance": str(r.get("distance") or "")}
                     for r in raw.get("routes4") or [] if str(r.get("dst-address") or "") == "0.0.0.0/0"],
         "arp": [{"address": str(r.get("address") or ""), "mac": str(r.get("mac-address") or "").upper(),
                  "interface": str(r.get("interface") or "")} for r in raw.get("arp") or []],
