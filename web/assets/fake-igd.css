@@ -4249,3 +4249,47 @@ ul.se-confirm code{font-size:12px;overflow-wrap:anywhere;white-space:normal}
   .modal .box,.modal .box.medium,.modal .box.narrow{width:100%;max-height:96vh}
   .modal .body{padding:16px 14px}
 }
+
+/* ==== 1.7.13: one rhythm of spaces, and generous popups ====================================
+   Measured on every tab, Settings pane and row popup (scratchpad spacecheck.js): no two blocks closer
+   than 8 px; a heading 8-12 px above what it heads and 18 px below what came before; a note as wide as
+   the boxes beside it; a list's empty row as tall as a row. Cards and the popup's body are flex columns
+   (margins add up, they do not collapse) - so the rules below give each transition its own margin. */
+
+/* Popups: as wide as the screen allows, responsive (the user: "the windows are unnecessarily small") */
+.modal .box{width:min(1880px,95vw);max-height:94vh}
+.modal .box.large{width:min(1880px,95vw)}
+.modal .box.medium{width:min(1600px,90vw)}
+.modal .box.narrow,.modal .box.small{width:min(760px,94vw)}
+@media (max-width:760px){
+  .modal .box,.modal .box.large,.modal .box.medium,.modal .box.narrow,.modal .box.small{width:100%;max-height:96vh}
+}
+/* ... and their content uses the width: facts in as many columns as fit, tables and notes full width */
+.modal .body .facts{grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}
+.modal .body .facts .fact.wide{grid-column:span 2}
+.modal .body table{width:100%}
+.modal .body p.note,.modal .body .note,.modal .body p.muted{max-width:none}
+
+/* A note is as wide as the boxes it stands with (a max-width beside a full-width table or facts looked
+   like a mistake); the pane's lede keeps its measure. */
+.card > p.note,.card > .note,.card.held > .note,.subpanel > p.note{max-width:none}
+
+/* heading -> what it heads */
+.card.held > h2{margin-bottom:10px}
+.ctl-lede{margin-top:8px}
+h3.peek-h + *{margin-top:0}
+
+/* a row of pills (the steps of a client) is a block of its own, with air under it */
+.modal .body > .step-pills,.card > .step-pills{display:flex;flex-wrap:wrap;gap:4px;margin:0 0 14px}
+.modal .body > .step-pills + p.note{margin-top:0}
+
+/* what stands above a note, a table, a log or another block: never glued to it */
+:is(.card,.modal .body,.subpanel,.ctl-pane) > :is(.scroll,pre,.btnrow,.net-facts,.fw-h,.lt-paged):not(:last-child){margin-bottom:12px}
+:is(.card,.modal .body,.subpanel) > .card + :is(p,.note){margin-top:12px}
+:is(.card,.modal .body,.subpanel) > :is(.scroll,pre,.lt-paged) + h3.peek-h{margin-top:22px}
+details[open] > summary{margin-bottom:8px}
+p.small.muted + p.small.muted{margin-top:8px}
+p.btnhelp{margin-bottom:10px}
+
+/* a list with nothing in it says so with the room of a row, not tight under its header */
+tr.empty-row > td{padding-top:14px;padding-bottom:14px}

@@ -1180,9 +1180,11 @@ class SSDP:
             mx = max(0, min(int(hdr.get("MX", "1")), 5))
         except ValueError:
             mx = 1
-        # UDA 1.1: within a random time up to MX seconds (at most 5); a search sent to this address
-        # (unicast, no MX) is answered at once.
-        delay = random.uniform(0, mx) if mx and hdr.get("HOST", "").startswith(SSDP_GROUP) else 0
+        # UDA 1.1 spreads the answers of many devices over up to MX seconds. fake-igd is one device, and a
+        # PS5 searching with MX=1 was answered after up to a second - and never came for the description
+        # (1.7.13): a client may stop listening before MX is over. Answered within 50 ms now (still not all
+        # at the same instant); a search sent to this address (unicast) at once.
+        delay = random.uniform(0.005, 0.05) if mx and hdr.get("HOST", "").startswith(SSDP_GROUP) else 0
         threading.Timer(delay, self._reply, args=(src, sport, local_ip, answers, loud)).start()
 
     def _prune(self):
