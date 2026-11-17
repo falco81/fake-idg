@@ -537,6 +537,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     <button type="button" data-pane="ntfy" data-icon="bell" title="A notification to a phone for every new port - ntfy.sh or your own ntfy server.">Notifications (ntfy)</button>
     <button type="button" data-pane="logs" data-icon="log" title="How much the log says, and where the logs and the state are.">Logs and state</button>
     <button type="button" data-pane="mdns" data-icon="wifi" title="avahi-daemon on this server: the reflector, the interfaces, the filters - every key of avahi-daemon.conf fake-igd knows - and the daemon started, stopped or restarted.">mDNS reflector (avahi)</button>
+    <button type="button" class="fulladmin-only" data-pane="gateway" data-icon="router" title="This server as the default gateway of chosen devices - a PS5 asks UPnP only of its gateway: forwarded toward the router for those devices alone, never between this server's networks.">Gateway for devices</button>
     <div class="ctl-group">Access</div>
     <button type="button" data-pane="people" data-icon="person" title="Who may open these pages, what each of them may do, and who is signed in right now.">Accounts</button>
     <button type="button" data-pane="tls" data-icon="lock" title="The certificate of these pages, and how TLS is spoken.">Certificates and TLS</button>
@@ -548,7 +549,6 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     <button type="button" data-pane="selinux" data-icon="shield" title="SELinux on this server: the mode now and after a restart, what fake-igd needs of it, what it refused - and the steps to permissive and enforcing.">SELinux</button>
     <div class="ctl-group">Server</div>
     <button type="button" class="fulladmin-only" data-pane="net" data-icon="ethernet" title="This machine's addresses, gateway, DNS servers, host name and IPv6 - each interface.">Network</button>
-    <button type="button" class="fulladmin-only" data-pane="gateway" data-icon="router" title="This server as the default gateway of chosen devices - a PS5 asks UPnP only of its gateway: forwarded toward the router for those devices alone, never between this server's networks.">Gateway for devices</button>
     <button type="button" class="fulladmin-only" data-pane="proxy" data-icon="globe" title="An HTTP proxy, for what you switch on: the new versions, the system updates, ACME, notifications.">Proxy</button>
     <button type="button" class="fulladmin-only" data-pane="time" data-icon="clock" title="The clock of this machine: chrony, its time servers, how far off it is, the time zone.">Time</button>
     <button type="button" class="fulladmin-only" data-pane="service" data-icon="router" title="fake-igd.service restarted, and what root last did for these pages.">The service</button>

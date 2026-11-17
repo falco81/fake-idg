@@ -2,9 +2,13 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.8.1 (2026-11-17)
+
+- Gateway for devices is in the menu's first group, fake-igd, below the mDNS reflector (it was under Server).
+
 ## 1.8.0 (2026-11-17)
 
-**Gateway for devices** (Settings → Server → Gateway for devices). A PS5 asks UPnP only of its *default
+**Gateway for devices** (Settings → Gateway for devices). A PS5 asks UPnP only of its *default
 gateway*: with the real router as its gateway it searched, heard fake-igd's answer and went no further; with
 its gateway set to the fake-igd server it fetched the description at once and asked for UDP 9308. This
 server can now be the gateway of the devices chosen - and of nothing else:
