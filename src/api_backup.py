@@ -1585,6 +1585,13 @@ def get_job(ctx):
 
 
 def post_backup(ctx):
+    try:
+        return _post_backup(ctx)
+    except RbError as e:            # a name or a destination refused before any job: said, not "the API broke"
+        raise ValueError(str(e))
+
+
+def _post_backup(ctx):
     ctx.need("fulladmin")
     b = ctx.body()
     act = str(b.get("action") or "")
@@ -1682,7 +1689,8 @@ def post_backup(ctx):
                                                            "key_forget": "the SSH key forgotten"}[act], t["name"]))
         return out
     if act == "run":
-        only = [str(x) for x in (b.get("only") or [])] or None
+        only = [str(x) for x in b["only"]] if isinstance(b.get("only"), list) else None
+        only = only or None
         j = start_job(ctx, "the backup", who, lambda p: run(ctx, who, only, p))
         return {"job": j, "message": "the backup is being made"}
     if act == "verify":

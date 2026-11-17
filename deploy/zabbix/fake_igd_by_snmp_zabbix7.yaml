@@ -1,0 +1,2260 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+  - uuid: a571c0d144b14fd4a87a9d9b2aa9fcd6
+    name: Templates/Applications
+  templates:
+  - uuid: 818d741dc93c4a1e9ca02667a3bd32e4
+    template: fake-igd by SNMP
+    name: fake-igd by SNMP
+    description: 'fake-igd, a fake UPnP router (IGD) that opens no port: its SNMPv3 agent (Settings - Monitoring - SNMPv3).
+
+
+      The host: an SNMP interface at the machine''s address, port 161, SNMPv3, authPriv, the user and both passphrases of
+      the page; link this template. MIB: FAKE-IGD-MIB (deploy/FAKE-IGD-MIB.txt in the package).
+
+
+      Made by fake-igd 1.7.4.'
+    vendor:
+      name: fake-igd
+      version: 7.0-1.7.4
+    groups:
+    - name: Templates/Applications
+    items:
+    - uuid: d7a76e8049ab457e91c69df6bda83b07
+      name: 'Requests by action: the table'
+      type: SNMP_AGENT
+      snmp_oid: walk[1.3.6.1.4.1.8072.9999.9999.8.3.20.1.2,1.3.6.1.4.1.8072.9999.9999.8.3.20.1.3]
+      key: fakeigd.action.walk
+      delay: 5m
+      history: '0'
+      value_type: TEXT
+      trends: '0'
+      description: The table, read whole; the items of the discovery below take it apart.
+      tags:
+      - tag: component
+        value: requests
+    - uuid: dde4bde32a1c402c869a5bcf511b622e
+      name: 'Problems fake-igd sees: the table'
+      type: SNMP_AGENT
+      snmp_oid: walk[1.3.6.1.4.1.8072.9999.9999.8.5.3.1.2,1.3.6.1.4.1.8072.9999.9999.8.5.3.1.3,1.3.6.1.4.1.8072.9999.9999.8.5.3.1.4,1.3.6.1.4.1.8072.9999.9999.8.5.3.1.5]
+      key: fakeigd.alert.walk
+      delay: 1m
+      history: '0'
+      value_type: TEXT
+      trends: '0'
+      description: The table, read whole; the items of the discovery below take it apart.
+      tags:
+      - tag: component
+        value: alerts
+    - uuid: 73e6c35c65234954a0141049a1f37107
+      name: 'Problems fake-igd sees: bad'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.5.1.0]
+      key: fakeigd.alerts[bad]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.5.1.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: alerts
+    - uuid: 107a28a91456434a8dead02d61360052
+      name: 'Problems fake-igd sees: warnings'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.5.2.0]
+      key: fakeigd.alerts[warn]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.5.2.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: alerts
+    - uuid: 78a192585f0348119719d7e02e6a4cc7
+      name: Uptime (the pages' API)
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.1.4.0]
+      key: fakeigd.api.uptime
+      value_type: FLOAT
+      units: uptime
+      description: 'Since the pages'' API (which answers SNMP) started.
+
+        OID: 1.3.6.1.4.1.8072.9999.9999.8.1.4.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '0.01'
+      tags:
+      - tag: component
+        value: system
+      triggers:
+      - uuid: c73088d004604bada00d1485ebdfcbff
+        expression: last(/fake-igd by SNMP/fakeigd.api.uptime)<10m
+        name: 'fake-igd: The pages'' API has been restarted'
+        priority: INFO
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        description: Uptime is less than 10 minutes.
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: 7ddb1c9a179f45a9a7722a5b14a833fd
+      name: 'Certificate of the pages: days left'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.6.3.0]
+      key: fakeigd.cert.days
+      delay: 1h
+      units: d
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.6.3.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: certificate
+      triggers:
+      - uuid: 591b46a52bc143f48cfb704fcc9d2672
+        expression: last(/fake-igd by SNMP/fakeigd.cert.days)<{$FAKEIGD.CERT.EXPIRY.CRIT}
+        name: 'fake-igd: The certificate of the pages ends within {$FAKEIGD.CERT.EXPIRY.CRIT} days'
+        priority: HIGH
+        opdata: '{ITEM.LASTVALUE1} left'
+        tags:
+        - tag: scope
+          value: notice
+      - uuid: a0e2f980e8e44600be34963b5a3b3d03
+        expression: last(/fake-igd by SNMP/fakeigd.cert.days)<{$FAKEIGD.CERT.EXPIRY.WARN}
+        name: 'fake-igd: The certificate of the pages ends within {$FAKEIGD.CERT.EXPIRY.WARN} days'
+        priority: WARNING
+        opdata: '{ITEM.LASTVALUE1} left'
+        dependencies:
+        - name: 'fake-igd: The certificate of the pages ends within {$FAKEIGD.CERT.EXPIRY.CRIT} days'
+          expression: last(/fake-igd by SNMP/fakeigd.cert.days)<{$FAKEIGD.CERT.EXPIRY.CRIT}
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: e4269921eb354ed090efdbc23cff93bf
+      name: 'Certificate of the pages: ends'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.6.4.0]
+      key: fakeigd.cert.end
+      delay: 1h
+      units: unixtime
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.6.4.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: certificate
+    - uuid: 00318ea3544f40d5bf59d1f5d97364e0
+      name: 'Certificate of the pages: file'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.6.1.0]
+      key: fakeigd.cert.file
+      delay: 1h
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.6.1.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - &id001
+        type: DISCARD_UNCHANGED_HEARTBEAT
+        parameters:
+        - 12h
+      tags:
+      - tag: component
+        value: certificate
+    - uuid: bed663b1b9584e499d084ebcbb33c95b
+      name: 'Certificate of the pages: subject'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.6.2.0]
+      key: fakeigd.cert.subject
+      delay: 1h
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.6.2.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - *id001
+      tags:
+      - tag: component
+        value: certificate
+    - uuid: 8ceea6b366ec4d3c8c768af69d340a20
+      name: Devices that asked
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.3.6.0]
+      key: fakeigd.clients
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.3.6.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: requests
+    - uuid: 9e842269bd5f4e64a0d5c96f97944c38
+      name: 'File systems: the table'
+      type: SNMP_AGENT
+      snmp_oid: walk[1.3.6.1.4.1.8072.9999.9999.8.10.20.1.2,1.3.6.1.4.1.8072.9999.9999.8.10.20.1.3,1.3.6.1.4.1.8072.9999.9999.8.10.20.1.4,1.3.6.1.4.1.8072.9999.9999.8.10.20.1.5,1.3.6.1.4.1.8072.9999.9999.8.10.20.1.6,1.3.6.1.4.1.8072.9999.9999.8.10.20.1.7]
+      key: fakeigd.fs.walk
+      delay: 5m
+      history: '0'
+      value_type: TEXT
+      trends: '0'
+      description: The table, read whole; the items of the discovery below take it apart.
+      tags:
+      - tag: component
+        value: storage
+    - uuid: ce0bcbcef5834bdfa3ba058512962923
+      name: CPU cores
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.10.3.0]
+      key: fakeigd.host.cpu.cores
+      delay: 1h
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.3.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: cpu
+    - uuid: a6587f1aaa974a8e86d543f17f5fe2f2
+      name: CPU idle ticks, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.10.1.0]
+      key: fakeigd.host.cpu.idle.rate
+      history: 1d
+      value_type: FLOAT
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.1.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - &id002
+        type: CHANGE_PER_SECOND
+        parameters:
+        - ''
+      tags:
+      - tag: component
+        value: cpu
+    - uuid: 100dd06d8f6c43bb9976e7d608719d51
+      name: CPU ticks in all, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.10.2.0]
+      key: fakeigd.host.cpu.total.rate
+      history: 1d
+      value_type: FLOAT
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.2.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - *id002
+      tags:
+      - tag: component
+        value: cpu
+    - uuid: 881d2a3e39ae428d8680be2cb9349d97
+      name: CPU utilization
+      type: CALCULATED
+      key: fakeigd.host.cpu.util
+      value_type: FLOAT
+      units: '%'
+      params: 100*(1-last(//fakeigd.host.cpu.idle.rate)/last(//fakeigd.host.cpu.total.rate))
+      description: 'All cores: the part of the time not idle.
+
+        '
+      tags:
+      - tag: component
+        value: cpu
+      triggers:
+      - uuid: 7dce6b4cceaf41b38c30e145080364cd
+        expression: min(/fake-igd by SNMP/fakeigd.host.cpu.util,5m)>{$FAKEIGD.CPU.UTIL.CRIT}
+        name: 'fake-igd: High CPU utilization'
+        priority: AVERAGE
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        tags:
+        - tag: scope
+          value: performance
+      - uuid: 99e96082a6da46b88cbdea6bd2593b0b
+        expression: min(/fake-igd by SNMP/fakeigd.host.cpu.util,5m)>{$FAKEIGD.CPU.UTIL.WARN}
+        name: 'fake-igd: CPU utilization is rising'
+        priority: WARNING
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        dependencies:
+        - name: 'fake-igd: High CPU utilization'
+          expression: min(/fake-igd by SNMP/fakeigd.host.cpu.util,5m)>{$FAKEIGD.CPU.UTIL.CRIT}
+        tags:
+        - tag: scope
+          value: performance
+    - uuid: 3ff03242d492403d88de35b537b7e546
+      name: 'Disks: read'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.10.10.0]
+      key: fakeigd.host.disk.read
+      value_type: FLOAT
+      units: Bps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.10.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - *id002
+      tags:
+      - tag: component
+        value: storage
+    - uuid: 5676a1532d7b49c0b77fe792ddde04f0
+      name: 'Disks: written'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.10.11.0]
+      key: fakeigd.host.disk.write
+      value_type: FLOAT
+      units: Bps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.11.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - *id002
+      tags:
+      - tag: component
+        value: storage
+    - uuid: 41c3e7ccea3f49a89be7a399e02bea07
+      name: Load average (15 min)
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.10.6.0]
+      key: fakeigd.host.load[15]
+      value_type: FLOAT
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.6.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '0.01'
+      tags:
+      - tag: component
+        value: cpu
+    - uuid: 39e1bf0832ad4b1db6e6bf42ccb1c6cc
+      name: Load average (1 min)
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.10.4.0]
+      key: fakeigd.host.load[1]
+      value_type: FLOAT
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.4.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '0.01'
+      tags:
+      - tag: component
+        value: cpu
+    - uuid: f1eb9302c269457bb13e9192e79077cb
+      name: Load average (5 min)
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.10.5.0]
+      key: fakeigd.host.load[5]
+      value_type: FLOAT
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.5.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '0.01'
+      tags:
+      - tag: component
+        value: cpu
+    - uuid: b149732ff8aa4e919edc3a80a29f8fc3
+      name: 'Memory: total'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.10.7.0]
+      key: fakeigd.host.mem.total
+      delay: 15m
+      units: B
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.7.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '1024'
+      tags:
+      - tag: component
+        value: memory
+    - uuid: c371dab5c4414c96a502dbfc193a70a2
+      name: 'Memory: used'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.10.8.0]
+      key: fakeigd.host.mem.used
+      units: B
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.8.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '1024'
+      tags:
+      - tag: component
+        value: memory
+    - uuid: 98b7eb7f3d4442448bb3614e207bec61
+      name: Memory utilization
+      type: CALCULATED
+      key: fakeigd.host.mem.util
+      value_type: FLOAT
+      units: '%'
+      params: 100*last(//fakeigd.host.mem.used)/last(//fakeigd.host.mem.total)
+      tags:
+      - tag: component
+        value: memory
+      triggers:
+      - uuid: 1955a8d55540478f82c1cd87f7db281a
+        expression: min(/fake-igd by SNMP/fakeigd.host.mem.util,5m)>{$FAKEIGD.MEM.UTIL.WARN}
+        name: 'fake-igd: High memory utilization'
+        priority: AVERAGE
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        tags:
+        - tag: scope
+          value: capacity
+    - uuid: 19957c5a5cff448f97a1cfb9611aa14f
+      name: 'Network: in'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.10.12.0]
+      key: fakeigd.host.net.rx
+      value_type: FLOAT
+      units: bps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.12.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - *id002
+      - type: MULTIPLIER
+        parameters:
+        - '8'
+      tags:
+      - tag: component
+        value: network
+    - uuid: 8b490e7c195e4735b417affcf8abf50d
+      name: 'Network: out'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.10.13.0]
+      key: fakeigd.host.net.tx
+      value_type: FLOAT
+      units: bps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.13.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - *id002
+      - type: MULTIPLIER
+        parameters:
+        - '8'
+      tags:
+      - tag: component
+        value: network
+    - uuid: 80882129c61a43ccba3d04a1fdb84883
+      name: 'Swap: used'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.10.9.0]
+      key: fakeigd.host.swap.used
+      units: B
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.9.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - type: MULTIPLIER
+        parameters:
+        - '1024'
+      tags:
+      - tag: component
+        value: memory
+    - uuid: 12fa8d41067d4ae7a76723071470a205
+      name: Uptime (machine)
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.10.14.0]
+      key: fakeigd.host.uptime
+      units: uptime
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.14.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: system
+      triggers:
+      - uuid: 205b86287400440ea75a1574d0c15b1c
+        expression: last(/fake-igd by SNMP/fakeigd.host.uptime)<10m
+        name: 'fake-igd: The machine has been restarted'
+        priority: INFO
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        description: Uptime is less than 10 minutes.
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: f79ffb0683b94632872a404cf66b50da
+      name: Logs to syslog servers
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.17.1.0]
+      key: fakeigd.logs.on
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.17.1.0 (FAKE-IGD-MIB)'
+      valuemap:
+        name: 'fake-igd: on/off'
+      tags:
+      - tag: component
+        value: logs
+    - uuid: 00cd15468d88485fae232c6d29afd619
+      name: 'Logs to syslog servers: lines sent, per second'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.17.3.0]
+      key: fakeigd.logs.rate
+      value_type: FLOAT
+      units: lps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.17.3.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - *id002
+      tags:
+      - tag: component
+        value: logs
+    - uuid: 4c0a58d2f8d049079c3a4ed309b54bba
+      name: 'Logs to syslog servers: in trouble'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.17.2.0]
+      key: fakeigd.logs.trouble
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.17.2.0 (FAKE-IGD-MIB)'
+      valuemap:
+        name: 'fake-igd: ok/trouble'
+      tags:
+      - tag: component
+        value: logs
+    - uuid: 579796563a884de186e49445067fb281
+      name: 'Mail: given up'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.14.5.0]
+      key: fakeigd.mail[expired]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.14.5.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: mail
+    - uuid: db41b9c8a1114817801889e13fdfb5e6
+      name: 'Mail: failed'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.14.4.0]
+      key: fakeigd.mail[failed]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.14.4.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: mail
+      triggers:
+      - uuid: c66f3c70bccb4551a2d0ef56dcc02894
+        expression: change(/fake-igd by SNMP/fakeigd.mail[failed])>0
+        name: 'fake-igd: A mail was refused'
+        priority: WARNING
+        opdata: '{ITEM.LASTVALUE1} failed'
+        description: Settings - Outgoing mail says why.
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: 3304e8b9b4cf452ca9ffc575d97fe95d
+      name: 'Mail: being sent'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.14.1.0]
+      key: fakeigd.mail[sending]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.14.1.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: mail
+    - uuid: cad9eb258cde4df4bffcf98636274715
+      name: 'Mail: sent'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.14.3.0]
+      key: fakeigd.mail[sent]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.14.3.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: mail
+    - uuid: f0807db2b59a4d428ec4f39edbde1a5b
+      name: 'Mail: waiting for another try'
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.14.2.0]
+      key: fakeigd.mail[waiting]
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.14.2.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: mail
+      triggers:
+      - uuid: 3c7cea85998a4942859bdd40f27ffd7f
+        expression: min(/fake-igd by SNMP/fakeigd.mail[waiting],30m)>{$FAKEIGD.MAIL.WAITING.MAX}
+        name: 'fake-igd: Mail is waiting'
+        priority: WARNING
+        opdata: '{ITEM.LASTVALUE1} waiting'
+        description: The mail server does not take it - Settings - Outgoing mail says why.
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: 64d0fa158896451fba9a37fe8f52e3b4
+      name: Mappings held
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.3.8.0]
+      key: fakeigd.mappings
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.3.8.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: requests
+    - uuid: 0e2619c0c302478ebe6e609998e83b01
+      name: mDNS services seen
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.4.3.0]
+      key: fakeigd.mdns.services
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.4.3.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: mdns
+    - uuid: e77886da1ca5431ca6ae2a0edd7449d0
+      name: avahi-daemon's state
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.4.2.0]
+      key: fakeigd.mdns.state
+      delay: 5m
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.4.2.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - *id001
+      tags:
+      - tag: component
+        value: mdns
+    - uuid: 0a15597f47c04f7fa8da62662c1b13db
+      name: avahi-daemon (the mDNS reflector)
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.4.1.0]
+      key: fakeigd.mdns.up
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.4.1.0 (FAKE-IGD-MIB)'
+      valuemap:
+        name: 'fake-igd: up/down'
+      tags:
+      - tag: component
+        value: mdns
+    - uuid: ddf11c9edee84dadaec35073f6e473ca
+      name: Machine
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.1.2.0]
+      key: fakeigd.node
+      delay: 1h
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.1.2.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - *id001
+      tags:
+      - tag: component
+        value: system
+    - uuid: 78657d3ee9584534b0a920e383581d1d
+      name: Other UPnP routers on the network
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.4.5.0]
+      key: fakeigd.other.igd
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.4.5.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: network
+      triggers:
+      - uuid: 4ea8a9287a804f20878212728e70daf9
+        expression: last(/fake-igd by SNMP/fakeigd.other.igd)>0
+        name: 'fake-igd: Another UPnP router is on the network'
+        priority: WARNING
+        opdata: '{ITEM.LASTVALUE1} seen'
+        description: Something else answers as a UPnP router - a device may ask it instead.
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: 84a46cc2ed894024a210069d632040a9
+      name: Ports asked for in the last 24 hours
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.3.9.0]
+      key: fakeigd.port.day[asked]
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.3.9.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: requests
+    - uuid: c8a696b08aa94d4ebfa4a246d345ee72
+      name: Ports refused in the last 24 hours
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.3.10.0]
+      key: fakeigd.port.day[refused]
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.3.10.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: requests
+    - uuid: 444bccb1a9044aafb0cf387c2c5e96db
+      name: Ports asked for, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.3.2.0]
+      key: fakeigd.port.rate[asked]
+      value_type: FLOAT
+      units: rps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.3.2.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - *id002
+      tags:
+      - tag: component
+        value: requests
+    - uuid: e486159f23b343eb8df24740b246bd1b
+      name: Ports answered ok, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.3.3.0]
+      key: fakeigd.port.rate[ok]
+      value_type: FLOAT
+      units: rps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.3.3.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - *id002
+      tags:
+      - tag: component
+        value: requests
+    - uuid: 95e3c57d07374e628c9b6e5eba0fde34
+      name: Ports refused, per second
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.3.4.0]
+      key: fakeigd.port.rate[refused]
+      value_type: FLOAT
+      units: rps
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.3.4.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - *id002
+      tags:
+      - tag: component
+        value: requests
+    - uuid: 0d980c908d3a4075a61d86e9ab92b2fe
+      name: Ports asked for (each once)
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.3.5.0]
+      key: fakeigd.ports
+      delay: 5m
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.3.5.0 (FAKE-IGD-MIB)'
+      tags:
+      - tag: component
+        value: requests
+    - uuid: 900549ce05894c5ca2369e63affa41e7
+      name: The last request
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.3.7.0]
+      key: fakeigd.request.last
+      delay: 5m
+      units: unixtime
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.3.7.0 (FAKE-IGD-MIB)'
+      valuemap:
+        name: 'fake-igd: never'
+      tags:
+      - tag: component
+        value: requests
+    - uuid: e49bdb6ca46a430f983b99436a8e5457
+      name: Requests in the log
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.3.1.0]
+      key: fakeigd.requests
+      value_type: FLOAT
+      units: rps
+      description: 'Every SOAP request, per second.
+
+        OID: 1.3.6.1.4.1.8072.9999.9999.8.3.1.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - *id002
+      tags:
+      - tag: component
+        value: requests
+    - uuid: 01bb221dbc504ae3ae4c1f79148d9633
+      name: 'Ports by answer: the table'
+      type: SNMP_AGENT
+      snmp_oid: walk[1.3.6.1.4.1.8072.9999.9999.8.3.21.1.2,1.3.6.1.4.1.8072.9999.9999.8.3.21.1.3]
+      key: fakeigd.result.walk
+      delay: 5m
+      history: '0'
+      value_type: TEXT
+      trends: '0'
+      description: The table, read whole; the items of the discovery below take it apart.
+      tags:
+      - tag: component
+        value: requests
+    - uuid: f10fa2c648184db18f44ebd9b80975d9
+      name: 'Services: the table'
+      type: SNMP_AGENT
+      snmp_oid: walk[1.3.6.1.4.1.8072.9999.9999.8.2.1.1.2,1.3.6.1.4.1.8072.9999.9999.8.2.1.1.3,1.3.6.1.4.1.8072.9999.9999.8.2.1.1.4]
+      key: fakeigd.service.walk
+      delay: 1m
+      history: '0'
+      value_type: TEXT
+      trends: '0'
+      description: The table, read whole; the items of the discovery below take it apart.
+      tags:
+      - tag: component
+        value: services
+    - uuid: 25920105ebca4100953967451d912239
+      name: Site
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.1.3.0]
+      key: fakeigd.site
+      delay: 1h
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.1.3.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - *id001
+      tags:
+      - tag: component
+        value: system
+    - uuid: 921ff227914349e3b19963fc905b21e8
+      name: A newer fake-igd is out
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.18.1.0]
+      key: fakeigd.upgrade.newer
+      delay: 1h
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.18.1.0 (FAKE-IGD-MIB)'
+      valuemap:
+        name: 'fake-igd: newer'
+      tags:
+      - tag: component
+        value: upgrade
+      triggers:
+      - uuid: df221d56fcef45e68214ae856cd91804
+        expression: last(/fake-igd by SNMP/fakeigd.upgrade.newer)=1 and length(last(/fake-igd by SNMP/fakeigd.upgrade.newest))>0
+        name: 'fake-igd: A newer fake-igd is out: {ITEM.LASTVALUE2}'
+        priority: INFO
+        description: Settings - Upgrades puts it in.
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: 65cc422f55ae4d40a3ad46156c4d11e5
+      name: The newest fake-igd
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.18.2.0]
+      key: fakeigd.upgrade.newest
+      delay: 1h
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.18.2.0 (FAKE-IGD-MIB)'
+      preprocessing:
+      - *id001
+      tags:
+      - tag: component
+        value: upgrade
+    - uuid: 7d3e0dd8eb1d4e86b278e9ff7c9908d3
+      name: Version
+      type: SNMP_AGENT
+      snmp_oid: get[1.3.6.1.4.1.8072.9999.9999.8.1.1.0]
+      key: fakeigd.version
+      delay: 15m
+      value_type: CHAR
+      trends: '0'
+      description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.1.1.0 (FAKE-IGD-MIB)'
+      inventory_link: SOFTWARE
+      preprocessing:
+      - *id001
+      tags:
+      - tag: component
+        value: system
+      triggers:
+      - uuid: b134a590371244a7b6e7d0ec8164fe28
+        expression: change(/fake-igd by SNMP/fakeigd.version)=1 and length(last(/fake-igd by SNMP/fakeigd.version))>0
+        name: 'fake-igd: Version has changed'
+        priority: INFO
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        description: fake-igd was upgraded (or went back).
+        tags:
+        - tag: scope
+          value: notice
+    - uuid: 2142c1f436e0438fbcaddb86502ee3f0
+      name: SNMP agent availability
+      type: INTERNAL
+      key: zabbix[host,snmp,available]
+      description: 'Availability of SNMP checks on the host, as the host list shows it.
+
+        '
+      valuemap:
+        name: Host availability status
+      tags:
+      - tag: component
+        value: health
+      triggers:
+      - uuid: 503ea3d5c2bf4677bcb799f70a5ed2eb
+        expression: max(/fake-igd by SNMP/zabbix[host,snmp,available],{$FAKEIGD.NODATA.TIMEOUT})=0
+        name: 'fake-igd: No SNMP answer'
+        priority: HIGH
+        opdata: 'Current: {ITEM.LASTVALUE1}'
+        description: 'The agent of fake-igd does not answer: the machine is down, fake-igd-api stopped, SNMPv3 is off on Settings
+          - Monitoring, or the user and its passphrases differ.'
+        tags:
+        - tag: scope
+          value: availability
+    discovery_rules:
+    - uuid: 163ab23c9b57434a85125c80e6dc8085
+      name: Requests by action
+      type: DEPENDENT
+      key: fakeigd.action.discovery
+      delay: '0'
+      description: Each SOAP action in the request log.
+      master_item:
+        key: fakeigd.action.walk
+      preprocessing:
+      - type: SNMP_WALK_TO_JSON
+        parameters:
+        - '{#SNMPVALUE}'
+        - 1.3.6.1.4.1.8072.9999.9999.8.3.20.1.2
+        - '0'
+        - '{#ACTION}'
+        - 1.3.6.1.4.1.8072.9999.9999.8.3.20.1.2
+        - '0'
+        error_handler: DISCARD_VALUE
+      item_prototypes:
+      - uuid: 16f4dfc3135844879d188b612c94b143
+        name: Requests {#ACTION}, per second
+        type: DEPENDENT
+        key: fakeigd.action.rate[{#ACTION}]
+        delay: '0'
+        value_type: FLOAT
+        units: rps
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.3.20.1.3.{#SNMPINDEX} (FAKE-IGD-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.8.3.20.1.3.{#SNMPINDEX}
+          - '0'
+        - *id002
+        master_item:
+          key: fakeigd.action.walk
+        tags:
+        - tag: component
+          value: requests
+      graph_prototypes:
+      - uuid: aad687bfc11c41e989248bc778f40556
+        name: 'fake-igd: Requests {#ACTION}'
+        graph_items:
+        - color: 1E88E5
+          item:
+            host: fake-igd by SNMP
+            key: fakeigd.action.rate[{#ACTION}]
+          drawtype: GRADIENT_LINE
+    - uuid: ad7caed3954f420eb153e691691b476d
+      name: Problems fake-igd sees
+      type: DEPENDENT
+      key: fakeigd.alert.discovery
+      delay: '0'
+      description: Each thing fake-igd sees wrong now - a problem of its own while it lasts, gone when it is right.
+      master_item:
+        key: fakeigd.alert.walk
+      lifetime_type: DELETE_IMMEDIATELY
+      preprocessing:
+      - type: SNMP_WALK_TO_JSON
+        parameters:
+        - '{#SNMPVALUE}'
+        - 1.3.6.1.4.1.8072.9999.9999.8.5.3.1.2
+        - '0'
+        - '{#KEY}'
+        - 1.3.6.1.4.1.8072.9999.9999.8.5.3.1.2
+        - '0'
+        - '{#LEVEL}'
+        - 1.3.6.1.4.1.8072.9999.9999.8.5.3.1.3
+        - '0'
+        - '{#TITLE}'
+        - 1.3.6.1.4.1.8072.9999.9999.8.5.3.1.4
+        - '0'
+        error_handler: DISCARD_VALUE
+      item_prototypes:
+      - uuid: 479ddfa387744a34857eb555265be8ab
+        name: 'Problem [{#KEY}]: level'
+        type: DEPENDENT
+        key: fakeigd.alert.level[{#KEY}]
+        delay: '0'
+        value_type: CHAR
+        trends: '0'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.5.3.1.3.{#SNMPINDEX} (FAKE-IGD-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.8.5.3.1.3.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: fakeigd.alert.walk
+        tags:
+        - tag: component
+          value: alerts
+        trigger_prototypes:
+        - uuid: 92dbc77567494c2ba02a0182873f4ff7
+          expression: find(/fake-igd by SNMP/fakeigd.alert.level[{#KEY}],,"like","bad")=1
+          name: 'fake-igd: {#TITLE}'
+          priority: HIGH
+          description: 'fake-igd sees it (Settings - Alerts): {#KEY}.'
+          tags:
+          - tag: scope
+            value: notice
+        - uuid: 271aee1a2cd94232a2bcf923adca09f1
+          expression: find(/fake-igd by SNMP/fakeigd.alert.level[{#KEY}],,"like","warn")=1
+          name: 'fake-igd: {#TITLE} (warning)'
+          priority: WARNING
+          description: 'fake-igd sees it (Settings - Alerts): {#KEY}.'
+          tags:
+          - tag: scope
+            value: notice
+      - uuid: 7dc461c45e844d9a9b3ea1956ff2c8ee
+        name: 'Problem [{#KEY}]: said'
+        type: DEPENDENT
+        key: fakeigd.alert.said[{#KEY}]
+        delay: '0'
+        value_type: TEXT
+        trends: '0'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.5.3.1.5.{#SNMPINDEX} (FAKE-IGD-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.8.5.3.1.5.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: fakeigd.alert.walk
+        tags:
+        - tag: component
+          value: alerts
+    - uuid: 672c488d24464bfa88e5a5dbfe55282b
+      name: File systems
+      type: DEPENDENT
+      key: fakeigd.fs.discovery
+      delay: '0'
+      description: The file systems fake-igd lives on (/, its state, its logs), each once.
+      master_item:
+        key: fakeigd.fs.walk
+      preprocessing:
+      - type: SNMP_WALK_TO_JSON
+        parameters:
+        - '{#SNMPVALUE}'
+        - 1.3.6.1.4.1.8072.9999.9999.8.10.20.1.2
+        - '0'
+        - '{#FSPATH}'
+        - 1.3.6.1.4.1.8072.9999.9999.8.10.20.1.2
+        - '0'
+        error_handler: DISCARD_VALUE
+      item_prototypes:
+      - uuid: 1979d0d689a14fe48e66864cb363fc3a
+        name: '{#FSPATH}: total'
+        type: DEPENDENT
+        key: fakeigd.fs.total[{#FSPATH}]
+        delay: '0'
+        units: B
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.20.1.3.{#SNMPINDEX} (FAKE-IGD-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.8.10.20.1.3.{#SNMPINDEX}
+          - '0'
+        - type: MULTIPLIER
+          parameters:
+          - '1024'
+        master_item:
+          key: fakeigd.fs.walk
+        tags:
+        - tag: component
+          value: storage
+      - uuid: fdac56b15d1d46e8ba0f3bbd7f1dc75e
+        name: '{#FSPATH}: used'
+        type: DEPENDENT
+        key: fakeigd.fs.used[{#FSPATH}]
+        delay: '0'
+        units: B
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.20.1.4.{#SNMPINDEX} (FAKE-IGD-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.8.10.20.1.4.{#SNMPINDEX}
+          - '0'
+        - type: MULTIPLIER
+          parameters:
+          - '1024'
+        master_item:
+          key: fakeigd.fs.walk
+        tags:
+        - tag: component
+          value: storage
+      - uuid: a801fc57260d49b19b66bafac91f9187
+        name: '{#FSPATH}: free'
+        type: DEPENDENT
+        key: fakeigd.fs.free[{#FSPATH}]
+        delay: '0'
+        units: B
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.20.1.5.{#SNMPINDEX} (FAKE-IGD-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.8.10.20.1.5.{#SNMPINDEX}
+          - '0'
+        - type: MULTIPLIER
+          parameters:
+          - '1024'
+        master_item:
+          key: fakeigd.fs.walk
+        tags:
+        - tag: component
+          value: storage
+      - uuid: ef3fe96f98f34f44a3dd5126e985e100
+        name: '{#FSPATH}: space used'
+        type: DEPENDENT
+        key: fakeigd.fs.pused[{#FSPATH}]
+        delay: '0'
+        value_type: FLOAT
+        units: '%'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.20.1.6.{#SNMPINDEX} (FAKE-IGD-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.8.10.20.1.6.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: fakeigd.fs.walk
+        tags:
+        - tag: component
+          value: storage
+        trigger_prototypes:
+        - uuid: a968a8b22c90414eb481791993be1d53
+          expression: last(/fake-igd by SNMP/fakeigd.fs.pused[{#FSPATH}])>{$FAKEIGD.FS.PUSED.CRIT}
+          name: 'fake-igd: {#FSPATH}: disk space is critically low'
+          priority: AVERAGE
+          opdata: 'Space used: {ITEM.LASTVALUE1}'
+          tags:
+          - tag: scope
+            value: capacity
+        - uuid: 10647f183a464a66967ac309601a3a62
+          expression: last(/fake-igd by SNMP/fakeigd.fs.pused[{#FSPATH}])>{$FAKEIGD.FS.PUSED.WARN}
+          name: 'fake-igd: {#FSPATH}: disk space is low'
+          priority: WARNING
+          opdata: 'Space used: {ITEM.LASTVALUE1}'
+          dependencies:
+          - name: 'fake-igd: {#FSPATH}: disk space is critically low'
+            expression: last(/fake-igd by SNMP/fakeigd.fs.pused[{#FSPATH}])>{$FAKEIGD.FS.PUSED.CRIT}
+          tags:
+          - tag: scope
+            value: capacity
+      - uuid: 32d0ea9e758846b0b5a8d75e73ca2fda
+        name: '{#FSPATH}: inodes used'
+        type: DEPENDENT
+        key: fakeigd.fs.inodes[{#FSPATH}]
+        delay: '0'
+        value_type: FLOAT
+        units: '%'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.10.20.1.7.{#SNMPINDEX} (FAKE-IGD-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.8.10.20.1.7.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: fakeigd.fs.walk
+        tags:
+        - tag: component
+          value: storage
+        trigger_prototypes:
+        - uuid: fb35bdec3a694b8ca752579e11e98712
+          expression: last(/fake-igd by SNMP/fakeigd.fs.inodes[{#FSPATH}])>{$FAKEIGD.FS.INODES.WARN}
+          name: 'fake-igd: {#FSPATH}: running out of inodes'
+          priority: WARNING
+          opdata: 'Inodes used: {ITEM.LASTVALUE1}'
+          tags:
+          - tag: scope
+            value: capacity
+      graph_prototypes:
+      - uuid: d8e46ffce112480cb1f8aa35358f3c31
+        name: 'fake-igd: {#FSPATH}: space'
+        type: STACKED
+        graph_items:
+        - color: E53935
+          item:
+            host: fake-igd by SNMP
+            key: fakeigd.fs.used[{#FSPATH}]
+          drawtype: FILLED_REGION
+        - sortorder: '1'
+          color: 43A047
+          item:
+            host: fake-igd by SNMP
+            key: fakeigd.fs.free[{#FSPATH}]
+          drawtype: FILLED_REGION
+    - uuid: dc2cf77b2d8344b89b2eb34d5a2c2a40
+      name: Ports by answer
+      type: DEPENDENT
+      key: fakeigd.result.discovery
+      delay: '0'
+      description: AddPortMapping by what it was answered.
+      master_item:
+        key: fakeigd.result.walk
+      preprocessing:
+      - type: SNMP_WALK_TO_JSON
+        parameters:
+        - '{#SNMPVALUE}'
+        - 1.3.6.1.4.1.8072.9999.9999.8.3.21.1.2
+        - '0'
+        - '{#RESULT}'
+        - 1.3.6.1.4.1.8072.9999.9999.8.3.21.1.2
+        - '0'
+        error_handler: DISCARD_VALUE
+      item_prototypes:
+      - uuid: 59b8b8fb2b38423fa91ec7ff26c64005
+        name: Ports answered {#RESULT}, per second
+        type: DEPENDENT
+        key: fakeigd.result.rate[{#RESULT}]
+        delay: '0'
+        value_type: FLOAT
+        units: rps
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.3.21.1.3.{#SNMPINDEX} (FAKE-IGD-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.8.3.21.1.3.{#SNMPINDEX}
+          - '0'
+        - *id002
+        master_item:
+          key: fakeigd.result.walk
+        tags:
+        - tag: component
+          value: requests
+    - uuid: 33097c9bbd3045ee8e3c9b1622098611
+      name: Services
+      type: DEPENDENT
+      key: fakeigd.service.discovery
+      delay: '0'
+      description: fake-igd.service, fake-igd-api.service, avahi-daemon.service where installed.
+      master_item:
+        key: fakeigd.service.walk
+      preprocessing:
+      - type: SNMP_WALK_TO_JSON
+        parameters:
+        - '{#SNMPVALUE}'
+        - 1.3.6.1.4.1.8072.9999.9999.8.2.1.1.2
+        - '0'
+        - '{#UNIT}'
+        - 1.3.6.1.4.1.8072.9999.9999.8.2.1.1.2
+        - '0'
+        error_handler: DISCARD_VALUE
+      item_prototypes:
+      - uuid: ec3b7e2723ac4f4c801529333e2cab38
+        name: 'Service {#UNIT}: state'
+        type: DEPENDENT
+        key: fakeigd.service.state[{#UNIT}]
+        delay: '0'
+        value_type: CHAR
+        trends: '0'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.2.1.1.3.{#SNMPINDEX} (FAKE-IGD-MIB)'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.8.2.1.1.3.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: fakeigd.service.walk
+        tags:
+        - tag: component
+          value: services
+      - uuid: c027417372724ff086d5c65c664c0907
+        name: 'Service {#UNIT}: up'
+        type: DEPENDENT
+        key: fakeigd.service.up[{#UNIT}]
+        delay: '0'
+        description: 'OID: 1.3.6.1.4.1.8072.9999.9999.8.2.1.1.4.{#SNMPINDEX} (FAKE-IGD-MIB)'
+        valuemap:
+          name: 'fake-igd: up/down'
+        preprocessing:
+        - type: SNMP_WALK_VALUE
+          parameters:
+          - 1.3.6.1.4.1.8072.9999.9999.8.2.1.1.4.{#SNMPINDEX}
+          - '0'
+        master_item:
+          key: fakeigd.service.walk
+        tags:
+        - tag: component
+          value: services
+        trigger_prototypes:
+        - uuid: 07f4adb475a5408b9a37d1d73244a747
+          expression: last(/fake-igd by SNMP/fakeigd.service.up[{#UNIT}])=0
+          name: 'fake-igd: {#UNIT} is not running'
+          priority: HIGH
+          opdata: 'State: {ITEM.LASTVALUE1}'
+          description: systemd says it is not active.
+          tags:
+          - tag: scope
+            value: availability
+    tags:
+    - tag: class
+      value: software
+    - tag: target
+      value: fake-igd
+    macros:
+    - macro: '{$FAKEIGD.NODATA.TIMEOUT}'
+      value: 10m
+      description: 'No SNMP answer for this long: a problem.'
+    - macro: '{$FAKEIGD.CPU.UTIL.WARN}'
+      value: '80'
+      description: CPU utilization (%) for a warning.
+    - macro: '{$FAKEIGD.CPU.UTIL.CRIT}'
+      value: '90'
+      description: CPU utilization (%) for a problem.
+    - macro: '{$FAKEIGD.MEM.UTIL.WARN}'
+      value: '90'
+      description: Memory utilization (%) for a warning.
+    - macro: '{$FAKEIGD.FS.PUSED.WARN}'
+      value: '85'
+      description: 'A file system this full (%): a warning.'
+    - macro: '{$FAKEIGD.FS.PUSED.CRIT}'
+      value: '95'
+      description: 'A file system this full (%): a problem.'
+    - macro: '{$FAKEIGD.FS.INODES.WARN}'
+      value: '90'
+      description: 'Inodes of a file system used (%): a warning.'
+    - macro: '{$FAKEIGD.CERT.EXPIRY.WARN}'
+      value: '21'
+      description: 'The certificate of the pages ending within this many days: a warning.'
+    - macro: '{$FAKEIGD.CERT.EXPIRY.CRIT}'
+      value: '7'
+      description: 'The certificate of the pages ending within this many days: a problem.'
+    - macro: '{$FAKEIGD.MAIL.WAITING.MAX}'
+      value: '20'
+      description: Mail waiting for 30 minutes, at most.
+    dashboards:
+    - uuid: f579a23e524942859e55cc4e22030605
+      name: fake-igd
+      display_period: '60'
+      pages:
+      - name: Overview
+        widgets:
+        - type: item
+          name: Ports asked for (24 h)
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 43A047
+          - type: STRING
+            name: description
+            value: Ports asked for (24 h)
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: fake-igd by SNMP
+              key: fakeigd.port.day[asked]
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '18'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: reference
+            value: AAAAB
+        - type: item
+          name: Refused (24 h)
+          x: '12'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 1E88E5
+          - type: STRING
+            name: description
+            value: Refused (24 h)
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: fake-igd by SNMP
+              key: fakeigd.port.day[refused]
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '18'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: FB8C00
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+          - type: STRING
+            name: reference
+            value: AAAAC
+        - type: item
+          name: Devices
+          x: '24'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 1E88E5
+          - type: STRING
+            name: description
+            value: Devices
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: fake-igd by SNMP
+              key: fakeigd.clients
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '18'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: reference
+            value: AAAAD
+        - type: item
+          name: Mappings
+          x: '36'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 1E88E5
+          - type: STRING
+            name: description
+            value: Mappings
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: fake-igd by SNMP
+              key: fakeigd.mappings
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '18'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: reference
+            value: AAAAE
+        - type: item
+          name: Problems
+          x: '48'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 43A047
+          - type: STRING
+            name: description
+            value: Problems
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: fake-igd by SNMP
+              key: fakeigd.alerts[bad]
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '18'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: E53935
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+          - type: STRING
+            name: reference
+            value: AAAAF
+        - type: item
+          name: Warnings
+          x: '60'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 43A047
+          - type: STRING
+            name: description
+            value: Warnings
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: fake-igd by SNMP
+              key: fakeigd.alerts[warn]
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '18'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: FB8C00
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+          - type: STRING
+            name: reference
+            value: AAAAG
+        - type: graph
+          name: Ports asked for
+          y: '3'
+          width: '36'
+          height: '5'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: fake-igd by SNMP
+              name: 'fake-igd: Ports asked for'
+          - type: STRING
+            name: reference
+            value: AAAAH
+        - type: graph
+          name: Requests
+          x: '36'
+          y: '3'
+          width: '36'
+          height: '5'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: fake-igd by SNMP
+              name: 'fake-igd: Requests'
+          - type: STRING
+            name: reference
+            value: AAAAI
+        - type: problems
+          name: Problems
+          y: '8'
+          width: '72'
+          height: '6'
+          fields:
+          - type: INTEGER
+            name: show
+            value: '3'
+          - type: INTEGER
+            name: show_opdata
+            value: '2'
+          - type: INTEGER
+            name: show_tags
+            value: '1'
+          - type: STRING
+            name: tag_priority
+            value: scope
+          - type: STRING
+            name: reference
+            value: AAAAJ
+      - name: Machine
+        widgets:
+        - type: item
+          name: mDNS reflector
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 1E88E5
+          - type: STRING
+            name: description
+            value: mDNS reflector
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: fake-igd by SNMP
+              key: fakeigd.mdns.up
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '18'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: E53935
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+          - type: STRING
+            name: reference
+            value: AAAAK
+        - type: item
+          name: Certificate (days)
+          x: '12'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 43A047
+          - type: STRING
+            name: description
+            value: Certificate (days)
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: fake-igd by SNMP
+              key: fakeigd.cert.days
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '18'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: E53935
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: FB8C00
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '7'
+          - type: STRING
+            name: thresholds.2.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.2.threshold
+            value: '21'
+          - type: STRING
+            name: reference
+            value: AAAAL
+        - type: item
+          name: Other UPnP routers
+          x: '24'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 43A047
+          - type: STRING
+            name: description
+            value: Other UPnP routers
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: fake-igd by SNMP
+              key: fakeigd.other.igd
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '18'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: FB8C00
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+          - type: STRING
+            name: reference
+            value: AAAAM
+        - type: item
+          name: Mail waiting
+          x: '36'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 43A047
+          - type: STRING
+            name: description
+            value: Mail waiting
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: fake-igd by SNMP
+              key: fakeigd.mail[waiting]
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '18'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: FB8C00
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+          - type: STRING
+            name: reference
+            value: AAAAN
+        - type: item
+          name: Logs in trouble
+          x: '48'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 43A047
+          - type: STRING
+            name: description
+            value: Logs in trouble
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: fake-igd by SNMP
+              key: fakeigd.logs.trouble
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '18'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: 43A047
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: E53935
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+          - type: STRING
+            name: reference
+            value: AAAAO
+        - type: item
+          name: Newer version
+          x: '60'
+          width: '12'
+          height: '3'
+          hide_header: 'YES'
+          fields:
+          - type: STRING
+            name: bg_color
+            value: 546E7A
+          - type: STRING
+            name: description
+            value: Newer version
+          - type: STRING
+            name: desc_color
+            value: FFFFFF
+          - type: INTEGER
+            name: desc_size
+            value: '12'
+          - type: INTEGER
+            name: desc_v_pos
+            value: '0'
+          - type: ITEM
+            name: itemid.0
+            value:
+              host: fake-igd by SNMP
+              key: fakeigd.upgrade.newer
+          - type: INTEGER
+            name: show.0
+            value: '2'
+          - type: INTEGER
+            name: show.1
+            value: '1'
+          - type: STRING
+            name: value_color
+            value: FFFFFF
+          - type: INTEGER
+            name: value_size
+            value: '18'
+          - type: INTEGER
+            name: decimal_places
+            value: '0'
+          - type: STRING
+            name: thresholds.0.color
+            value: 546E7A
+          - type: STRING
+            name: thresholds.0.threshold
+            value: '0'
+          - type: STRING
+            name: thresholds.1.color
+            value: 1E88E5
+          - type: STRING
+            name: thresholds.1.threshold
+            value: '1'
+          - type: STRING
+            name: reference
+            value: AAAAP
+        - type: graph
+          name: CPU utilization
+          y: '3'
+          width: '36'
+          height: '6'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: fake-igd by SNMP
+              name: 'fake-igd: CPU utilization'
+          - type: STRING
+            name: reference
+            value: AAAAQ
+        - type: graph
+          name: Load average
+          x: '36'
+          y: '3'
+          width: '36'
+          height: '6'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: fake-igd by SNMP
+              name: 'fake-igd: Load average'
+          - type: STRING
+            name: reference
+            value: AAAAR
+        - type: graph
+          name: Memory
+          y: '9'
+          width: '36'
+          height: '6'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: fake-igd by SNMP
+              name: 'fake-igd: Memory'
+          - type: STRING
+            name: reference
+            value: AAAAS
+        - type: graph
+          name: Network traffic
+          x: '36'
+          y: '9'
+          width: '36'
+          height: '6'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: fake-igd by SNMP
+              name: 'fake-igd: Network traffic'
+          - type: STRING
+            name: reference
+            value: AAAAT
+        - type: graph
+          name: Disk I/O
+          y: '15'
+          width: '36'
+          height: '6'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: fake-igd by SNMP
+              name: 'fake-igd: Disk I/O'
+          - type: STRING
+            name: reference
+            value: AAAAU
+        - type: graph
+          name: Mail queue
+          x: '36'
+          y: '15'
+          width: '36'
+          height: '6'
+          fields:
+          - type: GRAPH
+            name: graphid.0
+            value:
+              host: fake-igd by SNMP
+              name: 'fake-igd: Mail queue'
+          - type: STRING
+            name: reference
+            value: AAAAV
+        - type: graphprototype
+          name: '{#FSPATH}: space'
+          y: '21'
+          width: '72'
+          height: '5'
+          fields:
+          - type: INTEGER
+            name: columns
+            value: '3'
+          - type: GRAPH_PROTOTYPE
+            name: graphid.0
+            value:
+              host: fake-igd by SNMP
+              name: 'fake-igd: {#FSPATH}: space'
+          - type: STRING
+            name: reference
+            value: AAAAW
+    valuemaps:
+    - uuid: d31ca0218ae24753a5c402b9d6fce30e
+      name: Host availability status
+      mappings:
+      - value: '0'
+        newvalue: not available
+      - value: '1'
+        newvalue: available
+      - value: '2'
+        newvalue: unknown
+    - uuid: 7fa3979c5a774676b62a8ec213a21363
+      name: 'fake-igd: never'
+      mappings:
+      - value: '0'
+        newvalue: never
+    - uuid: 7817e40ee31b4371a5aafc2542a34b8f
+      name: 'fake-igd: newer'
+      mappings:
+      - value: '0'
+        newvalue: 'no'
+      - value: '1'
+        newvalue: a newer one is out
+    - uuid: 282e0d041071452ba454185b87aaa4c3
+      name: 'fake-igd: ok/trouble'
+      mappings:
+      - value: '0'
+        newvalue: ok
+      - value: '1'
+        newvalue: in trouble
+    - uuid: 73eda07b84184761811260666cfa469e
+      name: 'fake-igd: on/off'
+      mappings:
+      - value: '0'
+        newvalue: 'off'
+      - value: '1'
+        newvalue: 'on'
+    - uuid: 7c877ecd688547319bce12b2a9d59e36
+      name: 'fake-igd: up/down'
+      mappings:
+      - value: '0'
+        newvalue: down
+      - value: '1'
+        newvalue: up
+  graphs:
+  - uuid: de6a1756f5e043f2b950c69d1ee52b44
+    name: 'fake-igd: Ports asked for'
+    type: STACKED
+    graph_items:
+    - color: 1A7C11
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.port.rate[ok]
+      drawtype: FILLED_REGION
+    - color: F63100
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.port.rate[refused]
+      sortorder: '1'
+      drawtype: FILLED_REGION
+  - uuid: 067e7bfb42ee462582aab5f8444c433a
+    name: 'fake-igd: Requests'
+    graph_items:
+    - color: 2774A4
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.requests
+      drawtype: GRADIENT_LINE
+  - uuid: 673280030a73482ebca313b2f8ddb05d
+    name: 'fake-igd: CPU utilization'
+    ymin_type_1: FIXED
+    ymax_type_1: FIXED
+    graph_items:
+    - color: 1A7C11
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.host.cpu.util
+      drawtype: GRADIENT_LINE
+  - uuid: b01310ba7de040d2be926d20d98f4bf2
+    name: 'fake-igd: Load average'
+    graph_items:
+    - color: 1A7C11
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.host.load[1]
+    - color: 2774A4
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.host.load[5]
+      sortorder: '1'
+    - color: F63100
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.host.load[15]
+      sortorder: '2'
+  - uuid: afff60171fb74538b2ec9b374267d73e
+    name: 'fake-igd: Memory'
+    graph_items:
+    - color: 1A7C11
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.host.mem.used
+      drawtype: GRADIENT_LINE
+    - color: 2774A4
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.host.mem.total
+      sortorder: '1'
+    - color: F63100
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.host.swap.used
+      sortorder: '2'
+  - uuid: 608cfd8e788c4555b369235106c90291
+    name: 'fake-igd: Disk I/O'
+    graph_items:
+    - color: 1A7C11
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.host.disk.read
+    - color: F63100
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.host.disk.write
+      sortorder: '1'
+  - uuid: af391219e0f14ab1beb1b99faeb43d54
+    name: 'fake-igd: Network traffic'
+    graph_items:
+    - color: 1A7C11
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.host.net.rx
+      drawtype: GRADIENT_LINE
+    - color: 2774A4
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.host.net.tx
+      sortorder: '1'
+      drawtype: GRADIENT_LINE
+  - uuid: e651c6d102d44ff592bc0702a21e5f8a
+    name: 'fake-igd: Problems fake-igd sees'
+    type: STACKED
+    graph_items:
+    - color: E53935
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.alerts[bad]
+      drawtype: FILLED_REGION
+    - color: FB8C00
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.alerts[warn]
+      sortorder: '1'
+      drawtype: FILLED_REGION
+  - uuid: bed3a86de89147d1b41ce08e59d4ce51
+    name: 'fake-igd: Mail queue'
+    graph_items:
+    - color: FB8C00
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.mail[waiting]
+    - color: 2774A4
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.mail[sending]
+      sortorder: '1'
+    - color: E53935
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.mail[failed]
+      sortorder: '2'
+    - color: 8E24AA
+      item:
+        host: fake-igd by SNMP
+        key: fakeigd.mail[expired]
+      sortorder: '3'

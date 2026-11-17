@@ -35,6 +35,9 @@ dressButtons(document);
 (function phpSafety() {
   var box = $('phpsafety'), s = typeof PHP_SAFETY === 'undefined' ? null : PHP_SAFETY;
   if (!box || !s || s.patched) return;
+  /* A distribution that backported the fix keeps the old number; the API reads the packages'
+     changelog, and when it says the fix is in, so be it (otp's). */
+  if (typeof STATUS !== 'undefined' && STATUS && STATUS.php && STATUS.php.fixed) return;
   box.hidden = false;
   box.classList.toggle('warnish', !!s.guarded);
   box.textContent = 'PHP ' + s.version + ' running this page may have php2shell '

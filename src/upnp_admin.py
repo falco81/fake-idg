@@ -935,7 +935,7 @@ def cmd_events(M, args, cfg):
 
 def cmd_check(M, args, cfg):
     """upnp check - every part looked at, as the pages' alerts do it (otp --check). Exit 1 on a problem."""
-    health = api(M, "GET", "/api/health", quiet=True)
+    health = api(M, "GET", "/api/health?check=service", quiet=True)
     al = api(M, "GET", "/api/alerts", quiet=True)
     if _out(args, {"health": health, "alerts": al}):
         return 0 if not al.get("problems") else 1
@@ -956,13 +956,12 @@ def cmd_check(M, args, cfg):
         M.ok("nothing is wrong")
         return 0
     for p in probs:
-        say = M.warn if p.get("level") != "bad" else None
-        line = "%s - %s%s" % (p.get("title"), p.get("said") or "",
-                              M.col("  (Settings → %s)" % p["pane"], M.C.dim) if p.get("pane") else "")
-        if say:
-            say(line)
+        line = "%s - %s" % (p.get("title"), p.get("said") or "")
+        if p.get("level") == "bad":
+            print(M.col("✘ ", M.C.red, M.C.bold) + M.col(line, M.C.red))
         else:
-            print(M.col("✘ ", M.C.red, M.C.bold) + line)
+            print(M.col("! ", M.C.yellow, M.C.bold) + M.col(line, M.C.yellow))
+    print(M.col("  %d problem(s) - the same as the pages' alerts (Settings → Alerts)" % len(probs), M.C.dim))
     return 1
 
 
@@ -1137,6 +1136,24 @@ def cmd_time(M, args, cfg):
     return 0
 
 
+def _steps(M, steps):
+    """The steps of a test as the pages list them: done or not, what, what was said, how long."""
+    for st in steps or []:
+        if isinstance(st, dict):
+            good = st.get("ok")
+            mark = M.col("✔", M.C.green) if good else (M.col("✘", M.C.red) if good is False else M.col("•", M.C.cyan))
+            ms = st.get("ms")
+            print("  %s %s%s%s" % (mark, st.get("what") or st.get("step") or "", M.col(" - %s" % st["said"], M.C.dim)
+                                   if st.get("said") else "", M.col("  %s ms" % ms, M.C.dim) if ms else ""))
+        elif isinstance(st, (list, tuple)):
+            good = st[1] if len(st) > 1 and isinstance(st[1], bool) else None
+            words = [str(x) for x in st if not isinstance(x, bool)]
+            mark = M.col("✔", M.C.green) if good else (M.col("✘", M.C.red) if good is False else M.col("•", M.C.cyan))
+            print("  %s %s" % (mark, " - ".join(w for w in words if w)))
+        else:
+            print(M.col("  " + str(st), M.C.dim))
+
+
 def cmd_pane_test(M, args, cfg):
     """upnp mail-test ADDRESS · siem-test · proxy-test [URL] · snmp-trap - a test, as the pane's button."""
     what = args.cmd
@@ -1147,10 +1164,7 @@ def cmd_pane_test(M, args, cfg):
                                          "via": "straight" if args.straight else "queue"})
         if _out(args, r):
             return 0 if r.get("sent") else 1
-        for st in r.get("steps") or []:
-            print(M.col("  " + (st if isinstance(st, str) else " ".join(str(x) for x in (st.values()
-                                                                                        if isinstance(st, dict)
-                                                                                        else st))), M.C.dim))
+        _steps(M, r.get("steps"))
         (M.ok if r.get("sent") else M.warn)("%s (%s ms)" % (r.get("said") or ("sent" if r.get("sent") else "not sent"),
                                                           r.get("took_ms", "?")))
         return 0 if r.get("sent") else 1
@@ -1171,8 +1185,7 @@ def cmd_pane_test(M, args, cfg):
         if _out(args, r):
             return 0
         g = r.get("result") or {}
-        for st in g.get("steps") or []:
-            print(M.col("  %s" % (st if isinstance(st, str) else json.dumps(st, ensure_ascii=False)), M.C.dim))
+        _steps(M, g.get("steps"))
         (M.ok if g.get("ok") else M.warn)("%s %s: %s" % (g.get("url"), "through the proxy" if g.get("mode") == "proxy"
                                                           else "straight", g.get("said") or
                                                           ("reached" if g.get("ok") else "not reached")))

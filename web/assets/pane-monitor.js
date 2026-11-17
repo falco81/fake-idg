@@ -91,29 +91,33 @@ function drawSnmp() {
   card.appendChild(el('h3', 'peek-h', 'In the monitoring'));
   card.appendChild(preBox(lines.join('\n')));
   card.appendChild(el('p', 'muted small', 'The passphrases are not shown here - they are those set above (kept sealed). AES-256 is net-snmp\'s AES256 and Zabbix\'s AES256, not Cisco\'s AES256C.'));
-  /* The MIB (otp's "Zabbix 7.0" row: its template and OTP-MIB; fake-igd has the MIB). */
-  card.appendChild(el('h3', 'peek-h', 'FAKE-IGD-MIB'));
-  var mp = el('p', 'note');
-  mp.innerHTML = 'Every object fake-igd answers, by name - the services, the requests and the ports asked for, the devices, the mappings, the mDNS reflector, the alerts open now, the certificate, the machine and its file systems, the mail, the logs sent, every sample of /metrics - and the traps. For net-snmp: in <code>~/.snmp/mibs</code> or <code>/usr/share/snmp/mibs</code>, then <code>snmpwalk -m +FAKE-IGD-MIB …</code>; Zabbix and other managers read it the same way. It imports NET-SNMP-MIB, which net-snmp has.';
-  card.appendChild(mp);
+  /* Zabbix 7.0 (otp 1.0.281): the template of every object, discovery, triggers, graphs and a dashboard;
+     and FAKE-IGD-MIB beside it. */
+  card.appendChild(el('h3', 'peek-h', 'Zabbix 7.0'));
+  var zp = el('p', 'note');
+  zp.innerHTML = 'The template <b>fake-igd by SNMP</b>: every object fake-igd answers, the tables found by themselves (problems, file systems, services, the requests by action and the ports by answer), triggers, graphs and a dashboard of two pages. In Zabbix: <i>Data collection → Templates → Import</i>; then a host - an SNMP interface at this machine\'s address and port ' + d.port + ', SNMPv3, authPriv, ' + htmlText(d.auth || '') + ' and ' + htmlText(d.priv || '') + ', the security name and both passphrases above - and the template linked to it.';
+  card.appendChild(zp);
   var zr = el('div', 'btnrow');
-  var b = cmdButton('Download FAKE-IGD-MIB', 'download', 'primary');
-  b.id = 'snmp-file-mib';
-  b.disabled = d.mib_here === false;
-  if (d.mib_here === false) explain(b, 'FAKE-IGD-MIB.txt is not in this installation (install.sh puts it beside the program).');
-  b.onclick = function () {
-    busy(b, true);
-    api('snmpfile&what=mib').then(function (r) {
-      busy(b, false);
-      var x = document.createElement('a');
-      x.href = URL.createObjectURL(new Blob([r.text], {type: 'application/octet-stream'}));
-      x.download = r.name;
-      document.body.appendChild(x); x.click(); x.remove();
-      setTimeout(function () { URL.revokeObjectURL(x.href); }, 1000);
-      toast(r.name + ' is downloaded', 'good');
-    }).catch(function (e2) { busy(b, false); oops(e2); });
-  };
-  zr.appendChild(b);
+  [['zabbix', 'Download the Zabbix 7.0 template', 'download', 'primary', d.zabbix_here, 'zabbix/fake_igd_by_snmp_zabbix7.yaml'],
+   ['mib', 'Download FAKE-IGD-MIB', 'download', '', d.mib_here, 'FAKE-IGD-MIB.txt']].forEach(function (x) {
+    var b = cmdButton(x[1], x[2], x[3]);
+    b.id = 'snmp-file-' + x[0];
+    b.disabled = x[4] === false;
+    if (x[4] === false) explain(b, x[5] + ' is not in this installation (install.sh puts it beside the program).');
+    b.onclick = function () {
+      busy(b, true);
+      api('snmpfile&what=' + x[0]).then(function (r) {
+        busy(b, false);
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([r.text], {type: 'application/octet-stream'}));
+        a.download = r.name;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+        toast(r.name + ' is downloaded', 'good');
+      }).catch(function (e2) { busy(b, false); oops(e2); });
+    };
+    zr.appendChild(b);
+  });
   card.appendChild(zr);
   host.appendChild(card);
   explainWhatWasDrawn($('pane-monitor'));

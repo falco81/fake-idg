@@ -19,7 +19,7 @@ again.
 
   GET  /api/snmp                    the agent's state and the settings' (the pane's card)
   POST /api/snmp {action: test | trap}   asked as the monitoring would / a test trap
-  GET  /api/snmpfile?what=mib       FAKE-IGD-MIB, as the package has it
+  GET  /api/snmpfile?what=mib|zabbix   FAKE-IGD-MIB or the Zabbix 7.0 template, as the package has them
 """
 import collections
 import hmac
@@ -767,7 +767,7 @@ def snmp_view(ctx):
             "from": list(_setting(S, "snmp_from") or []),
             "base": ".".join(str(x) for x in SNMP_BASE), "traps": traps,
             "trap_to": ["%s:%d" % t for t in SN.trap_targets(_setting(S, "snmp_trap_to"))] if traps else [],
-            "mib": SNMP_MIB_FILE, "mib_here": bool(_mib_path())}
+            "mib": SNMP_MIB_FILE, "mib_here": bool(_mib_path()), "zabbix_here": bool(_mib_path("zabbix"))}
 
 
 def snmp_get_route(ctx):
@@ -823,26 +823,34 @@ def snmp_post_route(ctx):
     return dict(out, ok=True, said=got, ms=int((time.time() - t0) * 1000))
 
 
-def _mib_path():
+SNMP_FILES = {"mib": (SNMP_MIB_FILE, SNMP_MIB_FILE),
+              "zabbix": (os.path.join("zabbix", "fake_igd_by_snmp_zabbix7.yaml"), "fake_igd_by_snmp_zabbix7.yaml")}
+
+
+def _mib_path(what="mib"):
+    """Where the package's file is: beside this file (installed: /opt/fake-igd), or in deploy/ (the source)."""
+    rel = SNMP_FILES[what][0]
     here = os.path.dirname(os.path.abspath(__file__))
-    for p in (os.path.join(here, SNMP_MIB_FILE), os.path.join(os.path.dirname(here), "deploy", SNMP_MIB_FILE),
-              os.path.join(here, "deploy", SNMP_MIB_FILE)):
+    for p in (os.path.join(here, rel), os.path.join(os.path.dirname(here), "deploy", rel),
+              os.path.join(here, "deploy", rel)):
         if os.path.isfile(p):
             return p
     return ""
 
 
 def snmp_file(ctx):
-    """FAKE-IGD-MIB as the package has it - nothing of this server's own is in it."""
+    """FAKE-IGD-MIB or the Zabbix 7.0 template, as the package has them (otp's snmpfile) - nothing of this
+    server's own is in them: the user and its passphrases are set on the host in Zabbix."""
     if not ctx.me:
         raise PermissionError("not signed in")
-    if str(ctx.arg("what") or "") != "mib":
+    what = str(ctx.arg("what") or "")
+    if what not in SNMP_FILES:
         raise ValueError("no such file")
-    p = _mib_path()
+    p = _mib_path(what)
     if not p:
-        raise ValueError("%s is not in this installation" % SNMP_MIB_FILE)
+        raise ValueError("%s is not in this installation" % SNMP_FILES[what][1])
     with open(p, encoding="utf-8") as f:
-        return {"name": SNMP_MIB_FILE, "text": f.read(4 << 20)}
+        return {"name": SNMP_FILES[what][1], "text": f.read(4 << 20)}
 
 
 ROUTES = {

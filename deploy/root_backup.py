@@ -355,8 +355,10 @@ def folder_path(payload):
     if not os.environ.get("FAKE_IGD_FOLDER_ANYWHERE"):
         if p == "/" or any(p == x or p.startswith(x + "/") for x in NOT_UNDER):
             raise Refused("not under %s - a folder of its own (/mnt, /srv, /backup …)" % ", ".join(NOT_UNDER[:6]))
+    # A link anywhere on the way - the folder's own, or a folder above one not made yet (/mnt/x -> /etc,
+    # then /mnt/x/new) - is refused: root would otherwise make and write where NOT_UNDER forbids.
     real = os.path.realpath(p)
-    if real != p and os.path.exists(p):
+    if real != p:
         raise Refused("the folder is reached through a link - give its real path (%s)" % real)
     return p
 

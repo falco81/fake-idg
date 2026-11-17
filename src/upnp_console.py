@@ -2406,6 +2406,17 @@ class Console(object):
             ("4", "Clear the request log", clear_requests),
             ("5", "Clear every log", clear_all),
             ("6", "Versions", lambda: self.act("version")),
+            ("7", "Every part looked at (upnp check)", lambda: self.act("check")),
+            ("8", "fake-igd's own events", lambda: self.act("events", "-n", "300")),
+            ("9", "The database", lambda: self.act("db")),
+            ("10", "Check the database", lambda: self.act("db", "check")),
+            ("11", "The backups", lambda: self.act("backup")),
+            ("12", "A backup now", lambda: self.run_here("backup", "now")),
+            ("13", "The operating system's updates", lambda: self.act("updates")),
+            ("14", "Look for system updates now", lambda: self.run_here("updates", "check")),
+            ("15", "The time and its servers", lambda: self.act("time")),
+            ("16", "The network of this machine", lambda: self.act("net")),
+            ("17", "The certificate of the pages", lambda: self.act("tls")),
         ])
 
 

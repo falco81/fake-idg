@@ -1602,9 +1602,12 @@ commands by purpose:
   firewall        firewall
   notifications   notify-test
   mDNS reflector  mdns (status, services, browse, reflector, interfaces, filters, log)
-  maintenance     clear, version
-  upgrades        upgrade (check, online, file, status, follow, log)
-  web pages       web, user (list, add, passwd, role, del, sessions)
+  maintenance     check, events, db, backup, clear, version
+  upgrades        upgrade (check, online, file, status, follow, log, after), updates (the system's)
+  web pages       web, tls, acme, user (list, add, passwd, role, del, sessions, lockouts)
+  the machine     net, time, updates
+  tests           test, notify-test, mail-test, siem-test, proxy-test, snmp-trap
+  what the pages do, here too   api GET|POST /api/... (any pane's question, as JSON)
   console         --console (menus, live log), --console-at-login on|off|status
 
 typical workflow:
@@ -2045,6 +2048,123 @@ def build_parser():
     s.add_argument("what", nargs="?", choices=("status", "apply"), metavar="status|apply")
     s.add_argument("--restart", action="store_true", help="apply: restart fake-igd.service too")
     s.set_defaults(func=admin("cmd_web"))
+
+    # What the pages do, here too (otp 1.0.187's section, 1.7.4): asked of fake-igd-api as root.
+    pages_note = ("\nAsked of fake-igd-api as a full administrator - as root (sudo), with the key only root\n"
+                  "may read (/run/fake-igd-api/cli-token); written down in the events as \"root (command line)\".")
+    s = add("api", "any question of the web pages, answered as JSON (otp --api)",
+            "Asks fake-igd-api what a page asks it, as a full administrator, and prints the answer.\n"
+            "BODY is a JSON object; - reads it from stdin (a body holding a secret is only taken so)." + pages_note,
+            "examples:\n"
+            "  sudo upnp api GET /api/db\n"
+            "  sudo upnp api GET '/api/events?q=kind:sign-in'\n"
+            "  sudo upnp api POST /api/osup '{\"action\": \"check\"}'\n"
+            "  sudo upnp api POST /api/settings - < changes.json")
+    s.add_argument("method", metavar="GET|POST")
+    s.add_argument("path", metavar="PATH")
+    s.add_argument("body", nargs="?", metavar="BODY|-")
+    s.set_defaults(func=admin("cmd_api"))
+
+    s = add("events", "fake-igd's own events: sign-ins, settings, root's work (otp --events)",
+            "The events the pages show under Events - newest last." + pages_note,
+            "examples:\n  sudo upnp events\n  sudo upnp events --kind sign-in --hours 48\n"
+            "  sudo upnp events --search 'level:warn'", aliases=("ev",))
+    s.add_argument("--search", "-s", metavar="TEXT", help="only rows holding this (the pages' search language)")
+    s.add_argument("--kind", metavar="KIND", help="only this kind (sign-in, setting, account, upgrade ...)")
+    s.add_argument("--hours", type=float, metavar="N", help="the last N hours")
+    s.add_argument("-n", "--limit", type=int, default=40, metavar="N", help="how many rows (default 40)")
+    s.add_argument("--json", action="store_true", help="JSON output")
+    s.set_defaults(func=admin("cmd_events"))
+
+    s = add("check", "a health check of every part, as the pages' alerts (otp --check)",
+            "The API, the database, the service and every problem the pages' alerts see\n"
+            "(disks, mail, the certificate, the syslog servers ...). Exit status 1 on a problem." + pages_note,
+            "example:\n  sudo upnp check")
+    s.add_argument("--json", action="store_true", help="JSON output")
+    s.set_defaults(func=admin("cmd_check"))
+
+    s = add("backup", "the backups: their destinations, one now, the newest one tried (otp --rbackup-*)",
+            "  status   the destinations and the last backups (default)\n"
+            "  now      a backup to every destination switched on, now - followed with its progress\n"
+            "  verify   the newest backup fetched back and tried" + pages_note,
+            "examples:\n  sudo upnp backup\n  sudo upnp backup now")
+    s.add_argument("what", nargs="?", choices=("status", "now", "verify"), metavar="status|now|verify")
+    s.add_argument("--json", action="store_true", help="JSON output (status)")
+    s.set_defaults(func=admin("cmd_backup"))
+
+    s = add("db", "the database: its tables and copies, checked, tidied, given back to the disk",
+            "  status   the file, its tables, its copies, the key of its secrets (default)\n"
+            "  check    PRAGMA integrity_check\n"
+            "  copy     a copy now, beside the others\n"
+            "  tidy     forget the events older than they are kept\n"
+            "  vacuum   give the disk back" + pages_note,
+            "examples:\n  sudo upnp db\n  sudo upnp db check")
+    s.add_argument("what", nargs="?", choices=("status", "check", "copy", "tidy", "vacuum"),
+                   metavar="status|check|copy|tidy|vacuum")
+    s.add_argument("--json", action="store_true", help="JSON output")
+    s.set_defaults(func=admin("cmd_db"))
+
+    s = add("updates", "the operating system's updates (dnf): look, put them in, restart (otp --updates)",
+            "  status   what is waiting, and the last run (default)\n"
+            "  check    look for updates now\n"
+            "  start    put them in (--security: security updates only; --reboot auto|ask)\n"
+            "  stop     stop it while dnf still asks and downloads\n"
+            "  reboot   restart the machine an update asked for" + pages_note,
+            "examples:\n  sudo upnp updates check\n  sudo upnp updates start --security --yes")
+    s.add_argument("what", nargs="?", choices=("status", "check", "start", "stop", "reboot"),
+                   metavar="status|check|start|stop|reboot")
+    s.add_argument("--security", action="store_true", help="start: security updates only")
+    s.add_argument("--reboot", choices=("ask", "auto"), help="start: restart by itself where needed (auto) or not")
+    s.add_argument("--no-follow", action="store_true", help="ask root and leave")
+    s.add_argument("--yes", "-y", action="store_true", help="do not ask")
+    s.add_argument("--json", action="store_true", help="JSON output (status)")
+    s.set_defaults(func=admin("cmd_updates"))
+
+    s = add("time", "the clock and its time servers (otp --ntp, --ntp-sync)",
+            "  status   the time, chrony and its servers (default)\n"
+            "  sync     step the clock to the servers now" + pages_note,
+            "examples:\n  sudo upnp time\n  sudo upnp time sync")
+    s.add_argument("what", nargs="?", choices=("status", "sync"), metavar="status|sync")
+    s.add_argument("--json", action="store_true", help="JSON output")
+    s.set_defaults(func=admin("cmd_time"))
+
+    s = add("tls", "the certificate of the pages and their TLS settings (otp --web-status)",
+            "The certificate nginx shows, its names and end, the protocols, DH, HSTS and ACME." + pages_note,
+            "example:\n  sudo upnp tls")
+    s.add_argument("--json", action="store_true", help="JSON output")
+    s.set_defaults(func=admin("cmd_tls"))
+
+    s = add("acme", "the certificate by ACME: how it stands, an order now (otp --acme, --acme-order)",
+            "  status   the CA, the names, the certificate now, the last order (default)\n"
+            "  order    order it now - followed here" + pages_note,
+            "examples:\n  sudo upnp acme\n  sudo upnp acme order")
+    s.add_argument("what", nargs="?", choices=("status", "order"), metavar="status|order")
+    s.add_argument("--json", action="store_true", help="JSON output")
+    s.set_defaults(func=admin("cmd_acme"))
+
+    s = add("net", "the network of this machine as the pages read it (otp --net)",
+            "Its devices, addresses, gateway and DNS servers." + pages_note, "example:\n  sudo upnp net")
+    s.add_argument("--json", action="store_true", help="JSON output")
+    s.set_defaults(func=admin("cmd_net"))
+
+    for name, h, d, ex in (
+            ("mail-test", "send a test mail now, every step said (otp --mail-test)",
+             "A test mail to ADDRESS, as Settings → Mail → Send a test.", "sudo upnp mail-test ops@example.com"),
+            ("siem-test", "a test line to the syslog servers (otp --siem-test)",
+             "One line to every syslog server set (Settings → SIEM), and what each said.", "sudo upnp siem-test"),
+            ("proxy-test", "the way out through the proxy tried (otp --proxy-test)",
+             "URL (or upgrade_url) reached as fake-igd reaches it: through the proxy where it is set.",
+             "sudo upnp proxy-test https://github.com/"),
+            ("snmp-trap", "a test trap to the SNMP receivers (otp --snmp-trap)",
+             "One trap to every receiver set (Settings → Monitoring).", "sudo upnp snmp-trap")):
+        s = add(name, h, d + pages_note, "example:\n  " + ex)
+        if name in ("mail-test", "proxy-test"):
+            s.add_argument("target", nargs="?", metavar="ADDRESS" if name == "mail-test" else "URL")
+        if name == "mail-test":
+            s.add_argument("--kind", choices=("short", "alert", "report"), help="what is sent (default short)")
+            s.add_argument("--straight", action="store_true", help="straight to the server, not by the queue")
+        s.add_argument("--json", action="store_true", help="JSON output")
+        s.set_defaults(func=admin("cmd_pane_test"))
 
     s = add("help", "help for a command", "upnp help <command> = upnp <command> --help")
     s.add_argument("topic", nargs="?", metavar="COMMAND")

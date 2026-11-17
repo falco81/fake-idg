@@ -75,6 +75,9 @@ DEFAULTS = {
     "upgrade_check": True,         # look at upgrade_url once a day
 }
 
+SOAP_MOST = 64 * 1024            # a SOAP request larger than this is refused (413) - real ones are < 2 KB
+MAPPINGS_MOST = 1024             # port mappings held at most; more is answered 728 NoPortMapsAvailable
+DESC_MOST = 256                  # a description longer than this is cut (it goes to the log and the pages)
 SSDP_GROUP = "239.255.255.250"
 SSDP_PORT = 1900
 SERVER_HDR = "Linux/5 UPnP/1.0 fake-igd/" + VERSION
@@ -290,6 +293,39 @@ def save_mappings():
         os.replace(tmp, map_file())
     except OSError as e:
         log.warning("service: %s cannot be written: %s", map_file(), e)
+
+
+def load_mappings():
+    """The mappings held before a restart (mappings.json) - kept, as a router keeps its leases: the
+    Mappings tab shows that file, and a device that asks GetSpecificPortMappingEntry after a restart
+    of the service finds its own. What ran out meanwhile, or is not a mapping, is left out."""
+    try:
+        with open(map_file(), encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as e:
+        log.warning("service: %s cannot be read, the mappings start empty: %s", map_file(), e)
+        return
+    t = time.time()
+    for m in data if isinstance(data, list) else []:
+        try:
+            key = (str(m.get("remote_host") or "")[:64], int(m["external_port"]), str(m["protocol"]).upper())
+            if key[2] not in ("TCP", "UDP") or not 0 < key[1] < 65536:
+                continue
+            if m.get("expires_at") and float(m["expires_at"]) < t:
+                continue
+            mappings[key] = {"internal_client": str(m["internal_client"]), "internal_port": int(m["internal_port"]),
+                             "description": str(m.get("description") or "")[:DESC_MOST],
+                             "enabled": bool(m.get("enabled", True)), "lease": int(m.get("lease") or 0),
+                             "expires_at": float(m["expires_at"]) if m.get("expires_at") else None,
+                             "requested_by": str(m.get("requested_by") or ""), "added_at": str(m.get("added_at") or "")}
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+        if len(mappings) >= MAPPINGS_MOST:
+            break
+    if mappings:
+        log.info("service: %d mapping(s) held before the restart kept (%s)", len(mappings), map_file())
 
 
 def purge_expired():
@@ -515,11 +551,16 @@ def entry_args(key, m, with_key):
                   ("NewLeaseDuration", lease)]
 
 
-def _key(a):
+def _key(a, strict=True):
+    """(remote host, external port, protocol) of a request - with strict, only TCP or UDP and a port
+    1-65535 (anything else is 402 Invalid Args, as miniupnpd answers)."""
     try:
-        return (a.get("NewRemoteHost", ""), int(a.get("NewExternalPort", "0")), a.get("NewProtocol", "").upper())
+        key = (a.get("NewRemoteHost", "")[:64], int(a.get("NewExternalPort", "0")), a.get("NewProtocol", "").upper())
     except ValueError:
         raise UPnPError(402, "Invalid Args")
+    if strict and (key[2] not in ("TCP", "UDP") or not 0 < key[1] < 65536):
+        raise UPnPError(402, "Invalid Args")
+    return key
 
 
 def handle_ipc(action, a, client):
@@ -540,12 +581,13 @@ def handle_ipc(action, a, client):
             try:
                 iport = int(a.get("NewInternalPort", "0"))
                 lease = int(a.get("NewLeaseDuration", "0") or 0)
+                ic = str(ipaddress.IPv4Address(a.get("NewInternalClient", "") or client))
             except ValueError:
                 raise UPnPError(402, "Invalid Args")
-            if key[2] not in ("TCP", "UDP") or not (0 < key[1] < 65536) or not (0 < iport < 65536):
+            # the lease is a ui4; the internal client an IPv4 address (a name, or rubbish, is refused)
+            if not (0 < iport < 65536) or not (0 <= lease <= 0xFFFFFFFF):
                 raise UPnPError(402, "Invalid Args")
-            ic = a.get("NewInternalClient", "") or client
-            desc = a.get("NewPortMappingDescription", "")
+            desc = a.get("NewPortMappingDescription", "")[:DESC_MOST]
             ev = {"action": action, "client": client, "protocol": key[2], "external_port": key[1],
                   "internal_client": ic, "internal_port": iport, "lease": lease, "description": desc,
                   "remote_host": key[0]}
@@ -558,10 +600,16 @@ def handle_ipc(action, a, client):
                 raise UPnPError(501, "ActionFailed")
             old = mappings.get(key)
             if old and old["internal_client"] != ic:
-                log.warning("port: %s %d already belongs to %s, asked by %s - refused (conflict)", key[2], key[1], old["internal_client"], client)
+                log.warning("port: %s %d already belongs to %s, asked for %s by %s - refused (conflict)",
+                            key[2], key[1], old["internal_client"], ic, client)
                 record(dict(ev, result="conflict"))
                 raise UPnPError(718, "ConflictInMappingEntry")
             renew = old is not None
+            if not renew and len(mappings) >= MAPPINGS_MOST:
+                log.warning("port: %s %d asked by %s - refused, %d mappings are held already", key[2], key[1],
+                            client, len(mappings))
+                record(dict(ev, result="full"))
+                raise UPnPError(728, "NoPortMapsAvailable")
             mappings[key] = {"internal_client": ic, "internal_port": iport, "description": desc,
                              "enabled": a.get("NewEnabled", "1") in ("1", "true", "yes"), "lease": lease,
                              "expires_at": (time.time() + lease) if lease else None, "requested_by": client,
@@ -612,7 +660,7 @@ def handle_cic(action, a, client):
     if action == "GetCommonLinkProperties":
         return [("NewWANAccessType", "Ethernet"), ("NewLayer1UpstreamMaxBitRate", 1000000000),
                 ("NewLayer1DownstreamMaxBitRate", 1000000000), ("NewPhysicalLinkStatus", "Up")]
-    if action.startswith("GetTotal"):
+    if action in ("GetTotalBytesSent", "GetTotalBytesReceived", "GetTotalPacketsSent", "GetTotalPacketsReceived"):
         return [("New" + action[3:], 0)]
     raise UPnPError(401, "Invalid Action")
 
@@ -624,6 +672,10 @@ class Handler(BaseHTTPRequestHandler):
     server_version = SERVER_HDR
     sys_version = ""
     protocol_version = "HTTP/1.1"
+    timeout = 15                       # a request that does not come whole in time is let go (no thread held)
+
+    def version_string(self):
+        return SERVER_HDR
 
     def log_message(self, fmt, *args):
         log.debug("http: %s %s", self.client_address[0], fmt % args)
@@ -676,8 +728,29 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found", "text/plain")
             return
         service, handler = CONTROL[path]
-        length = int(self.headers.get("Content-Length", "0") or 0)
-        body = self.rfile.read(length) if length else b""
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+            if length < 0:
+                raise ValueError(length)
+        except ValueError:
+            log.warning("soap: invalid request from %s: Content-Length %r", client,
+                        str(self.headers.get("Content-Length"))[:40])
+            self._send(400, "bad Content-Length", "text/plain")
+            return
+        if length > SOAP_MOST:
+            log.warning("soap: invalid request from %s: %d bytes (%d at most)", client, length, SOAP_MOST)
+            self._send(413, "too large", "text/plain")
+            return
+        try:
+            body = self.rfile.read(length) if length else b""
+        except OSError as e:
+            log.debug("http: the request of %s did not come whole: %s", client, e)
+            self.close_connection = True
+            return
+        if len(body) < length:
+            log.debug("http: the request of %s was cut short (%d of %d bytes)", client, len(body), length)
+            self.close_connection = True
+            return
         try:
             action, args = parse_soap(body)
         except Exception as e:  # noqa: BLE001
@@ -806,7 +879,8 @@ class SSDP:
         if not lines or not lines[0].upper().startswith("M-SEARCH"):
             if lines and lines[0].upper().startswith("NOTIFY") and src not in self.joined.values():
                 nt = next((ln.split(":", 1)[1].strip() for ln in lines if ln.upper().startswith("NT:")), "")
-                k = (src, "NOTIFY", nt)
+                k = (src, "NOTIFY", nt[:200])
+                self._prune()
                 if time.time() - self.seen.get(k, 0) > 3600:
                     self.seen[k] = time.time()
                     if "InternetGatewayDevice" in nt or "WANIPConnection" in nt:
@@ -828,7 +902,8 @@ class SSDP:
         if not client_allowed(src):
             log.debug("ssdp: M-SEARCH from %s (ST=%s) ignored - not in allowed_clients", src, st)
             return
-        k = (src, st)
+        k = (src, st[:200])
+        self._prune()
         if time.time() - self.seen.get(k, 0) > 600:
             log.info("ssdp: %s is looking for a UPnP device (ST=%s, UA=%s)", src, st, hdr.get("USER-AGENT", "-"))
             self.seen[k] = time.time()
@@ -851,6 +926,15 @@ class SSDP:
             mx = 1
         delay = random.uniform(0, mx * 0.5) if mx else 0
         threading.Timer(delay, self._reply, args=(src, sport, local_ip, answers)).start()
+
+    def _prune(self):
+        """What was seen, kept for an hour - not for ever (a flood of made-up sources or STs grew it)."""
+        if len(self.seen) > 4096:
+            t = time.time() - 3600
+            for k in [k for k, v in self.seen.items() if v < t]:
+                del self.seen[k]
+            if len(self.seen) > 4096:
+                self.seen.clear()
 
     def _reply(self, src, sport, local_ip, answers):
         # Replies go out from the SSDP socket itself (source port 1900), like real routers do,
@@ -938,6 +1022,9 @@ def main():
     ALLOWED_NETS = parse_allowed(CFG["allowed_clients"])
     setup_logging(CFG)
     os.makedirs(CFG["state_dir"], exist_ok=True)
+    with _lock:
+        load_mappings()
+        save_mappings()
 
     host = socket.gethostname()
     UUID_ROOT = str(uuid.uuid5(uuid.NAMESPACE_DNS, "fake-igd-root-" + host))

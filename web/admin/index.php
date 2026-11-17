@@ -119,7 +119,11 @@ if (isset($_GET['api'])) {
     ];
     /* The panes of Settings (1.6.0): ?api=a-b-c is /api/a/b/c - the API says what it answers, and
        a GET never reaches what only a POST does there. */
-    if (!isset($reads[$what]) && !isset($writes[$what]) && preg_match('/^[a-z0-9]+(-[a-z0-9]+){0,5}\z/', $what)) {
+    /* Never the sign-in's own roads (1.7.4): ?api=auth-login would hand the session to the page's
+       script instead of the cookie it cannot read, and pass by nginx's count of sign-in attempts,
+       which looks for api=login. They are reached by their own names above, or not at all. */
+    if (!isset($reads[$what]) && !isset($writes[$what]) && preg_match('/^[a-z0-9]+(-[a-z0-9]+){0,5}\z/', $what)
+            && preg_match('/^(auth|metrics)(-|\z)/', $what) !== 1) {
         $reads[$what] = '/api/' . str_replace('-', '/', $what);
         $writes[$what] = $reads[$what];
     }

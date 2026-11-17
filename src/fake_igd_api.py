@@ -324,6 +324,61 @@ def since_hours(q, default=24):
     return datetime.now().astimezone() - timedelta(hours=h)
 
 
+PHP_FIXED = {"8.2": (8, 2, 35), "8.3": (8, 3, 36), "8.4": (8, 4, 27), "8.5": (8, 5, 12)}
+PHP_STATE = {"at": 0.0, "state": None}
+
+
+def php_state():
+    """PHP and php2shell (CVE-2026-109618/109619), as otp's php_state: the version of the command line's
+    php, and whether the fix is in - by the number, or (a distribution that backported it keeps the old
+    number) by the packages' changelog. Once an hour."""
+    if time.time() - PHP_STATE["at"] < 3600 and PHP_STATE["state"] is not None:
+        return PHP_STATE["state"]
+    import shutil
+    import subprocess
+    out = {"version": "", "fixed": None, "how": ""}
+    php = shutil.which("php") or next((p for p in ("/usr/bin/php", "/usr/local/bin/php") if os.path.exists(p)), None)
+    if php:
+        try:
+            out["version"] = subprocess.run([php, "-r", "echo PHP_VERSION;"], stdout=subprocess.PIPE,
+                                            stderr=subprocess.DEVNULL, universal_newlines=True,
+                                            timeout=10).stdout.strip()[:40]
+        except (OSError, subprocess.SubprocessError):
+            pass
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)", out["version"])
+    if m:
+        v = tuple(int(x) for x in m.groups())
+        want = PHP_FIXED.get("%d.%d" % v[:2])
+        if (want and v >= want) or (not want and v[:2] > (8, 5)):
+            out.update(fixed=True, how="version")
+    if not out["fixed"]:
+        said = ""
+        rpm = shutil.which("rpm")
+        if rpm:
+            for pkg in ("php-fpm", "php-common"):
+                try:
+                    said += subprocess.run([rpm, "-q", "--changelog", pkg], stdout=subprocess.PIPE,
+                                           stderr=subprocess.DEVNULL, universal_newlines=True, timeout=20).stdout
+                except (OSError, subprocess.SubprocessError):
+                    pass
+        else:
+            import glob
+            import gzip
+            for f in glob.glob("/usr/share/doc/php*-fpm/changelog.Debian.gz") + glob.glob(
+                    "/usr/share/doc/php*-common/changelog.Debian.gz"):
+                try:
+                    with gzip.open(f, "rt", errors="replace") as g:
+                        said += g.read(200000)
+                except OSError:
+                    pass
+        if "CVE-2026-109618" in said:
+            out.update(fixed=True, how="changelog")
+        elif out["version"]:
+            out["fixed"] = False
+    PHP_STATE.update(at=time.time(), state=out)
+    return out
+
+
 def status_view():
     def make():
         cfg = load_cfg()
@@ -352,7 +407,7 @@ def status_view():
                   "upgrade": {"state": up.get("state"), "busy": up.get("busy"), "version": up.get("version"),
                               "newer": online.get("newer"),
                               "newest": (online.get("newest") or {}).get("version")},
-                  "web": {"api_since": STARTED}})
+                  "web": {"api_since": STARTED}, "php": php_state()})
         return d
     return cached("status", 2.5, make)
 
@@ -1042,6 +1097,7 @@ def main():
     write_run_files(port)
     PN.load(log=lambda w: sys.stderr.write(w + "\n"))
     threading.Thread(target=background, daemon=True).start()
+    threading.Thread(target=php_state, daemon=True).start()     # rpm -q --changelog is slow: asked ahead
     STORE[0].add_event("service", "the pages' API %s started on 127.0.0.1:%d" % (VERSION, port), "info")
     sys.stderr.write("api: fake-igd %s - the pages' API on 127.0.0.1:%d, database %s\n" % (VERSION, port, db))
     try:

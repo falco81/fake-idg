@@ -632,7 +632,9 @@ def login(ctx):
     try:
         token, usr = S.login(name, str(b.get("password") or ""), ctx.addr, _agent(ctx), _idle_s(ctx))
     except ST.StoreError as e:
-        _say(ctx, "sign-in", "%s could not sign in from %s: %s" % (name or "(nobody)", ctx.addr, e), "warn", name)
+        # The name as typed, never a line of its own in the events (and the syslog after them).
+        said = "".join(c if c.isprintable() else "?" for c in name)
+        _say(ctx, "sign-in", "%s could not sign in from %s: %s" % (said or "(nobody)", ctx.addr, e), "warn", said)
         raise ValueError(str(e))
     stage = usr.get("mfa_stage") or ""
     _say(ctx, "sign-in", "%s signed in from %s%s" % (usr["name"], ctx.addr, {
@@ -766,6 +768,24 @@ def mfa_post(ctx):
 
 
 mfa_post.PUBLIC = True
+
+
+def on_saved(ctx, changed):
+    """The second step switched on: the sign-ins opened with the password alone end (otp 1.0.149) -
+    they stayed whole for hours. The one saving it stays: it is how it was switched on (without the
+    saving request at hand, every sign-in of the account that saved it stays)."""
+    if not changed.get("admin_2fa"):
+        return
+    S = ctx.store
+    tok = _token(ctx)
+    who = (ctx.me or {}).get("name", "")
+    if tok:
+        gone = S.run("DELETE FROM sessions WHERE mfa = '' AND id <> ?", (ST._sid(tok),)).rowcount
+    else:
+        gone = S.run("DELETE FROM sessions WHERE mfa = '' AND name <> ?", (who,)).rowcount
+    if gone:
+        _say(ctx, "account", "the second step was switched on: %d other sign-in(s) to the pages ended" % gone,
+             "warn", who)
 
 
 def background(ctx):
