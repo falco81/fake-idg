@@ -1094,8 +1094,8 @@ function drawMikrotikCard() {
     (ch.warnings || []).forEach(function (x) { if (/UPnP is ON/.test(x)) { var c = el('span', 'mt-chip crit alone'); c.appendChild(el('span', '', 'its own UPnP is ON')); chips.appendChild(c); } });
     top.appendChild(chips);
     host.appendChild(top);
-    host.onclick = function () { showTab('settings'); showPane('mikrotik'); };
-    CARD_WHY['card-mikrotik'] = {level: k === 'ok' ? 'ok' : (k === 'crit' ? 'crit' : 'warn'), words: 'Settings → MikroTik reads the real router: of the ports the devices asked for, how many it carries - a dst-nat to the device and nothing that drops it.'};
+    host.onclick = function () { goTab('gateway', {sub: 'mikrotik'}); };
+    CARD_WHY['card-mikrotik'] = {level: k === 'ok' ? 'ok' : (k === 'crit' ? 'crit' : 'warn'), words: 'The real router, read: of the ports the devices asked for, how many it carries - a dst-nat to the device and nothing that drops it. Gateway → MikroTik shows each device\'s way out, its ports and the whole firewall.'};
   }).catch(function () { host.hidden = true; });
 }
 function loadOverview() {
@@ -1348,7 +1348,9 @@ function mtCell(x) {
   var S = window.MT_STATE || {};
   if (!x) { td.appendChild(el('span', 'muted small', '–')); return td; }
   var s = S[x.state] || ['?', 'dim'];
-  var t = el('span', 'tag ' + s[1], s[0]);
+  var t = el('span', 'tag ' + s[1] + ' tappable', s[0]);
+  /* to Gateway → MikroTik, at this port of this device (1.9.2) */
+  t.onclick = function (ev) { ev.stopPropagation(); goTab('gateway', {sub: 'mikrotik', ip: x.device, proto: x.proto, port: x.port}); };
   explain(t, (x.state === 'ok' ? x.forward_why || x.nat_why : x.nat_why) || s[2] || '');
   td.appendChild(t);
   if (x.v6 === 'blocked') td.appendChild(el('span', 'tag crit', 'IPv6 blocked'));
@@ -1366,6 +1368,7 @@ function portPeek(r) {
       ['To', r.internal_port || r.port], ['Asked', num(r.count) + ' time(s)'], ['Answered', res],
       ['First', stamp(r.first)], ['Last', stamp(r.last)]]));
     if (r.description) body.appendChild(noI18n(el('p', 'note', 'What it said it is for: ' + r.description)));
+    if (typeof gatewayLinksFor === 'function') body.appendChild(gatewayLinksFor(r.client, r.port, r.proto));
     body.appendChild(el('h3', 'peek-h', 'On the real router'));
     var x = (mtChecksMap(window.MT_CACHE && window.MT_CACHE.d) || {})[mtKey(r.client, r.proto, r.port)];
     if (x) {
@@ -1473,7 +1476,7 @@ function goTab(tab, f) {
     return;
   }
   if (tab === 'mappings') {
-    put('mp-q', [f.ip || '', f.port ? String(f.port) : ''].filter(Boolean).join(' '));
+    put('mp-q', [f.ip ? 'client:' + f.ip : '', f.port ? 'port:' + f.port : ''].filter(Boolean).join(' '));
     if ($('mp-proto')) $('mp-proto').value = '';
     if (TAB === 'mappings') loadMappings(); else showTab('mappings');
     return;
@@ -1695,6 +1698,7 @@ function clientPeek(ip, known) {
       ['Requests', num(c.requests || 0)], ['Ports', num((three[1].ports || []).length)],
       ['Last seen', c.last ? stamp(Date.parse(c.last) / 1000) : '–']]));
     if (c.user_agent) body.appendChild(noI18n(el('p', 'note', 'It says it is: ' + c.user_agent)));
+    if (typeof gatewayLinksFor === 'function') body.appendChild(gatewayLinksFor(ip));
     var st = ((three[3] || {}).clients || {})[ip];
     body.appendChild(el('h3', 'peek-h', 'How far it got'));
     body.appendChild(stepPills(st || {reached: [], furthest: -1}));
@@ -1791,6 +1795,7 @@ function mapPeek(m, now) {
   peek(String(m.protocol).toUpperCase() + ' ' + m.external_port, function () { return Promise.resolve(m); }, function (body) {
     body.appendChild(peekFacts([['To', m.internal_client + ':' + m.internal_port], ['Name', m.name || '–'],
       ['Left', left === null ? 'no end' : span(left)], ['Added', stamp(m.added_at)], ['Asked by', m.requested_by || '–']]));
+    if (typeof gatewayLinksFor === 'function') body.appendChild(gatewayLinksFor(m.internal_client, m.external_port, m.protocol));
     body.appendChild(pairsTable(Object.keys(m).map(function (k) { return [k, m[k]]; })));
   }, {tab: 'requests', words: 'Open its requests', icon: 'list', go: function () {
     openRequests({q: 'port:' + m.external_port + ' proto:' + String(m.protocol).toLowerCase(), result: 'ports'});

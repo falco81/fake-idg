@@ -73,7 +73,11 @@ function drawAlerts() {
         it.appendChild(noI18n(el('div', 'al-said', p.said)));
         var foot = el('div', 'al-foot muted small');
         foot.appendChild(el('span', '', p.since ? 'since ' + ago(p.since) : 'just seen'));
-        if (p.pane && $('pane-' + p.pane)) {
+        if (p.link) {                     /* a place on the main menu (1.9.2): Gateway → MikroTik, at that port */
+          var to = el('a', '', 'Show it →');
+          to.href = p.link;
+          foot.appendChild(to);
+        } else if (p.pane && $('pane-' + p.pane)) {
           var go = el('a', '', 'Open it →');
           go.href = '#settings/' + p.pane;
           go.onclick = function (e) { e.preventDefault(); showPane(p.pane); };

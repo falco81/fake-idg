@@ -338,7 +338,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
   <button role="tab" aria-selected="false" data-tab="mappings" data-icon="router"
           title="What the clients believe is open now, with the lease left. Nothing is open on the router.">Mappings<span class="count" id="tabn-mappings"></span></button>
   <button role="tab" aria-selected="false" data-tab="gateway" data-icon="wall"
-          title="The devices this server is the gateway for: what they send through it, their DNS, rules and drops, their live connections - and FAKE-IGD-FWD line by line with its counters.">Gateway</button>
+          title="The devices this server is the gateway for: what they send through it, their DNS, rules and drops, their live connections, FAKE-IGD-FWD line by line - and the MikroTik: each device's way out, its ports, its firewall.">Gateway</button>
   <button role="tab" aria-selected="false" data-tab="mdns" data-icon="wifi"
           title="The mDNS reflector on this server (avahi-daemon): whether it runs and reflects, between which interfaces, and every service mDNS shows on them now.">mDNS<span class="count" id="tabn-mdns"></span></button>
   <button role="tab" aria-selected="false" data-tab="log" data-icon="log"
@@ -501,14 +501,27 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
 <!-- ===================== Gateway (1.8.2) ===================== -->
 <section class="panel" id="tab-gateway" hidden>
   <div class="card full gt-top">
-    <h2>The gateway for devices <span class="right gt-tools"><span class="small muted" id="gt-read"></span>
-      <span id="gt-hours" title="The window of the charts."></span>
-      <button type="button" class="btn cmd small" id="gt-refresh" data-icon="refresh">Read it again</button></span></h2>
-    <p class="note">The devices that use this server as their default gateway (a PS5 asks UPnP only of its gateway):
-      what they send through it, sampled every minute; their DNS servers, rules and drops; their connections now;
-      and the chain FAKE-IGD-FWD line by line. Only toward the router - nothing else is forwarded.</p>
+    <div class="gt-headrow">
+      <h2>The gateway for devices</h2>
+      <div class="gt-subtabs" role="tablist" aria-label="Gateway">
+        <button type="button" role="tab" data-sub="devices" aria-selected="true" data-icon="router"
+                title="The devices that use this server as their gateway: what they send, their DNS, rules, drops and connections - and FAKE-IGD-FWD line by line.">Devices<span class="gt-subn" id="gt-subn-devices"></span></button>
+        <button type="button" role="tab" data-sub="mikrotik" aria-selected="false" data-icon="wall"
+                title="The real router, read (read-only): each device's way out and the public address it goes out as, every port asked for on it, and its whole firewall.">MikroTik<span class="gt-subdot" id="gt-subdot-mt"></span></button>
+      </div>
+      <span class="gt-tools"><span class="small muted" id="gt-read"></span>
+        <span id="gt-hours" title="The window of the charts."></span>
+        <button type="button" class="btn cmd small" id="gt-refresh" data-icon="refresh">Read it again</button></span>
+    </div>
+    <p class="note" id="gt-note-devices">The devices that use this server as their default gateway (a PS5 asks UPnP only
+      of its gateway): what they send through it, sampled every minute; their DNS servers, rules and drops; their
+      connections now; and the chain FAKE-IGD-FWD line by line. Only toward the router - nothing else is forwarded.</p>
+    <p class="note" id="gt-note-mikrotik" hidden>The real router - a MikroTik - as it was read, <b>read-only</b>:
+      each device's way out to the internet and the public address it goes out as, whether it carries every port a
+      device asked for, and its whole firewall, IPv4 and IPv6.</p>
   </div>
   <div id="gt-body"></div>
+  <div id="gt-mt" hidden></div>
 </section>
 
 <section class="panel" id="tab-events" hidden>
@@ -554,7 +567,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     <button type="button" data-pane="logs" data-icon="log" title="How much the log says, and where the logs and the state are.">Logs and state</button>
     <button type="button" data-pane="mdns" data-icon="wifi" title="avahi-daemon on this server: the reflector, the interfaces, the filters - every key of avahi-daemon.conf fake-igd knows - and the daemon started, stopped or restarted.">mDNS reflector (avahi)</button>
     <button type="button" class="fulladmin-only" data-pane="gateway" data-icon="router" title="This server as the default gateway of chosen devices - a PS5 asks UPnP only of its gateway: forwarded toward the router for those devices alone, never between this server's networks.">Gateway for devices</button>
-    <button type="button" data-pane="mikrotik" data-icon="wall" title="The real router - a MikroTik - read, read-only: for every port a device asked for, whether it carries it (a dst-nat, nothing that drops it, IPv6); and its whole firewall, IPv4 and IPv6.">MikroTik</button>
+    <button type="button" data-pane="mikrotik" data-icon="wall" title="How the real router - a MikroTik - is read, read-only: its address, the way and the account, its certificate or host key. What it says is on the main menu: Gateway → MikroTik.">MikroTik</button>
     <div class="ctl-group">Access</div>
     <button type="button" data-pane="people" data-icon="person" title="Who may open these pages, what each of them may do, and who is signed in right now.">Accounts</button>
     <button type="button" data-pane="tls" data-icon="lock" title="The certificate of these pages, and how TLS is spoken.">Certificates and TLS</button>
@@ -621,7 +634,7 @@ var ME = <?= json_encode($me, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_A
 var STATUS = <?= $initial ? json_encode($initial, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP) : 'null' ?>;
 var PHP_SAFETY = <?= ($me['role'] ?? '') === 'fulladmin' ? json_encode(igd_php_safety(), JSON_HEX_TAG | JSON_HEX_AMP) : 'null' ?>;
 </script>
-<?php foreach (['core.js', 'cols.js', 'hload.js', 'admin.js', 'tab-gateway.js'] as $igd_js): ?>
+<?php foreach (['core.js', 'cols.js', 'hload.js', 'admin.js', 'gw-designer.js', 'mt-view.js', 'tab-gateway.js'] as $igd_js): ?>
 <script nonce="<?= h($nonce) ?>" src="/assets/<?= $igd_js ?>?v=<?= h(IGD_VERSION) ?>-<?= (int) @filemtime(dirname(__DIR__) . '/assets/' . $igd_js) ?>"></script>
 <?php endforeach; ?>
 <?php foreach (glob(dirname(__DIR__) . '/assets/pane-*.js') ?: [] as $igd_js): ?>

@@ -526,11 +526,11 @@ def problems(ctx):
         if r["state"] in ("ok", "unsure"):
             continue
         out["mikrotik:%s:%s:%s" % (r["device"], r["proto"], r["port"])] = {
-            "level": "warn", "pane": "mikrotik",
+            "level": "warn", "pane": "mikrotik", "link": "#gateway/mikrotik/%s/%s/%s" % (r["device"], r["proto"], r["port"]),
             "title": "%s %s/%s is not open on the MikroTik" % (r.get("name") or r["device"], r["port"], r["proto"]),
             "said": str(r.get("nat_why") or r.get("forward_why") or "")[:300]}
     for w in res["warnings"]:
         if "UPnP is ON" in w:
-            out["mikrotik:upnp"] = {"level": "warn", "pane": "mikrotik", "title": "The MikroTik's own UPnP is on",
+            out["mikrotik:upnp"] = {"level": "warn", "pane": "mikrotik", "link": "#gateway/mikrotik", "title": "The MikroTik's own UPnP is on",
                                     "said": w[:300]}
     return out
