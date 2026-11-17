@@ -677,6 +677,18 @@ def run_by_hand(path, down, by):
     except Refused as e:
         print('refused: %s' % e)
         return 1
+    # What is refused for its version alone is said here, before the pages and the API are told an
+    # upgrade began: a mistyped file name or a missing --downgrade left a red "failed" band on every page.
+    if info.get('older'):
+        if not down:
+            print('refused: %s is older than %s, which is installed: going back takes --downgrade'
+                  % (info['version'], info['installed']))
+            return 1
+        floor = root_floor()
+        if floor is not None and version_tuple(info['version']) < version_tuple(floor):
+            print('refused: %s is older than %s, the oldest the versions installed here allow'
+                  % (info['version'], floor))
+            return 1
     ident = '%d-cli%04x' % (int(time.time()), os.getpid() & 0xffff)
     try:
         up_fd()

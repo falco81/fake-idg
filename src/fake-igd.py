@@ -43,6 +43,7 @@ DEFAULT_CONFIG = "/etc/fake-igd/config.json"
 DEFAULTS = {
     "mode": "active",              # active = answer like a UPnP router; passive = only log SSDP, never answer
     "mapping_response": "accept",  # accept = confirm AddPortMapping (nothing is opened); reject = refuse with error 501
+    "igd_version": 1,              # 1 = InternetGatewayDevice:1 (WANIPConnection:1); 2 = IGD:2 as miniupnpd built with IGD2
     "http_port": 5000,
     "external_ip": "auto",
     "interfaces": [],
@@ -83,11 +84,50 @@ SSDP_PORT = 1900
 SERVER_HDR = "Linux/5 UPnP/1.0 fake-igd/" + VERSION
 START_TIME = time.time()
 
+IGD_V = 1                        # igd_version: what the device says it is (set in main)
 T_IGD = "urn:schemas-upnp-org:device:InternetGatewayDevice:1"
 T_WAN = "urn:schemas-upnp-org:device:WANDevice:1"
 T_CONN = "urn:schemas-upnp-org:device:WANConnectionDevice:1"
 S_IPC = "urn:schemas-upnp-org:service:WANIPConnection:1"
-S_CIC = "urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1"
+S_CIC = "urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1"     # :1 in IGD:2 too (as miniupnpd)
+LEASE_V2 = 604800                # IGD:2 - a lease of 0 (or longer) is a week (WANIPConnection:2, 2.3.16)
+TYPE_RE = re.compile(r"^(urn:[^:\s]+:(?:device|service):[^:\s]+):(\d{1,3})$")
+
+
+def set_version(v):
+    """The device types and the control of WANIPConnection as igd_version says."""
+    global IGD_V, T_IGD, T_WAN, T_CONN, S_IPC
+    IGD_V = 2 if int(v or 1) == 2 else 1
+    T_IGD = "urn:schemas-upnp-org:device:InternetGatewayDevice:%d" % IGD_V
+    T_WAN = "urn:schemas-upnp-org:device:WANDevice:%d" % IGD_V
+    T_CONN = "urn:schemas-upnp-org:device:WANConnectionDevice:%d" % IGD_V
+    S_IPC = "urn:schemas-upnp-org:service:WANIPConnection:%d" % IGD_V
+    CONTROL["/ctl/IPConn"] = (S_IPC, handle_ipc)
+
+
+# What is said in the log at info level only once in a while for the same client and thing (1.7.4): a
+# device that asks again and again is seen, without a line every second.
+_SAID = {}
+_SAID_LOCK = threading.Lock()
+
+
+def once(key, every=600):
+    t = time.time()
+    with _SAID_LOCK:
+        if t - _SAID.get(key, 0) < every:
+            return False
+        if len(_SAID) > 8192:
+            for k in [k for k, v in _SAID.items() if t - v > 3600]:
+                del _SAID[k]
+            if len(_SAID) > 8192:
+                _SAID.clear()
+        _SAID[key] = t
+        return True
+
+
+def ua_words(ua):
+    ua = re.sub(r"[\x00-\x1f\x7f]", " ", str(ua or "")).strip()[:160]
+    return ua or "-"
 
 log = logging.getLogger("fake-igd")
 CFG = {}
@@ -121,6 +161,12 @@ def load_config(path):
         sys.exit(2)
     if cfg["mapping_response"] not in ("accept", "reject"):
         print("Invalid mapping_response: %r (accept/reject)" % cfg["mapping_response"], file=sys.stderr)
+        sys.exit(2)
+    try:
+        cfg["igd_version"] = int(cfg["igd_version"])
+        assert cfg["igd_version"] in (1, 2)
+    except (TypeError, ValueError, AssertionError):
+        print("Invalid igd_version: %r (1/2)" % cfg["igd_version"], file=sys.stderr)
         sys.exit(2)
     try:
         cfg["http_port"] = int(cfg["http_port"])
@@ -315,6 +361,8 @@ def load_mappings():
                 continue
             if m.get("expires_at") and float(m["expires_at"]) < t:
                 continue
+            if not 0 <= int(m.get("lease") or 0) <= 0xFFFFFFFF:
+                continue
             mappings[key] = {"internal_client": str(m["internal_client"]), "internal_port": int(m["internal_port"]),
                              "description": str(m.get("description") or "")[:DESC_MOST],
                              "enabled": bool(m.get("enabled", True)), "lease": int(m.get("lease") or 0),
@@ -473,6 +521,17 @@ IPC_VARS = [
     ("InternalPort", "ui2", "no"), ("PortMappingProtocol", "string", "no"), ("InternalClient", "string", "no"),
     ("PortMappingDescription", "string", "no"),
 ]
+IPC_ACTIONS_2 = dict(IPC_ACTIONS, **{
+    "AddAnyPortMapping": (PM_KEY + PM_OUT, [("NewReservedPort", "ExternalPort")]),
+    "DeletePortMappingRange": ([("NewStartPort", "ExternalPort"), ("NewEndPort", "ExternalPort"),
+                                ("NewProtocol", "PortMappingProtocol"), ("NewManage", "A_ARG_TYPE_Manage")], []),
+    "GetListOfPortMappings": ([("NewStartPort", "ExternalPort"), ("NewEndPort", "ExternalPort"),
+                               ("NewProtocol", "PortMappingProtocol"), ("NewManage", "A_ARG_TYPE_Manage"),
+                               ("NewNumberOfPorts", "PortMappingNumberOfEntries")],
+                              [("NewPortListing", "A_ARG_TYPE_PortListing")]),
+})
+IPC_VARS_2 = IPC_VARS + [("SystemUpdateID", "ui4", "yes"), ("A_ARG_TYPE_Manage", "boolean", "no"),
+                         ("A_ARG_TYPE_PortListing", "string", "no")]
 CIC_ACTIONS = {
     "GetCommonLinkProperties": ([], [
         ("NewWANAccessType", "WANAccessType"), ("NewLayer1UpstreamMaxBitRate", "Layer1UpstreamMaxBitRate"),
@@ -519,8 +578,14 @@ ENV_OPEN = ('<?xml version="1.0"?>\n<s:Envelope xmlns:s="http://schemas.xmlsoap.
 ENV_CLOSE = "</s:Body></s:Envelope>"
 
 
+class CData(str):
+    """A value sent as it is, in CDATA - the port listing of GetListOfPortMappings, as miniupnpd sends it
+    (miniupnpc reads it so, not escaped)."""
+
+
 def soap_response(service, action, args):
-    body = "".join("<%s>%s</%s>" % (k, escape(str(v)), k) for k, v in args)
+    body = "".join("<%s>%s</%s>" % (k, ("<![CDATA[%s]]>" % v.replace("]]>", "]]&gt;")) if isinstance(v, CData)
+                                    else escape(str(v)), k) for k, v in args)
     return ENV_OPEN + '<u:%sResponse xmlns:u="%s">%s</u:%sResponse>' % (action, service, body, action) + ENV_CLOSE
 
 
@@ -563,6 +628,114 @@ def _key(a, strict=True):
     return key
 
 
+def _free_port(key, ic):
+    """AddAnyPortMapping: the port asked for when it is free (or already this client's), else the next
+    free one above it (wrapping round past 1024), as miniupnpd picks one."""
+    if key not in mappings or mappings[key]["internal_client"] == ic:
+        return key
+    port = key[1]
+    for _ in range(65535):
+        port = port + 1 if port < 65535 else 1024
+        k = (key[0], port, key[2])
+        if k not in mappings:
+            return k
+    raise UPnPError(728, "NoPortMapsAvailable")
+
+
+def _add(action, a, client):
+    key = _key(a)
+    try:
+        iport = int(a.get("NewInternalPort", "0"))
+        lease = int(a.get("NewLeaseDuration", "0") or 0)
+        ic = str(ipaddress.IPv4Address(a.get("NewInternalClient", "") or client))
+    except ValueError:
+        raise UPnPError(402, "Invalid Args")
+    # the lease is a ui4; the internal client an IPv4 address (a name, or rubbish, is refused)
+    if not (0 < iport < 65536) or not (0 <= lease <= 0xFFFFFFFF):
+        raise UPnPError(402, "Invalid Args")
+    if IGD_V == 2 and (lease == 0 or lease > LEASE_V2):
+        lease = LEASE_V2
+    desc = a.get("NewPortMappingDescription", "")[:DESC_MOST]
+    asked = key
+    if action == "AddAnyPortMapping":
+        key = _free_port(key, ic)
+    # written as AddPortMapping (the Ports tab, the report, SNMP count those), with how it was asked
+    ev = {"action": "AddPortMapping", "client": client, "protocol": key[2], "external_port": key[1],
+          "internal_client": ic, "internal_port": iport, "lease": lease, "description": desc,
+          "remote_host": key[0]}
+    if action != "AddPortMapping":
+        ev["asked_as"] = action
+    if key != asked:
+        ev["asked_port"] = asked[1]
+    if CFG["mapping_response"] == "reject":
+        log.info("port: %s %d -> %s:%d asked by %s (lease %s, '%s') - rejected (mapping_response reject)",
+                 key[2], key[1], ic, iport, client, ("%ds" % lease) if lease else "unlimited", desc)
+        record(dict(ev, result="rejected"))
+        notify("UPnP: %s %d" % (key[2], key[1]), "%s asks for %s %d -> %s:%d '%s' (rejected)" % (
+            client, key[2], key[1], ic, iport, desc))
+        raise UPnPError(501, "ActionFailed")
+    old = mappings.get(key)
+    if old and old["internal_client"] != ic:
+        log.warning("port: %s %d already belongs to %s, asked for %s by %s - refused (conflict)",
+                    key[2], key[1], old["internal_client"], ic, client)
+        record(dict(ev, result="conflict"))
+        raise UPnPError(718, "ConflictInMappingEntry")
+    renew = old is not None
+    if not renew and len(mappings) >= MAPPINGS_MOST:
+        log.warning("port: %s %d asked by %s - refused, %d mappings are held already", key[2], key[1],
+                    client, len(mappings))
+        record(dict(ev, result="full"))
+        raise UPnPError(728, "NoPortMapsAvailable")
+    mappings[key] = {"internal_client": ic, "internal_port": iport, "description": desc,
+                     "enabled": a.get("NewEnabled", "1") in ("1", "true", "yes"), "lease": lease,
+                     "expires_at": (time.time() + lease) if lease else None, "requested_by": client,
+                     "added_at": old["added_at"] if old else now_iso()}
+    save_mappings()
+    record(dict(ev, result="ok", renew=renew))
+    lw = ("%ds" % lease) if lease else "unlimited"
+    log.info("port: %s %d -> %s:%d asked by %s (lease %s, '%s') - accepted, %s%s",
+             key[2], key[1], ic, iport, client, lw, desc, "renewed" if renew else "new",
+             (" (port %d was taken)" % asked[1]) if key != asked else "")
+    if not renew or CFG.get("notify_on_renew"):
+        notify("UPnP: %s %d" % (key[2], key[1]), "%s asks for %s %d -> %s:%d '%s' (lease %s)%s" % (
+            client, key[2], key[1], ic, iport, desc, lw, " - renewed" if renew else ""))
+    if ic != client:
+        log.warning("port: %s asks for a mapping to another IP (%s)", client, ic)
+    return [("NewReservedPort", key[1])] if action == "AddAnyPortMapping" else []
+
+
+def _range(a):
+    """(start, end, protocol, manage) of DeletePortMappingRange / GetListOfPortMappings."""
+    try:
+        lo, hi = int(a.get("NewStartPort", "")), int(a.get("NewEndPort", ""))
+    except ValueError:
+        raise UPnPError(402, "Invalid Args")
+    proto = a.get("NewProtocol", "").upper()
+    if proto not in ("TCP", "UDP") or not (0 <= lo <= 65535 and 0 <= hi <= 65535):
+        raise UPnPError(402, "Invalid Args")
+    if lo > hi:
+        raise UPnPError(733, "InconsistentParameters")
+    return lo, hi, proto, a.get("NewManage", "0").lower() in ("1", "true", "yes")
+
+
+def port_listing(items):
+    """WANIPConnection:2's A_ARG_TYPE_PortListing (an XML document, sent escaped in the answer)."""
+    rows = []
+    for k, m in items:
+        lease = max(0, int(m["expires_at"] - time.time())) if m.get("expires_at") else m["lease"]
+        rows.append("<p:PortMappingEntry><p:NewRemoteHost>%s</p:NewRemoteHost><p:NewExternalPort>%d"
+                    "</p:NewExternalPort><p:NewProtocol>%s</p:NewProtocol><p:NewInternalPort>%d</p:NewInternalPort>"
+                    "<p:NewInternalClient>%s</p:NewInternalClient><p:NewEnabled>%d</p:NewEnabled>"
+                    "<p:NewDescription>%s</p:NewDescription><p:NewLeaseTime>%d</p:NewLeaseTime></p:PortMappingEntry>"
+                    % (escape(k[0]), k[1], k[2], m["internal_port"], escape(m["internal_client"]),
+                       1 if m["enabled"] else 0, escape(m["description"]), lease))
+    return ('<?xml version="1.0" encoding="UTF-8"?><p:PortMappingList '
+            'xmlns:p="urn:schemas-upnp-org:gw:WANIPConnection" '
+            'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+            'xsi:schemaLocation="urn:schemas-upnp-org:gw:WANIPConnection '
+            'http://www.upnp.org/schemas/gw/WANIPConnection-v2.xsd">%s</p:PortMappingList>' % "".join(rows))
+
+
 def handle_ipc(action, a, client):
     if action == "GetExternalIPAddress":
         return [("NewExternalIPAddress", EXTERNAL_IP)]
@@ -573,58 +746,14 @@ def handle_ipc(action, a, client):
         return [("NewConnectionType", "IP_Routed"), ("NewPossibleConnectionTypes", "IP_Routed")]
     if action == "GetNATRSIPStatus":
         return [("NewRSIPAvailable", 0), ("NewNATEnabled", 1)]
+    v2 = ("AddAnyPortMapping", "DeletePortMappingRange", "GetListOfPortMappings")
+    if action in v2 and IGD_V != 2:
+        raise UPnPError(401, "Invalid Action")
 
     with _lock:
         purge_expired()
-        if action == "AddPortMapping":
-            key = _key(a)
-            try:
-                iport = int(a.get("NewInternalPort", "0"))
-                lease = int(a.get("NewLeaseDuration", "0") or 0)
-                ic = str(ipaddress.IPv4Address(a.get("NewInternalClient", "") or client))
-            except ValueError:
-                raise UPnPError(402, "Invalid Args")
-            # the lease is a ui4; the internal client an IPv4 address (a name, or rubbish, is refused)
-            if not (0 < iport < 65536) or not (0 <= lease <= 0xFFFFFFFF):
-                raise UPnPError(402, "Invalid Args")
-            desc = a.get("NewPortMappingDescription", "")[:DESC_MOST]
-            ev = {"action": action, "client": client, "protocol": key[2], "external_port": key[1],
-                  "internal_client": ic, "internal_port": iport, "lease": lease, "description": desc,
-                  "remote_host": key[0]}
-            if CFG["mapping_response"] == "reject":
-                log.info("port: %s %d -> %s:%d asked by %s (lease %s, '%s') - rejected (mapping_response reject)",
-                         key[2], key[1], ic, iport, client, ("%ds" % lease) if lease else "unlimited", desc)
-                record(dict(ev, result="rejected"))
-                notify("UPnP: %s %d" % (key[2], key[1]), "%s asks for %s %d -> %s:%d '%s' (rejected)" % (
-                    client, key[2], key[1], ic, iport, desc))
-                raise UPnPError(501, "ActionFailed")
-            old = mappings.get(key)
-            if old and old["internal_client"] != ic:
-                log.warning("port: %s %d already belongs to %s, asked for %s by %s - refused (conflict)",
-                            key[2], key[1], old["internal_client"], ic, client)
-                record(dict(ev, result="conflict"))
-                raise UPnPError(718, "ConflictInMappingEntry")
-            renew = old is not None
-            if not renew and len(mappings) >= MAPPINGS_MOST:
-                log.warning("port: %s %d asked by %s - refused, %d mappings are held already", key[2], key[1],
-                            client, len(mappings))
-                record(dict(ev, result="full"))
-                raise UPnPError(728, "NoPortMapsAvailable")
-            mappings[key] = {"internal_client": ic, "internal_port": iport, "description": desc,
-                             "enabled": a.get("NewEnabled", "1") in ("1", "true", "yes"), "lease": lease,
-                             "expires_at": (time.time() + lease) if lease else None, "requested_by": client,
-                             "added_at": old["added_at"] if old else now_iso()}
-            save_mappings()
-            record(dict(ev, result="ok", renew=renew))
-            lw = ("%ds" % lease) if lease else "unlimited"
-            log.info("port: %s %d -> %s:%d asked by %s (lease %s, '%s') - accepted, %s",
-                     key[2], key[1], ic, iport, client, lw, desc, "renewed" if renew else "new")
-            if not renew or CFG.get("notify_on_renew"):
-                notify("UPnP: %s %d" % (key[2], key[1]), "%s asks for %s %d -> %s:%d '%s' (lease %s)%s" % (
-                    client, key[2], key[1], ic, iport, desc, lw, " - renewed" if renew else ""))
-            if ic != client:
-                log.warning("port: %s asks for a mapping to another IP (%s)", client, ic)
-            return []
+        if action in ("AddPortMapping", "AddAnyPortMapping"):
+            return _add(action, a, client)
 
         if action == "DeletePortMapping":
             key = _key(a)
@@ -636,6 +765,35 @@ def handle_ipc(action, a, client):
             save_mappings()
             log.info("port: %s %d deleted by %s", key[2], key[1], client)
             return []
+
+        if action == "DeletePortMappingRange":
+            lo, hi, proto, manage = _range(a)
+            gone = [k for k, m in mappings.items() if k[2] == proto and lo <= k[1] <= hi
+                    and (manage or m["internal_client"] == client)]
+            record({"action": action, "client": client, "protocol": proto, "external_port": lo, "end_port": hi,
+                    "result": "ok" if gone else "none"})
+            if not gone:
+                log.info("port: %s %d-%d deleted by %s - there was none", proto, lo, hi, client)
+                raise UPnPError(730, "PortMappingNotFound")
+            for k in gone:
+                del mappings[k]
+            save_mappings()
+            log.info("port: %s %d-%d deleted by %s (%d mapping(s))", proto, lo, hi, client, len(gone))
+            return []
+
+        if action == "GetListOfPortMappings":
+            lo, hi, proto, manage = _range(a)
+            try:
+                most = int(a.get("NewNumberOfPorts", "0") or 0)
+            except ValueError:
+                raise UPnPError(402, "Invalid Args")
+            items = sorted(((k, m) for k, m in mappings.items() if k[2] == proto and lo <= k[1] <= hi
+                            and (manage or m["internal_client"] == client)), key=lambda x: x[0][1])
+            if most > 0:
+                items = items[:most]
+            if not items:
+                raise UPnPError(730, "PortMappingNotFound")
+            return [("NewPortListing", CData(port_listing(items)))]
 
         if action == "GetSpecificPortMappingEntry":
             key = _key(a)
@@ -666,6 +824,14 @@ def handle_cic(action, a, client):
 
 
 CONTROL = {"/ctl/IPConn": (S_IPC, handle_ipc), "/ctl/CmnIfCfg": (S_CIC, handle_cic)}
+MUTATING = ("AddPortMapping", "AddAnyPortMapping", "DeletePortMapping", "DeletePortMappingRange")
+
+
+def _int_or(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -706,15 +872,23 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = self.path.split("?", 1)[0]
         local_ip = self.connection.getsockname()[0]
+        client, ua = self.client_address[0], ua_words(self.headers.get("User-Agent"))
+        if path in ("/rootDesc.xml", "/WANIPCn.xml", "/WANCfg.xml"):
+            # Each step of a device on its way to a port, at info (1.7.4) - once in 10 minutes for the
+            # same client and file: where a console stopped is seen in the log and on the Clients tab.
+            (log.info if once(("get", client, path)) else log.debug)(
+                "http: %s fetched %s (%s, via %s, UA=%s)", client, path,
+                {"/rootDesc.xml": "the device description", "/WANIPCn.xml": "the description of WANIPConnection:%d"
+                 % IGD_V, "/WANCfg.xml": "the description of WANCommonInterfaceConfig:1"}[path], local_ip, ua)
         if path == "/rootDesc.xml":
-            log.info("http: %s fetched the device description (via %s)", self.client_address[0], local_ip)
             self._send(200, device_xml(local_ip))
         elif path == "/WANIPCn.xml":
-            self._send(200, scpd_xml(IPC_ACTIONS, IPC_VARS))
+            self._send(200, scpd_xml(IPC_ACTIONS_2, IPC_VARS_2) if IGD_V == 2 else scpd_xml(IPC_ACTIONS, IPC_VARS))
         elif path == "/WANCfg.xml":
             self._send(200, scpd_xml(CIC_ACTIONS, CIC_VARS))
         else:
-            log.debug("http: 404 %s from %s", path, self.client_address[0])
+            (log.info if once(("404", client, path[:80])) else log.debug)(
+                "http: %s asked for %s - not here, 404 (UA=%s)", client, path[:200], ua)
             self._send(404, "not found", "text/plain")
 
     do_HEAD = do_GET
@@ -760,13 +934,30 @@ class Handler(BaseHTTPRequestHandler):
         sa = (self.headers.get("SOAPAction") or "").strip('"')
         if "#" in sa and sa.split("#", 1)[1]:
             action = sa.split("#", 1)[1]
-        log.info("soap: %s -> %s %s", client, action, json.dumps(args, ensure_ascii=False) if args else "")
+        action = re.sub(r"[^A-Za-z0-9_]", "", action)[:64] or "?"
+        ua = ua_words(self.headers.get("User-Agent"))
+        # What changes the mappings is said every time; a question (GetExternalIPAddress, GetStatusInfo,
+        # GetSpecificPortMappingEntry...) once in 10 minutes for the same client - and written to the
+        # request log once a minute, so the Requests and Clients tabs see it.
+        changes = action in MUTATING
+        loud = changes or once(("soap", client, action))
+        (log.info if loud else log.debug)("soap: %s -> %s %s(UA=%s)", client, action,
+                                          (json.dumps(args, ensure_ascii=False) + " ") if args else "", ua)
         try:
             out = handler(action, args, client)
             self._send(200, soap_response(service, action, out))
+            said = "ok"
         except UPnPError as e:
-            log.info("soap: %s <- %s error %d %s", client, action, e.code, e.desc)
+            (log.info if loud else log.debug)("soap: %s <- %s error %d %s", client, action, e.code, e.desc)
             self._send(500, soap_fault(e.code, e.desc))
+            said = "error %d %s" % (e.code, e.desc)
+        if not changes and once(("rec", client, action, args.get("NewExternalPort", ""),
+                                 args.get("NewProtocol", "")), 60):
+            ev = {"action": action, "client": client, "result": said}
+            if action == "GetSpecificPortMappingEntry":
+                ev.update(protocol=str(args.get("NewProtocol", ""))[:8].upper(),
+                          external_port=_int_or(args.get("NewExternalPort")))
+            record(ev)
 
     def do_SUBSCRIBE(self):
         if not self._allowed():
@@ -898,34 +1089,38 @@ class SSDP:
                 hdr[k.strip().upper()] = v.strip()
         if hdr.get("MAN", "").strip('"') != "ssdp:discover":
             return
-        st = hdr.get("ST", "")
+        st = re.sub(r"[\x00-\x1f\x7f]", "", hdr.get("ST", ""))[:200]
         if not client_allowed(src):
             log.debug("ssdp: M-SEARCH from %s (ST=%s) ignored - not in allowed_clients", src, st)
             return
-        k = (src, st[:200])
+        k = (src, st)
         self._prune()
-        if time.time() - self.seen.get(k, 0) > 600:
-            log.info("ssdp: %s is looking for a UPnP device (ST=%s, UA=%s)", src, st, hdr.get("USER-AGENT", "-"))
+        loud = time.time() - self.seen.get(k, 0) > 600
+        if loud:
+            log.info("ssdp: %s is looking for a UPnP device (ST=%s, MX=%s, UA=%s)", src, st,
+                     ua_words(hdr.get("MX", "-"))[:8], ua_words(hdr.get("USER-AGENT")))
             self.seen[k] = time.time()
         else:
             log.debug("ssdp: M-SEARCH %s ST=%s", src, st)
         if CFG["mode"] == "passive":
+            if loud:
+                log.info("ssdp: %s not answered - the mode is passive (ST=%s)", src, st)
             return
-
-        if st == "ssdp:all":
-            answers = ADVERTS
-        else:
-            st_v1 = st[:-1] + "1" if st.endswith(":2") else st  # answer IGD:2 searches with the v1 device
-            answers = [(s, u) for s, u in ADVERTS if s == st_v1]
+        answers = search_answers(st)
         if not answers:
+            if loud:
+                log.info("ssdp: %s not answered - nothing here is %s (this is InternetGatewayDevice:%d%s)", src, st,
+                         IGD_V, "; igd_version 2 answers :2" if IGD_V == 1 and TYPE_RE.match(st) else "")
             return
         local_ip = local_ip_for(src)
         try:
-            mx = max(0, min(int(hdr.get("MX", "1")), 3))
+            mx = max(0, min(int(hdr.get("MX", "1")), 5))
         except ValueError:
             mx = 1
-        delay = random.uniform(0, mx * 0.5) if mx else 0
-        threading.Timer(delay, self._reply, args=(src, sport, local_ip, answers)).start()
+        # UDA 1.1: within a random time up to MX seconds (at most 5); a search sent to this address
+        # (unicast, no MX) is answered at once.
+        delay = random.uniform(0, mx) if mx and hdr.get("HOST", "").startswith(SSDP_GROUP) else 0
+        threading.Timer(delay, self._reply, args=(src, sport, local_ip, answers, loud)).start()
 
     def _prune(self):
         """What was seen, kept for an hour - not for ever (a flood of made-up sources or STs grew it)."""
@@ -936,7 +1131,7 @@ class SSDP:
             if len(self.seen) > 4096:
                 self.seen.clear()
 
-    def _reply(self, src, sport, local_ip, answers):
+    def _reply(self, src, sport, local_ip, answers, loud=False):
         # Replies go out from the SSDP socket itself (source port 1900), like real routers do,
         # so they pass stateful firewalls / conntrack on the client side.
         s = self.rx
@@ -946,9 +1141,28 @@ class SSDP:
                     ("CACHE-CONTROL", "max-age=1800"), ("DATE", formatdate(usegmt=True)), ("EXT", ""),
                     ("LOCATION", location_url(local_ip)), ("SERVER", SERVER_HDR), ("ST", st), ("USN", usn),
                     ("BOOTID.UPNP.ORG", "1"), ("CONFIGID.UPNP.ORG", "1")]), (src, sport))
-            log.debug("ssdp: answered %s:%d (%d entries, LOCATION %s)", src, sport, len(answers), location_url(local_ip))
+            (log.info if loud else log.debug)(
+                "ssdp: answered %s:%d - ST=%s USN=%s LOCATION=%s%s", src, sport, answers[0][0], answers[0][1],
+                location_url(local_ip), (" (and %d more)" % (len(answers) - 1)) if len(answers) > 1 else "")
         except OSError as e:
             log.warning("ssdp: the reply to %s failed: %s", src, e)
+
+
+def search_answers(st):
+    """What an M-SEARCH for st is answered with, [(ST, USN)] - as UDA 1.1 and miniupnpd: ssdp:all every
+    advertisement; upnp:rootdevice and uuid: as they are; a device or service type answered when this
+    device has it in the version asked or a later one, with the ST as asked (and the USN of it); a later
+    version than this device has is not answered."""
+    if st == "ssdp:all":
+        return list(ADVERTS)
+    m = TYPE_RE.match(st)
+    if m:
+        for t, usn in ADVERTS:
+            have = TYPE_RE.match(t)
+            if have and have.group(1) == m.group(1) and 1 <= int(m.group(2)) <= int(have.group(2)):
+                return [(st, usn.rsplit("::", 1)[0] + "::" + st)]
+        return []
+    return [(t, u) for t, u in ADVERTS if t == st]
 
 
 def expiry_loop():
@@ -1026,6 +1240,7 @@ def main():
         load_mappings()
         save_mappings()
 
+    set_version(CFG.get("igd_version"))
     host = socket.gethostname()
     UUID_ROOT = str(uuid.uuid5(uuid.NAMESPACE_DNS, "fake-igd-root-" + host))
     UUID_WAN = str(uuid.uuid5(uuid.NAMESPACE_DNS, "fake-igd-wan-" + host))
@@ -1043,7 +1258,8 @@ def main():
     if CFG["_unknown_keys"]:
         log.warning("config: unknown keys ignored: %s", ", ".join(CFG["_unknown_keys"]))
     resolve_external_ip()
-    log.info("service: mode %s, AddPortMapping answered: %s", CFG["mode"], CFG["mapping_response"])
+    log.info("service: mode %s, AddPortMapping answered: %s, InternetGatewayDevice:%d", CFG["mode"],
+             CFG["mapping_response"], IGD_V)
     log.info("service: HTTP port %d, public IP '%s', interfaces: %s, excluded: %s",
              CFG["http_port"], EXTERNAL_IP, ", ".join(CFG["interfaces"]) or "all",
              ", ".join(CFG["exclude_interfaces"]) or "-")

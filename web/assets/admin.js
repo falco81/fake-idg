@@ -564,7 +564,7 @@ function showMe() {
     old.id = 'me-pw-old'; nw.id = 'me-pw-new'; nw2.id = 'me-pw-new2';
     var g = el('div', 'formgrid');
     g.appendChild(formField('The one you have now', old));
-    g.appendChild(formField('The new one (8 characters at least)', nw));
+    g.appendChild(formField('The new one', nw));
     g.appendChild(formField('The new one again', nw2));
     pwsec.appendChild(g);
     var go = cmdButton('Change the password', 'lock', 'primary');
@@ -1320,13 +1320,43 @@ function requestPeek(r) {
 }
 
 /* ---- Clients ---- */
-function clientsTable(rows, small) {
-  return listTable(['Client', {words: 'Searches', cls: 'num'}, {words: 'Requests', cls: 'num'}, 'Ports', 'Last seen', 'It says it is', ''],
-                   rows, function (r) {
+/* The steps of a client on its way to a port (1.7.4): searched, answered, fetched the description, fetched
+   the service's, asked SOAP questions, asked for ports - each a pill, lit when it got there; where it stopped
+   in words. Read by /api/upnp/steps from fake-igd's log and its request log. */
+var CL_STEPS = [['searched', 'searched', 'It looked for a UPnP router (SSDP M-SEARCH)'],
+                ['answered', 'answered', 'fake-igd answered its search'],
+                ['described', 'description', 'It fetched the device description (rootDesc.xml)'],
+                ['service', 'service', 'It fetched the description of the service (WANIPCn.xml)'],
+                ['asked', 'SOAP', 'It asked SOAP questions (GetExternalIPAddress, GetStatusInfo...)'],
+                ['ports', 'ports', 'It asked for ports (AddPortMapping)']];
+function stepPills(st) {
+  var box = el('span', 'step-pills');
+  if (!st) return box;
+  var reached = st.reached || [];
+  CL_STEPS.forEach(function (x, i) {
+    var on = reached.indexOf(x[0]) >= 0;
+    var last = !st.ports && on && i === st.furthest;
+    var p = el('span', 'tag ' + (on ? (st.ports ? 'ok' : (last ? 'warn' : 'ok')) : 'dim'), x[1]);
+    if (x[0] === 'answered' && !on && st.unanswered) p.className = 'tag crit';
+    p.title = x[2] + (on ? '' : ' - not seen');
+    box.appendChild(p);
+  });
+  return box;
+}
+function clientsTable(rows, small, steps) {
+  var heads = ['Client', {words: 'Searches', cls: 'num'}, {words: 'Requests', cls: 'num'}, 'Ports', 'Last seen', 'It says it is', ''];
+  if (steps) heads.splice(3, 0, 'How far it got');
+  return listTable(heads, rows, function (r) {
     var tr = el('tr');
     tr.appendChild(addrCell(r.client, r.name));
     tr.appendChild(el('td', 'num', num(r.searches)));
     tr.appendChild(el('td', 'num', num(r.requests)));
+    if (steps) {
+      var st = steps[r.client], td = el('td');
+      td.appendChild(stepPills(st));
+      if (st && st.stopped) td.appendChild(el('div', 'muted small step-said', st.stopped));
+      tr.appendChild(td);
+    }
     tr.appendChild(noI18n(el('td', 'mono small', (r.ports || []).slice(0, small ? 6 : 40).join(', ') + ((r.ports || []).length > (small ? 6 : 40) ? ' …' : ''))));
     tr.appendChild(stampCell(r.last ? Date.parse(r.last) / 1000 : null));
     tr.appendChild(noI18n(el('td', 'muted small', r.user_agent || '')));
@@ -1339,15 +1369,20 @@ function clientsTable(rows, small) {
     return tr;
   }, 'rows|No client in this window', {own: true});
 }
+var CL = {steps: null};
 function loadClients() {
   var per = Number($('cl-per').value);
-  apiLatest('clients', 'clients&q=' + encodeURIComponent($('cl-q').value) + tpQuery('cl-hours', 'since', 'until')
-      + '&page=' + PAGE.clients + '&per=' + per).then(function (d) {
+  var win = tpQuery('cl-hours', 'since', 'until');
+  Promise.all([apiLatest('clients', 'clients&q=' + encodeURIComponent($('cl-q').value) + win
+      + '&page=' + PAGE.clients + '&per=' + per),
+               api('upnp-steps' + win.replace(/^&/, '&')).catch(function () { return {clients: {}}; })]).then(function (two) {
+    var d = two[0];
+    CL.steps = two[1].clients || {};
     QS.clients.said(d.q_error || '');
     $('cl-said').textContent = num(d.total) + ' client(s)';
     var host = $('cl-table');
     clear(host);
-    host.appendChild(clientsTable(d.clients));
+    host.appendChild(clientsTable(d.clients, false, CL.steps));
     pager('cl-pager', PAGE.clients, per, d.total, function (p) { PAGE.clients = p; loadClients(); });
     explainWhatWasDrawn(host);
   }).catch(oops);
@@ -1358,7 +1393,8 @@ function clientPeek(ip, known) {
   peek(ip, function () {
     return Promise.all([known ? Promise.resolve({clients: [known]}) : api('clients&q=' + encodeURIComponent('client:' + ip) + '&per=10'),
                         api('ports&q=' + encodeURIComponent('client:' + ip) + '&sort=last&per=100'),
-                        api('requests&client=' + encodeURIComponent(ip) + '&since=1&per=20')]);
+                        api('requests&client=' + encodeURIComponent(ip) + '&since=1&per=20'),
+                        api('upnp-steps&client=' + encodeURIComponent(ip)).catch(function () { return {clients: {}}; })]);
   }, function (body, three) {
     $('modal-box').className = 'box medium';
     var c = (three[0].clients || [])[0] || {client: ip};
@@ -1366,6 +1402,31 @@ function clientPeek(ip, known) {
       ['Requests', num(c.requests || 0)], ['Ports', num((three[1].ports || []).length)],
       ['Last seen', c.last ? stamp(Date.parse(c.last) / 1000) : '–']]));
     if (c.user_agent) body.appendChild(noI18n(el('p', 'note', 'It says it is: ' + c.user_agent)));
+    var st = ((three[3] || {}).clients || {})[ip];
+    body.appendChild(el('h3', 'peek-h', 'How far it got'));
+    body.appendChild(stepPills(st || {reached: [], furthest: -1}));
+    if (st && st.stopped) body.appendChild(el('p', 'note warn', 'It stopped: ' + st.stopped + '.'));
+    else if (!st) body.appendChild(el('p', 'muted small', 'Nothing of it in fake-igd\'s log.'));
+    if (st) {
+      var facts = [];
+      if (st.searched) facts.push(['Searched for', st.searched.st + (st.searched.mx ? ' (MX ' + st.searched.mx + ')' : ''), true]);
+      if (st.searched && st.searched.ua && st.searched.ua !== '-') facts.push(['Its search says', st.searched.ua, true]);
+      if (st.answered) facts.push(['Answered with', st.answered.st + ' · ' + st.answered.location, true]);
+      else if (st.unanswered) facts.push(['Not answered', st.unanswered.why, true]);
+      if (st.described && st.described.ua) facts.push(['It fetches as', st.described.ua, true]);
+      var acts = Object.keys(st.actions || {}).sort();
+      if (acts.length) facts.push(['SOAP it asked', acts.map(function (a) { var x = st.actions[a]; return a + (x.errors ? ' (' + x.errors + (x.errors > 1 ? ' errors, the last: ' : ' error: ') + (x.said || '') + ')' : ''); }).join(', '), true]);
+      if (facts.length) body.appendChild(peekFacts(facts.map(function (f) { return [f[0], noI18n(el('span', 'mono small', f[1]))]; })));
+      var tl = (st.timeline || []).slice(-40).reverse();
+      body.appendChild(el('h3', 'peek-h', 'Its steps, the last first'));
+      body.appendChild(listTable(['When', 'What', ''], tl, function (x) {
+        var tr = el('tr');
+        tr.appendChild(stampCell(x.at));
+        tr.appendChild(el('td', 'step-tl-what', x.what));
+        tr.appendChild(noI18n(el('td', 'mono small step-tl-said', x.said || '')));
+        return tr;
+      }, 'plain|Nothing of it in the log'));
+    }
     body.appendChild(el('h3', 'peek-h', 'The ports it asked for'));
     body.appendChild(listTable(['Protocol', {words: 'Port', cls: 'num'}, {words: 'Asked', cls: 'num'}, 'Last', 'Answered', 'What for'],
                                three[1].ports || [], function (r) {
@@ -1600,6 +1661,9 @@ searchButtons($('ev-q'), function () { PAGE.events = 0; loadEvents(); }, ['ev-ki
    ========================================================================== */
 var RAIL = {pinned: false, open: null, shut: null};
 function showPane(name) {
+  /* A full administrator's pane followed by a link as a read-only account: the first pane instead. */
+  var nb = document.querySelector('#ctl-nav button[data-pane="' + name + '"]');
+  if (nb && nb.classList.contains('fulladmin-only') && !ADMIN) name = 'answer';
   if (!$('pane-' + name)) name = 'answer';
   if (name !== PANE) paneLetGo();
   PANE = name;
@@ -2063,7 +2127,7 @@ function mustChange() {
     var nw2 = maskBox('', '', '');
     var g = el('div', 'formgrid');
     g.appendChild(formField('The one you were given', old));
-    g.appendChild(formField('The new one (8 characters at least)', nw));
+    g.appendChild(formField('The new one', nw));
     g.appendChild(formField('The new one again', nw2));
     body.appendChild(g);
     var go = cmdButton('Change the password', 'lock', 'primary');

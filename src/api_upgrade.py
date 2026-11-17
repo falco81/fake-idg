@@ -250,12 +250,14 @@ def upgrade_package(ctx):
         data = base64.b64decode(str(b.get("data") or ""), validate=True)
     except ValueError:
         raise ValueError("the package did not come whole")
+    if not data:
+        raise ValueError("no package was sent")
     plan = _plan(ctx, hidden=False)
     if plan and plan.get("state") == "running":
         raise ValueError("an upgrade is going on: wait for it, or stop it first")
     by = _who(ctx)
     try:
-        info = ON.take_bytes(data)
+        info = ON.take_bytes(data, older=False)
     except ValueError as e:
         ctx.event("%s sent a package that was refused: %s" % (by, e), "warn")
         raise
@@ -647,7 +649,7 @@ def after_evaluate(ctx):
         # Not while an upgrade goes on (1.7.3): the new API starts before install.sh has put root's parts
         # in and written root-facts.json - every upgrade said "the parts root installs are from before it".
         try:
-            busy = bool(ON.status().get("busy"))
+            busy = bool(ON.status().get("busy")) or ON.pages_running()
         except Exception:                               # noqa: BLE001
             busy = False
         if busy:

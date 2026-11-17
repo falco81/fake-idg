@@ -51,6 +51,8 @@ WEB_PATH_UNIT = os.path.join(UNIT_DIR, "fake-igd-web.path")
 DOWNGRADE_FLOOR = "1.4.0"
 FLOOR_FILE = os.path.join(LIB_DIR, "downgrade-floor")
 UPGRADE_TIMEOUT_S = 30 * 60
+# What install.sh --upgrade (also run by hand) and root's helper tell the pages, step by step (1.7.2).
+PAGES_FILE = os.path.join(os.environ.get("FAKE_IGD_WEB", "/var/www/fake-igd"), ".upgrade.json")
 PKG_RE = re.compile(r"(?:^|/)(fake-igd-(\d+)\.(\d+)\.(\d+)\.tar\.gz)(?:\?|#|$)")
 MOST_PACKED = 64 * 1024 * 1024
 EVERY_S = 86400
@@ -375,9 +377,11 @@ def inspect(path):
     return got
 
 
-def _into_upgrade_dir(data_or_path, name):
+def _into_upgrade_dir(data_or_path, name, older=None):
     """The package into the upgrade folder under its own name - made beside it and
-    renamed over it, never written through a link."""
+    renamed over it, never written through a link. `older` True/False: refused, before it takes
+    any other package's place, when it is not older/newer than what is installed - an older
+    package sent after a newer one threw the newer one away, and was refused itself."""
     os.makedirs(UPGRADE_DIR, mode=0o750, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".in-", suffix=".tar.gz", dir=UPGRADE_DIR)
     try:
@@ -393,6 +397,12 @@ def _into_upgrade_dir(data_or_path, name):
                         out.write(lump)
         os.chmod(tmp, 0o640)
         info = inspect(tmp)
+        if older is not None and bool(info.get("older")) != bool(older):
+            if older:
+                raise ValueError("%s is not older than %s, which is installed" % (info["version"], info.get("installed")))
+            raise ValueError("%s is older than %s, which runs here: going back is done from upgrade_url (Going "
+                             "back to an older version, below) or on the command line"
+                             % (info["version"], info.get("installed")))
         final = os.path.join(UPGRADE_DIR, "fake-igd-%s.tar.gz" % info["version"])
         os.replace(tmp, final)
         tmp = None
@@ -435,7 +445,7 @@ def fetch(url, version, here, older=False):
         raise ValueError("fake-igd %s is not newer than %s, which runs here" % (pk["version"], here))
     data, _ct, final = _get(pk["url"], limit=MOST_PACKED, timeout=300, version=here)
     try:
-        info = _into_upgrade_dir(data, pk["name"])
+        info = _into_upgrade_dir(data, pk["name"], older=bool(older))
     except ValueError as e:
         raise ValueError("the package from %s was refused: %s" % (final, e))
     if info.get("older") and not older:
@@ -458,10 +468,10 @@ def take_file(path):
     return info
 
 
-def take_bytes(data):
+def take_bytes(data, older=None):
     if len(data) > MOST_PACKED:
         raise ValueError("the package is bigger than 64 MB")
-    info = _into_upgrade_dir(bytes(data), "upload.tar.gz")
+    info = _into_upgrade_dir(bytes(data), "upload.tar.gz", older=older)
     info["from"] = "sent from the pages"
     return info
 
@@ -561,6 +571,22 @@ def status():
         out["said"] = "the upgrade never said that it ended"
         out["busy"] = False
     return out
+
+
+def pages_running(most_s=20 * 60):
+    """install.sh --upgrade going on - also one run by hand, which status() does not see (no
+    request, no status.json): the file it writes for the pages says "running", lately."""
+    try:
+        with open(PAGES_FILE, encoding="utf-8") as f:
+            got = json.loads(f.read(65536) or "{}")
+    except (OSError, ValueError):
+        return False
+    if not isinstance(got, dict) or got.get("state") != "running":
+        return False
+    try:
+        return time.time() - float(got.get("at") or 0) < most_s
+    except (TypeError, ValueError):
+        return False
 
 
 def progress(lines):

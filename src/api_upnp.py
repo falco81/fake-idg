@@ -761,7 +761,147 @@ def logs(ctx):
             "logrotate": os.path.isfile("/etc/logrotate.d/fake-igd")}
 
 
+# ---- the steps of each client (1.7.4) ----------------------------------------------------------------
+# How far a device got on its way to a port, read from fake-igd's log and its request log: it searched
+# (SSDP M-SEARCH, with what ST and User-Agent), fake-igd answered it (or why not), it fetched the device
+# description and the service's, it asked SOAP questions, it asked for ports. A console that stops after
+# the search is seen at a glance on the Clients tab.
+STEP_RES = [
+    ("searched", re.compile(r"ssdp: (\S+) is looking for a UPnP device \(ST=(.*?)(?:, MX=(.*?))?, UA=(.*)\)$")),
+    ("answered", re.compile(r"ssdp: answered (\S+?):\d+ - ST=(\S+) USN=(\S+) LOCATION=(\S+)")),
+    ("unanswered", re.compile(r"ssdp: (\S+) not answered - (.*)$")),
+    ("fetched", re.compile(r"http: (\S+) fetched (/\S+) \((.*?), via \S+, UA=(.*)\)$")),
+    ("fetched", re.compile(r"http: (\S+) fetched the device description")),
+    ("missing", re.compile(r"http: (\S+) asked for (\S+) - not here")),
+    ("soap", re.compile(r"soap: (\S+) -> (\w+)")),
+    ("soap_error", re.compile(r"soap: (\S+) <- (\w+) error (\d+) (\S+)")),
+]
+STEP_ORDER = ["searched", "answered", "described", "service", "asked", "ports"]
+
+
+def _steps_of(cfg, since=None, until=None, client=None):
+    out = {}
+
+    def one(ip):
+        return out.setdefault(ip, {"client": ip, "searched": None, "answered": None, "unanswered": None,
+                                   "described": None, "service": None, "missing": None, "actions": {},
+                                   "ports": 0, "ports_ok": 0, "last_port": None, "timeline": []})
+
+    def put(c, at, what, said=""):
+        c["timeline"].append({"at": at, "what": what, "said": said})
+
+    lo = since.timestamp() if since else 0
+    hi = until.timestamp() if until else 1e12
+    for ln in log_tail(cfg):
+        m = U.LOG_RE.match(ln)
+        if not m:
+            continue
+        at = _when(m.group(1))
+        if at is None or at < lo or at > hi:
+            continue
+        words = m.group(3)
+        for kind, rx in STEP_RES:
+            x = rx.search(words)
+            if not x or (client and x.group(1) != client):
+                continue
+            c = one(x.group(1))
+            if kind == "searched":
+                c["searched"] = {"at": at, "st": x.group(2), "mx": x.group(3) or "", "ua": x.group(4),
+                                 "n": (c["searched"] or {}).get("n", 0) + 1}
+                put(c, at, "searched", "ST=%s%s · %s" % (x.group(2), (", MX=" + x.group(3)) if x.group(3) else "",
+                                                        x.group(4)))
+            elif kind == "answered":
+                c["answered"] = {"at": at, "st": x.group(2), "usn": x.group(3), "location": x.group(4)}
+                put(c, at, "answered", "ST=%s · %s" % (x.group(2), x.group(4)))
+            elif kind == "unanswered":
+                c["unanswered"] = {"at": at, "why": x.group(2)}
+                put(c, at, "not answered", x.group(2))
+            elif kind == "fetched":
+                path = x.group(2) if x.re.groups >= 2 else "/rootDesc.xml"
+                key = "described" if path == "/rootDesc.xml" else "service"
+                c[key] = {"at": at, "path": path, "ua": x.group(4) if x.re.groups >= 4 else ""}
+                put(c, at, "fetched", path)
+            elif kind == "missing":
+                c["missing"] = {"at": at, "path": x.group(2)}
+                put(c, at, "asked for what is not here", x.group(2))
+            elif kind == "soap":
+                a = c["actions"].setdefault(x.group(2), {"n": 0, "at": at, "errors": 0})
+                a["n"] += 1
+                a["at"] = at
+                put(c, at, "asked " + x.group(2))
+            elif kind == "soap_error":
+                a = c["actions"].setdefault(x.group(2), {"n": 0, "at": at, "errors": 0})
+                a["errors"] += 1
+                a["said"] = "%s %s" % (x.group(3), x.group(4))
+                put(c, at, "answered %s with error %s %s" % (x.group(2), x.group(3), x.group(4)))
+            break
+    try:
+        ev = U.read_events(cfg, since)
+    except SystemExit:
+        ev = []
+    for e in ev:
+        t = e["_t"].timestamp() if e.get("_t") else None
+        if t is None or t > hi or not e.get("client") or (client and e.get("client") != client):
+            continue
+        c = one(e.get("client") or "?")
+        act = e.get("action") or "?"
+        a = c["actions"].setdefault(act, {"n": 0, "at": t, "errors": 0})
+        a["at"] = max(a["at"], t)
+        if act in ("AddPortMapping", "AddAnyPortMapping"):
+            c["ports"] += 1
+            c["ports_ok"] += str(e.get("result") or "ok") == "ok"
+            c["last_port"] = {"at": t, "port": e.get("external_port"), "proto": e.get("protocol"),
+                              "result": e.get("result") or "ok"}
+            put(c, t, "asked for a port", "%s %s → %s" % (e.get("protocol"), e.get("external_port"),
+                                                        e.get("result") or "ok"))
+    for c in out.values():
+        # SOAP questions seen only in the request log (the log says them once in 10 minutes)
+        for act, a in c["actions"].items():
+            a["n"] = max(a["n"], 1)
+        reached = [k for k, ok in (("searched", c["searched"]), ("answered", c["answered"]),
+                                   ("described", c["described"]), ("service", c["service"]),
+                                   ("asked", c["actions"]), ("ports", c["ports"])) if ok]
+        c["reached"] = reached
+        c["furthest"] = max((STEP_ORDER.index(k) for k in reached), default=-1)
+        c["stopped"] = stopped_words(c)
+        c["timeline"] = sorted(c["timeline"], key=lambda x: x["at"])[-80:]
+    return out
+
+
+def stopped_words(c):
+    """Where it stopped, in words - empty when it asked for a port."""
+    if c["ports"]:
+        return ""
+    if c["searched"] and c["unanswered"] and not c["answered"]:
+        return "it searched and was not answered: " + c["unanswered"]["why"]
+    if c["searched"] and not (c["answered"] or c["described"] or c["actions"]):
+        return "it searched (ST=%s) and went no further" % c["searched"]["st"]
+    if c["answered"] and not (c["described"] or c["actions"]):
+        return "it was answered and never fetched the device description - the answer was not what it wanted, " \
+               "or it cannot reach %s" % c["answered"]["location"]
+    if c["described"] and not (c["service"] or c["actions"]):
+        return "it fetched the device description and asked nothing - it found nothing there it wanted"
+    if c["actions"]:
+        return "it asked %s, but for no port" % ", ".join(sorted(c["actions"]))
+    return ""
+
+
+def steps(ctx):
+    """GET /api/upnp/steps[?since=&until=&client=] - each client's steps (the Clients tab)."""
+    ctx.need("readonly")
+
+    def when(name):
+        try:
+            v = float(ctx.arg(name) or 0)
+        except ValueError:
+            v = 0
+        return datetime.fromtimestamp(v).astimezone() if v > 0 else None
+    client = str(ctx.arg("client") or "")[:64] or None
+    return {"clients": _steps_of(ctx.cfg, when("since"), when("until"), client), "at": time.time()}
+
+
 ROUTES = {
+    ("GET", "/api/upnp/steps"): steps,
     ("GET", "/api/upnp/here"): here,
     ("POST", "/api/upnp/try"): try_it,
     ("GET", "/api/upnp/ntfy"): ntfy_view,

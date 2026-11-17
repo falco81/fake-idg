@@ -195,7 +195,7 @@ def settings_view():
             "error": cfg.get("_error"), "only_when": only_when}
 
 
-def settings_save(changes, who, addr):
+def settings_save(changes, who, addr, handler=None):
     if not isinstance(changes, dict) or not changes:
         raise ValueError("nothing to save")
     cfg = load_cfg()
@@ -231,7 +231,7 @@ def settings_save(changes, who, addr):
         STORE[0].add_event("setting", "%s changed %s" % (who, shown), "info", who, addr)
         mod = PN.module(name)
         if mod is not None and hasattr(mod, "on_saved"):
-            mod.on_saved(PN.Ctx(None, "POST", "", {}, {"name": who, "role": "fulladmin"}, STORE[0], CFG, mod,
+            mod.on_saved(PN.Ctx(handler, "POST", "", {}, {"name": who, "role": "fulladmin"}, STORE[0], CFG, mod,
                                 STORE[0].add_event), ch)
     mod_saved = sorted(k for ch in mod_changed.values() for k in ch)
     if not good:
@@ -851,7 +851,7 @@ class Handler(BaseHTTPRequestHandler):
             return d
         if path == "/api/settings" and method == "POST":
             self.who("fulladmin")
-            d = settings_save(self.body().get("changes"), me["name"], self.addr())
+            d = settings_save(self.body().get("changes"), me["name"], self.addr(), self)
             d["ok"] = True
             d["message"] = ("saved - %s" % ("fake-igd.service is restarted with it" if d.get("restart")
                                             else "in effect") if d["saved"] else "nothing was changed")
