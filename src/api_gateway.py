@@ -292,9 +292,10 @@ def post_gateway(ctx):
             except ValueError:
                 continue
             if x.version == 6 and not (x.is_link_local or x.is_multicast or x.is_loopback):
-                out.append({"ip": str(x), "where": where,
-                            "kind": "stable (DHCPv6 or EUI-64)" if (int(x) & 0xffffffffffff0000) == 0 or
-                            (int(x) >> 24 & 0xffff) == 0xfffe else "may be a temporary one"})
+                iid = int(x) & ((1 << 64) - 1)          # the interface's half (1.9.3: not the whole address)
+                kind = "eui64" if (iid >> 24) & 0xffff == 0xfffe else ("dhcpv6" if iid < (1 << 32) else "temporary")
+                out.append({"ip": str(x), "where": where, "kind": kind})
+        out.sort(key=lambda a: ({"dhcpv6": 0, "eui64": 1}.get(a["kind"], 2), a["ip"]))
         return {"mac": mac, "seen": out, "message": "%d IPv6 address(es) of %s seen" % (len(out), mac) if out else
                 "no IPv6 address of %s in either neighbour table" % mac}
     if act == "mac_seen":

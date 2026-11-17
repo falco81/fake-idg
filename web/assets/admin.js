@@ -1355,7 +1355,8 @@ function mtCell(x) {
   t.onclick = function (ev) { ev.stopPropagation(); goTab('gateway', {sub: 'mikrotik', ip: x.device, proto: x.proto, port: x.port}); };
   explain(t, (x.state === 'ok' ? x.forward_why || x.nat_why : x.nat_why) || s[2] || '');
   td.appendChild(t);
-  if (x.v6 === 'blocked') td.appendChild(el('span', 'tag crit', 'IPv6 blocked'));
+  /* IPv6 is not said here (1.9.3): AddPortMapping asks for IPv4 only - whether the router lets IPv6 in to the
+     device is a choice of its own, shown in Gateway → MikroTik (neutral, never red) */
   return td;
 }
 function portPeek(r) {

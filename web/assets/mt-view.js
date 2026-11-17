@@ -23,7 +23,11 @@
     elsewhere: ['forwarded elsewhere', 'warn', 'Another rule forwards this port to another device - one port goes to one device.'],
     unsure: ['cannot tell', 'dim', 'Something that decides it depends on what this cannot know (who connects, a limit, a mark) - said with the rule.']
   };
-  var V6 = {open: ['IPv6 open', 'ok'], blocked: ['IPv6 blocked', 'crit'], unsure: ['IPv6: cannot tell', 'dim'], none: ['no IPv6', 'dim']};
+  /* IPv6 is information, not a fault (1.9.3): UPnP's AddPortMapping asks for an IPv4 port - closed IPv6 is how
+     a router is meant to be, opened only where somebody wants it */
+  var V6 = {open: ['IPv6 open', 'ok'], blocked: ['IPv6 closed', 'dim'], unsure: ['IPv6: cannot tell', 'dim'], none: ['no IPv6', 'dim']};
+  var V6_WHY = 'UPnP asks for IPv4 only (AddPortMapping): the device did not ask for IPv6 - closed is the router\'s ' +
+               'default and is fine; open it only if you want the device reachable over IPv6.';
   var WAY = {rest: 'REST over HTTPS', api: 'the API (api-ssl)', ssh: 'ssh'};
   var STAGE = {'interface': 'Its interface', vrf: 'VRF', mangle: 'Mangle', 'routing-rule': 'Routing rule', route: 'Route', srcnat: 'srcnat'};
 
@@ -75,9 +79,9 @@
   function stepsOf(steps) {
     var list = el('div', 'steps');
     (steps || []).forEach(function (s) {
-      var row = el('div', 'step ' + (s.ok ? 'ok' : 'bad'));
+      var row = el('div', 'step ' + (s.ok ? 'ok' : (s.calm ? 'calm' : 'bad')));
       var mark = el('span', 'step-mark');
-      mark.innerHTML = iconMarkup(s.ok ? 'check' : 'cancel', 15);
+      mark.innerHTML = iconMarkup(s.ok ? 'check' : (s.calm ? 'lock' : 'cancel'), 15);
       row.appendChild(mark);
       var w = el('span', 'step-words');
       w.appendChild(el('b', '', s.what));
@@ -527,18 +531,20 @@
       (r.v6_each || []).forEach(function (e, i) {
         var ok = e.state === 'open';
         if (many && i) h6.el.appendChild(el('span', 'gx-hop-a gx-or', 'and'));
-        h6.hop((ok ? 'forward' : (e.state === 'blocked' ? 'dropped in forward' : 'forward ?')) + (e.rule && e.rule.n !== undefined && e.rule.n !== null ? ' #' + e.rule.n : ''),
-               ok ? 'ok' : (e.state === 'blocked' ? 'crit' : 'dim'), e.why, ruleGo('ipv6', 'filter', e.rule));
+        h6.hop((ok ? 'forward' : (e.state === 'blocked' ? 'closed by forward' : 'forward ?')) + (e.rule && e.rule.n !== undefined && e.rule.n !== null ? ' #' + e.rule.n : ''),
+               ok ? 'ok' : 'dim', e.why, ruleGo('ipv6', 'filter', e.rule));
         h6.hop('[' + e.addr + ']:' + (r.to_port || r.port), ok ? 'ok' : 'dim', e.why);
       });
       var t6 = el('div', 'gx-frow-t');
-      var c6 = copyBtn(r.v6_commands, 'Copy the IPv6 commands that would add what is missing');
+      var c6 = copyBtn(r.v6_commands, 'Copy the IPv6 commands that would open it over IPv6 too (optional)');
       if (c6) t6.appendChild(c6);
       var sh6 = iconButton('wall', 'Show its IPv6 rules in the firewall below');
       sh6.onclick = function (ev) { ev.stopPropagation(); showRules(r, 'ipv6'); };
       t6.appendChild(sh6);
       var st6 = el('div', 'gx-frow-st');
-      st6.appendChild(tag(V[0].replace(/^IPv6:? ?/, '') || V[0], V[1]));
+      var tg6 = tag(V[0].replace(/^IPv6:? ?/, '') || V[0], V[1]);
+      if (r.v6 === 'blocked') tg6.title = V6_WHY;
+      st6.appendChild(tg6);
       var d6 = dropBadge(r.drops6, r.v6 === 'open', 'IPv6');
       if (d6) st6.appendChild(d6);
       row6 = famRow('IPv6', V[1], [h6.el, st6, t6]);
@@ -593,12 +599,13 @@
         if (ed) b.appendChild(ed);
       } else {
         b.appendChild(noI18n(el('p', 'small muted', 'No NAT: from the internet' + ((r.v6_wan || []).length ? ' on ' + r.v6_wan.join(', ') : '') + ' straight to its own address' + (r.v6_each.length > 1 ? 'es' : '') + ', through the filter\'s forward chain.')));
-        b.appendChild(stepsOf((r.v6_each || []).map(function (e) { return {what: e.addr, ok: e.state === 'open', said: e.state + ' - ' + e.why}; })));
+        b.appendChild(stepsOf((r.v6_each || []).map(function (e) { return {what: e.addr, ok: e.state === 'open', calm: e.state !== 'open', said: (e.state === 'blocked' ? 'closed' : e.state) + ' - ' + e.why}; })));
         var neigh = /neighbour/.test(r.v6_source || '');
         b.appendChild(el('p', 'note' + (neigh ? ' warn' : ''), 'Where the addresses came from: ' + (r.v6_source || '?') + (neigh ? '. These may be temporary (privacy) addresses that change daily; the one its DHCPv6 gives it stays - set it in Gateway for devices.' : '.')));
         if (neigh) { var ed2 = editV6(r.device); if (ed2) b.appendChild(ed2); }
+        if (r.v6 === 'blocked') b.appendChild(el('p', 'note', V6_WHY));
         if ((r.v6_commands || []).length) {
-          b.appendChild(el('h4', 'gx-h4', 'What would put it right (IPv6)'));
+          b.appendChild(el('h4', 'gx-h4', 'If you want it reachable over IPv6 too (optional)'));
           b.appendChild(codeBlock(r.v6_commands.join('\n')));
         }
       }

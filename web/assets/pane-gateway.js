@@ -247,37 +247,80 @@
       v6Box.appendChild(ip6);
       var v6Seen = cmdButton('Use what is seen', 'search', 'small');
       var v6Said = el('div', 'muted small gw-v6-said');
-      var v6Chips = el('div', 'gw-v6-chips');
-      v6Seen.onclick = function () {
+            /* What is seen of its MAC (1.9.3): a list of its own under the form - the DHCPv6 and EUI-64 ones first, the
+         temporary (privacy) ones folded away; a row adds the address to the box, or takes it out again */
+      var v6Panel = el('section', 'gw-v6-panel');
+      v6Panel.hidden = true;
+      var V6K = {dhcpv6: ['DHCPv6', 'ok', 'given by the router\'s DHCPv6 - stays'],
+                 eui64: ['EUI-64', 'ok', 'made from its MAC - stays'],
+                 temporary: ['temporary', 'dim', 'a privacy address - changes about daily; not worth adding']};
+      var listed = function () { return ip6.value.split(/[\s,;]+/).filter(Boolean); };
+      var v6Row = function (a) {
+        var k = V6K[a.kind] || V6K.temporary;
+        var row = el('button', 'gw-v6-row');
+        row.type = 'button';
+        var mark = el('span', 'gw-v6-mark');
+        var addr = noI18n(el('span', 'gw-v6-ip mono', a.ip));
+        var kind = el('span', 'tag ' + k[1], k[0]);
+        var why = el('span', 'gw-v6-why small muted', k[2] + ' · ' + (a.where || ''));
+        var paint = function () {
+          var on = listed().indexOf(a.ip) >= 0;
+          row.classList.toggle('on', on);
+          mark.innerHTML = iconMarkup(on ? 'check' : 'add', 16);
+          row.title = on ? 'In the box - press to take it out' : 'Press to add it to the box';
+        };
+        row.appendChild(mark); row.appendChild(addr); row.appendChild(kind); row.appendChild(why);
+        row.onclick = function () {
+          var have = listed(), i = have.indexOf(a.ip);
+          if (i >= 0) have.splice(i, 1); else have.push(a.ip);
+          ip6.value = have.join(', ');
+          Array.prototype.forEach.call(v6Panel.querySelectorAll('.gw-v6-row'), function (r) { if (r._paint) r._paint(); });
+        };
+        row._paint = paint;
+        paint();
+        return row;
+      };
+      var v6Look = function (quiet) {
         var m = mac.value.trim();
-        if (!m) { v6Said.textContent = 'Its MAC first - the IPv6 addresses are found by it.'; return; }
+        if (!m) { if (!quiet) v6Said.textContent = 'Its MAC first - the IPv6 addresses are found by it.'; return; }
         busy(v6Seen, true);
         api('gateway', {action: 'v6_seen', mac: m}).then(function (r) {
-          v6Said.textContent = r.message || '';
-          clear(v6Chips);
-          (r.seen || []).forEach(function (a) {
-            var stable = /^stable/.test(a.kind || '');
-            var c = el('button', 'gw-v6-chip ' + (stable ? 'ok' : 'warn'));
-            c.type = 'button';
-            c.appendChild(noI18n(el('span', 'mono', a.ip)));
-            c.appendChild(el('span', 'small', stable ? 'stable (DHCPv6 or EUI-64)' : 'may be a temporary one'));
-            c.title = (a.kind || '') + ' · seen in ' + (a.where || '?') + ' - press to add it';
-            c.onclick = function () {
-              var have = ip6.value.split(/[\s,]+/).filter(Boolean);
-              if (have.indexOf(a.ip) < 0) have.push(a.ip);
-              ip6.value = have.join(', ');
-              c.classList.add('taken');
-            };
-            v6Chips.appendChild(c);
-          });
-        }).catch(oops).then(function () { busy(v6Seen, false); });
+          v6Said.textContent = '';
+          clear(v6Panel);
+          var seen = r.seen || [];
+          var head = el('div', 'gw-v6-head');
+          head.appendChild(el('h3', 'peek-h', 'IPv6 addresses seen of ' + m));
+          head.appendChild(el('span', 'small muted', seen.length ? 'press one to add it to the box above, again to take it out' : ''));
+          v6Panel.appendChild(head);
+          if (!seen.length) { v6Panel.appendChild(el('p', 'muted small', r.message || 'none seen')); v6Panel.hidden = false; return; }
+          var keep = seen.filter(function (a) { return a.kind !== 'temporary'; });
+          var temp = seen.filter(function (a) { return a.kind === 'temporary'; });
+          var list = el('div', 'gw-v6-list');
+          keep.forEach(function (a) { list.appendChild(v6Row(a)); });
+          if (!keep.length) list.appendChild(el('p', 'muted small', 'No stable one seen - only temporary ones. Its DHCPv6 address shows once the router gave it one.'));
+          v6Panel.appendChild(list);
+          if (temp.length) {
+            var det = el('details', 'gw-v6-temp');
+            det.appendChild(el('summary', 'small muted', temp.length + ' temporary (privacy) address(es) - change about daily'));
+            var tl = el('div', 'gw-v6-list');
+            temp.forEach(function (a) { tl.appendChild(v6Row(a)); });
+            det.appendChild(tl);
+            v6Panel.appendChild(det);
+          }
+          v6Panel.hidden = false;
+        }).catch(function (e) { if (!quiet) oops(e); }).then(function () { busy(v6Seen, false); });
       };
+      v6Seen.onclick = function () { v6Look(false); };
+      ip6.addEventListener('input', function () {
+        Array.prototype.forEach.call(v6Panel.querySelectorAll('.gw-v6-row'), function (r) { if (r._paint) r._paint(); });
+      });
       v6Box.appendChild(v6Seen);
       v6Box.appendChild(v6Said);
-      v6Box.appendChild(v6Chips);
       grid.appendChild(formField('IPv6 addresses', v6Box, 'Only to find it on the MikroTik (DHCPv6 address) - nothing in this server\'s firewall; IPv6 is never forwarded here. Comma or space between them. Empty: the router\'s IPv6 neighbour table is asked by its MAC - which may give temporary (privacy) addresses.'));
       grid.appendChild(formField('Forwarded', on, 'Off: kept in the list, not forwarded.'));
       body.appendChild(grid);
+      body.appendChild(v6Panel);
+      if (mac.value.trim()) v6Look(true);      /* what is seen of its MAC, at once and quietly */
       body.appendChild(el('h3', 'peek-h', 'Seen here - press one to take it'));
       var pick = el('div', 'gw-pick');
       pick.appendChild(el('p', 'muted small', 'Looking…'));

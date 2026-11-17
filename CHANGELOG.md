@@ -2,6 +2,17 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.9.4 (2026-11-17)
+
+- IPv6 on the MikroTik is information, not a fault: UPnP's AddPortMapping asks for an IPv4 port only, and a
+  router that lets no IPv6 in to a device is as it should be. The Ports tab's MikroTik column says IPv4 alone
+  (what the device asked for); Gateway → MikroTik shows IPv6 closed in grey with a lock and why ("the device
+  did not ask for IPv6 - open it only if you want it reachable over IPv6"), its commands as optional.
+- A device's IPv6 addresses seen (Gateway for devices → Edit): a list of their own under the form - looked up
+  at once by its MAC - instead of chips that stretched the fourth column: DHCPv6 and EUI-64 ones first, the
+  temporary (privacy) ones folded away; a row adds the address to the box and takes it out again. Which kind
+  an address is is now told by its interface half: 2001:db8:…:1::3 is a DHCPv6 one, not "a temporary one".
+
 ## 1.9.3 (2026-11-17)
 
 - Autorefresh never scrolls or jerks a page any more. Every redraw a timer starts is drawn as a refresh
