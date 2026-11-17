@@ -461,9 +461,10 @@ $('signout').onclick = function () {
   api('logout', {}).then(function () { location.reload(); }, function () { location.reload(); });
 };
 
-/* Your account: the passkeys of this account (otp 1.0.257) - while the second step is on and it is
-   a passkey. Each listed for the name of the pages it is for, named here, taken away (not the
-   last: that is the second step itself); another added from this device. */
+/* Your account: the passkeys of this account (otp 1.0.257) - while signing in with a passkey is on
+   (1.9.7: a sign-in by itself, not the second step). Each listed for the name of the pages it is for,
+   with when it last signed in, named here, taken away (the last one too: the password stays);
+   another added from this device. */
 function mePasskeys(body) {
   var sec = el('div', 'me-sec me-pk');
   sec.hidden = true;
@@ -475,10 +476,10 @@ function mePasskeys(body) {
   };
   var draw = function (d) {
     clear(sec);
-    if (!d || !d.on || !d.mine) { sec.hidden = true; return; }
+    if (!d || !d.on) { sec.hidden = true; return; }
     sec.hidden = false;
     sec.appendChild(el('h3', '', 'Passkeys - Face ID, Touch ID'));
-    sec.appendChild(el('p', 'note', 'A passkey is the second step after your password, with the face, a finger or the PIN of this device. It is kept in the device (on an iPad and an iPhone in the iCloud Keychain, so on your other Apple devices too); the server has only its public half.'));
+    sec.appendChild(el('p', 'note', 'A passkey signs you in to these pages by itself, instead of your password - with the face, a finger or the PIN of this device, and no name typed. It is kept in the device (on an iPad and an iPhone in the iCloud Keychain, so on your other Apple devices too); the server has only its public half. Your password still signs you in too.'));
     var t = el('table', 'rows me-pk-t');
     var hr = el('tr');
     ['Passkey', 'For', 'Added', 'Last used', ''].forEach(function (w) { hr.appendChild(el('th', '', w)); });
@@ -496,9 +497,7 @@ function mePasskeys(body) {
       tr.appendChild(stampCell(k.used));
       var act = el('td', 'me-pk-act');
       var ed = iconButton('edit', 'Name this passkey');
-      var rm = iconButton('trash', keys.length > 1 ? 'Take this passkey away'
-        : 'The last passkey is the second step of this account: another full admin resets it (Accounts)');
-      rm.disabled = keys.length <= 1;
+      var rm = iconButton('trash', 'Take this passkey away');
       ed.onclick = function () {
         if (nameTd.querySelector('input')) return;
         var box = textBox(k.name || '', 'iPad', '');
@@ -531,7 +530,8 @@ function mePasskeys(body) {
         modalOver(function () {
           confirmThen('Take the passkey away',
             'The passkey <b>' + htmlText(k.name || 'a device') + '</b> for ' + htmlText(k.host || '')
-            + ' no longer gives the second step of this account. The device keeps it until it is taken out there too.',
+            + ' no longer signs this account in' + (keys.length <= 1 ? ' - it is the last one: your password signs you in, as before' : '')
+            + '. The device keeps it until it is taken out there too.',
             'Take it away', function () {
               api('passkeys', {action: 'delete', id: k.id}).then(function (r) {
                 toast(r.message || 'taken away', 'good');
@@ -548,7 +548,8 @@ function mePasskeys(body) {
     t.appendChild(tb);
     var tw = el('div', 'after-lately-w me-pk-w');
     tw.appendChild(t);
-    sec.appendChild(tw);
+    if (keys.length) sec.appendChild(tw);
+    else sec.appendChild(el('p', 'muted small me-pk-none', 'No passkey yet - add the one of this device below.'));
     var said = el('div', 'said');
     var add = cmdButton('Add a passkey of this device', 'key', 'primary');
     add.type = 'button';

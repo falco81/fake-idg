@@ -28,6 +28,13 @@ if 'acme-challenge' not in t:
     if b and m:
         t = t[:m.start(1)] + b + t[m.start(1):]
         said.append("ACME's HTTP-01 on port 80")
+if 'api=passkey-login' not in t:
+    # 1.9.7: a passkey's sign-in counted with the password's (the same zone, by address)
+    m = re.search(r'(?m)^(\s*)"~\(\^\|&\)api=login\(&\|\$\)"(\s+)\$binary_remote_addr;\n', t)
+    if m:
+        line = '%s"~(^|&)api=passkey-login(&|$)"%s$binary_remote_addr;\n' % (m.group(1), m.group(2))
+        t = t[:m.end()] + line + t[m.end():]
+        said.append("a passkey's sign-in in the sign-in rate limit")
 if said:
     open(p, 'w').write(t)
 print('; '.join(said))

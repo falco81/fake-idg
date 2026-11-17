@@ -2,6 +2,44 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.9.7 (2026-11-17)
+
+- **Sign in with Face ID, Touch ID or Windows Hello (a passkey)** - instead of the password, no longer the second
+  step after it. *Settings → Accounts → "Sign in with Face ID, Touch ID or Windows Hello (a passkey)"* (off by
+  default, on its own - not under the second step): the sign-in page shows **Sign in with Face ID, Touch ID or
+  Windows Hello** under the password form; no name typed - the device offers the passkeys it keeps for this name of
+  the pages (discoverable keys), and the face, a finger or its PIN is asked there. A sign-in with a passkey is whole
+  by itself (the device holding the key, and the face, finger or PIN it checks): no code of the second step is asked
+  after it, even while the second step is on. The password signs in as before. Offered only on the pages opened by
+  a name over HTTPS; opened by an address the button is dimmed and says why.
+- **The checks**, as before (igd_webauthn.py, standard library only): the question kept by the server (bound to the
+  address that asked, used once, five minutes; 20 waiting from one address at most), the origin and the name of the
+  pages, the user present and verified, the signature (ES256, RS256, EdDSA), the counter (a copied passkey refused,
+  said in the events), the account the device names (user handle). The key is found among every account's; an
+  account switched off signs in with none. A wrong answer is counted as a wrong password is (the address, and the
+  name once the key told it; the address alone before) and locks out the same way. The sign-in gets a new token in
+  an HttpOnly, SameSite=Strict cookie (Secure over HTTPS), never shown to the page, and lasts as a password's.
+  Events: "NAME signed in with a passkey (DEVICE) from ADDRESS", and each refusal with its reason. nginx counts
+  `api=passkey-login` with the sign-in's limit.
+- **Your account → Passkeys**: add one of this device (a discoverable key, user verification required; within 15
+  minutes of signing in; 10 at most; one credential belongs to one account), name it, take it away - the last one
+  too (asked twice; the password still signs in). When each was added and last used.
+- **Accounts**: "Signs in" says "N passkeys" (of which devices, pointed at); a new row button (the key) takes every
+  passkey of an account away (a lost phone). `upnp user list` has a PASSKEYS column; `upnp user passkeys NAME` lists
+  them, `--remove-all` takes them away. Resetting the second step (Accounts, `upnp user reset-2fa NAME`) takes the
+  app only - the passkeys stay.
+- **The second step is the app again** (the authenticator app's code): a passkey is neither offered nor set up nor
+  asked there.
+- **From 1.9.2-1.9.6**: an account whose second step was a passkey keeps its passkeys - they sign it in by
+  themselves now (moved to the account's own place, merged, never lost); its second step is cleared, so with the
+  second step on it sets up the app at its next sign-in with the password (said in the events). The setting
+  "...with Face ID, Touch ID or Windows Hello (a passkey)" becomes "Sign in with Face ID, Touch ID or Windows
+  Hello" with the same value.
+- Kept in the database (users.passkeys, and a table `challenges`), so in every backup; added to an older database
+  when it opens.
+- An upgrade puts the passkey's sign-in into the sign-in rate limit of an nginx config already in place
+  (nginx_additions.py), as a new install has it.
+
 ## 1.9.6 (2026-11-17)
 
 - Gateway → MikroTik has one button that reads: "Read it now" in the router's strip (full admins) asks fake-igd to

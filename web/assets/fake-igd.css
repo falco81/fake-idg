@@ -2066,6 +2066,12 @@ table td.mono, table td > .mono, table td > span.mono, .fields dd{white-space:no
 /* the person card: a group that lets into a realm, in green (1.0.19) */
 .me-group.gives.realm{border-color:rgba(63,185,80,.5);background:var(--ok-bg, rgba(63,185,80,.1))}
 .me-group.gives.realm .gwhy{color:var(--ok)}
+/* The sign-in page: a passkey instead of the password (1.9.7) - otp's krb-box, "or" and a button */
+.pk-box{margin-top:2px;display:flex;flex-direction:column;gap:10px}
+.pk-box .btn{width:100%;justify-content:center}
+.pk-or{display:flex;align-items:center;gap:10px;color:var(--tx-dim);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+.pk-or::before,.pk-or::after{content:'';flex:1;border-top:1px solid var(--line)}
+body.mfa-on .pk-box{display:none}
 /* Your account - the passkeys (1.0.257) */
 .me-pk-t{width:100%;margin:6px 0 10px}
 .me-pk-t td.me-pk-act{text-align:right;white-space:nowrap;width:1%}

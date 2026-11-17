@@ -91,6 +91,29 @@ if (isset($_GET['api'])) {
         echo json_encode(is_array($data) ? $data : ['ok' => false, 'error' => 'sign-in failed']);
         exit;
     }
+    if ($what === 'passkey-login' && $post) {
+        /* Signing in with a passkey (1.9.7): the API checks the device's answer and opens a sign-in
+           of its own - its cookie set here, as the password's, the token never shown to the page.
+           Counted by nginx with api=login's (deploy/nginx-fake-igd.conf). */
+        header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');
+        [$status, $body] = igd_call('/api/auth/passkey-login', 'POST', sent_json(), 30.0);
+        if ($status === 0) {
+            igd_down_answer();
+            exit;
+        }
+        $data = json_decode($body, true);
+        if (is_array($data) && array_key_exists('token', $data)) {
+            if ($status === 200 && is_string($data['token']) && $data['token'] !== '') {
+                igd_set_session($data['token']);
+            }
+            unset($data['token']);
+            $body = (string) json_encode($data);
+        }
+        http_response_code($status);
+        echo $body;
+        exit;
+    }
     if ($what === 'mfa' && $post) {
         /* The second step given (otp 1.0.149, 1.9.2): the API ends the sign-in the password opened
            and hands a new one - its cookie set here, the token never shown to the page. */
@@ -179,6 +202,13 @@ $mfa = '';
 if (!$me && igd_session() !== '') {
     $pending = igd_get('/api/auth/whoami', 5.0);
     $mfa = is_array($pending) ? (string) ($pending['mfa'] ?? '') : '';
+}
+/* Signing in with a passkey offered (1.9.7): switched on (Settings - Accounts); whether this
+   browser can is the page's to tell (pkCan). */
+$pk_on = false;
+if (!$me) {
+    $pk = igd_get('/api/auth/passkey-login', 5.0);
+    $pk_on = is_array($pk) && !empty($pk['on']);
 }
 $health  = igd_get('/api/health', 5.0);
 $alive   = is_array($health);
@@ -273,6 +303,16 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
         d="M18 9l3 3-3 3"/></svg><span>Sign in</span></button>
       <div class="said" id="in-said"></div>
     </form>
+    <?php if ($pk_on): ?>
+    <div id="pk-box" class="pk-box"<?= $mfa !== '' ? ' hidden' : '' ?>>
+      <div class="pk-or"><span>or</span></div>
+      <button class="btn cmd" type="button" id="pk-go"><svg viewBox="0 0 24 24" width="17" height="17"
+        fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"
+        aria-hidden="true"><circle cx="8" cy="12" r="3.2"/><path d="M11.2 12H21"/><path d="M17 12v3"/></svg><span>Sign
+        in with Face ID, Touch ID or Windows Hello</span></button>
+      <div class="said" id="pk-said"></div>
+    </div>
+    <?php endif; ?>
     <div style="margin-top:14px;display:flex;justify-content:space-between;align-items:center">
       <span class="muted small">fake-igd <?= h(IGD_VERSION) ?></span>
     </div>
@@ -292,7 +332,7 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     var words = go.querySelector('span');
     words.textContent = 'Signing in…';
     api('login', {name: $('in-name').value, password: $('in-pass').value}).then(function (d) {
-      if (d && d.mfa) { form.hidden = true; mfaStep(); return; }
+      if (d && d.mfa) { form.hidden = true; if ($('pk-box')) $('pk-box').hidden = true; mfaStep(); return; }
       said.className = 'said good';
       said.textContent = 'Welcome back.';
       location.reload();
@@ -307,6 +347,8 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
   });
   if ($('mfa-box').dataset.stage) mfaStep();
   else $('in-name').focus();
+  /* A passkey instead of the password (1.9.7) - where this browser can give one. */
+  if ($('pk-box')) pkSignInBox($('pk-go'), $('pk-said'));
   /* An upgrade going on (1.7.2): followed here, and the page loaded again once the API is back. */
   if ($('up-signin')) {
     var back = function () {

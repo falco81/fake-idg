@@ -569,6 +569,29 @@ def cmd_user(M, args, cfg):
     what = args.what or "list"
     what = {"disable": "off", "enable": "on", "lockouts-clear": "clear", "unlock": "clear"}.get(what, what)
     p = M.PAL
+    if what == "passkeys" and not getattr(args, "remove_all", False):
+        # The passkeys of one account (1.9.7): read only, as list is.
+        if not args.name:
+            M.fail("which account? upnp user passkeys NAME [--remove-all]")
+
+        def look():
+            s = store_of(M, cfg)
+            if not s.user(args.name):
+                M.fail("there is no account %s" % args.name)
+            keys = s.passkeys(args.name)
+            if args.json:
+                print(json.dumps([{k: v for k, v in x.items() if k != "pub"} for x in keys], indent=2, default=str))
+                return 0
+            M.table(["PASSKEY", "FOR", "ADDED", "LAST USED", "ID"],
+                    [[M.col(k.get("name") or "a device", M.C.bold), "https://%s/" % (k.get("host") or "?"),
+                      _when(k.get("at")), _when(k.get("used")) if k.get("used") else "-",
+                      M.col(str(k.get("id") or "")[:16] + "…", M.C.dim)] for k in keys],
+                    "%s has no passkey%s" % (args.name, "" if s.policy()["passkey_signin"] else
+                                             " (and signing in with one is switched off)"))
+            return 0
+        if os.geteuid() != 0 and not os.access(os.path.join(cfg["state_dir"], "fake-igd.db"), os.R_OK):
+            M.require_root("The accounts of the web pages")
+        return as_app(look)
     if what in ("list", "sessions", "lockouts"):
         def go():
             s = store_of(M, cfg)
@@ -603,14 +626,15 @@ def cmd_user(M, args, cfg):
                 print(json.dumps(rows, indent=2, default=str))
                 return 0
             on = s.policy()["admin_2fa"]
-            M.table(["NAME", "ROLE", "STATE", "SECOND STEP", "SIGNED IN NOW", "LAST SIGN-IN", "FROM", "NOTE"],
+            M.table(["NAME", "ROLE", "STATE", "SECOND STEP", "PASSKEYS", "SIGNED IN NOW", "LAST SIGN-IN", "FROM", "NOTE"],
                     [[M.col(r["name"], M.C.bold),
                       M.col(r["role_words"], M.C.magenta if r["role"] == "fulladmin" else M.C.dim),
                       (M.col("off", M.C.red) if r["disabled"] else M.col("on", M.C.green))
                       + (" (to change its password)" if r["must_change"] else ""),
-                      M.col({"app": "an app", "passkey": "a passkey (%d)" % (r["mfa"].get("keys") or 0)}.get(
-                          r["mfa"]["kind"], r["mfa"]["kind"]), M.C.green) if r["mfa"]
+                      M.col({"app": "an app"}.get(r["mfa"]["kind"], r["mfa"]["kind"]), M.C.green) if r["mfa"]
                       else ("set up at the next sign-in" if on else "-"),
+                      M.col("%d passkey%s" % (r["passkeys"], "" if r["passkeys"] == 1 else "s"), M.C.green)
+                      if r["passkeys"] else "-",
                       M.col(r["sessions"], M.C.green) if r["sessions"] else M.col("-", M.C.dim),
                       _when(r["last_login"]), r["last_from"] or "-", r["note"] or ""] for r in rows],
                     "no account yet - make one: sudo upnp user add NAME")
@@ -620,7 +644,7 @@ def cmd_user(M, args, cfg):
         return as_app(go)
     M.require_root("Changing the accounts of the web pages")
     name = args.name
-    if what in ("add", "passwd", "role", "del", "note", "off", "on", "reset-2fa", "must-change") and not name:
+    if what in ("add", "passwd", "role", "del", "note", "off", "on", "reset-2fa", "must-change", "passkeys") and not name:
         M.fail("which account? upnp user %s NAME" % what)
     pw, made = ("", False)
     if what in ("add", "passwd"):
@@ -629,6 +653,10 @@ def cmd_user(M, args, cfg):
         least = as_app_value(lambda: store_of(M, cfg).policy()["password_min"])
         pw, made = _password_from(M, args.password, name, least)
     if what == "del" and not args.yes and not _ask("take the account %s away?" % name):
+        print("  nothing done")
+        return 1
+    if what == "passkeys" and not args.yes and not _ask(
+            "every passkey of %s is taken away (the password still signs in). Go on?" % name):
         print("  nothing done")
         return 1
     if what == "reset-2fa" and not args.yes and not _ask(
@@ -676,6 +704,11 @@ def cmd_user(M, args, cfg):
                             "warn", by)
                 M.ok("the second step of %s is reset: set up again at the next sign-in" % name if had
                      else "%s had no second step set up" % name)
+            elif what == "passkeys":
+                n = s.passkeys_remove(name)
+                if n:
+                    s.add_event("account", "%s took every passkey of %s away (%d)" % (by, name, n), "warn", by)
+                M.ok("the passkeys of %s are taken away (%d)" % (name, n) if n else "%s has no passkey" % name)
             elif what == "del":
                 s.delete_user(name)
                 try:                          # its own layout of the tables goes with it (as on the pages)

@@ -1,26 +1,30 @@
 #!/usr/bin/env python3
-"""test_webauthn.py - a passkey as the second step of the pages (1.9.2), against a device made here.
+"""test_webauthn.py - signing in to the pages with a passkey (1.9.7; the second step 1.9.2-1.9.6), against a
+device made here.
 
   python3 test/webauthn/test_webauthn.py         (from the source tree; `cryptography` is used when the
                                                  system has it for RS256 and EdDSA, ES256 is signed here)
 
-A device (an authenticator) is played by this file: it makes a key, answers navigator.credentials
-.create() and .get() as a browser would hand them to the pages - the clientDataJSON, the CBOR of the
-attestation, the authenticator's data, the signature - and these are given to the API's own functions
-(api_people.mfa_post, pk_do ...) with a real igd_store on a database of its own. What it proves:
+A device (an authenticator) is played by this file: it makes a discoverable key, answers
+navigator.credentials.create() and .get() as a browser would hand them to the pages - the clientDataJSON, the
+CBOR of the attestation, the authenticator's data, the signature, the user handle - and these are given to
+the API's own functions (api_people.pk_signin, pk_do, mfa_post ...) with a real igd_store on a database of its
+own. What it proves:
 
-  - register and sign in with ES256 (signed by the P-256 lines below, no package), RS256 and EdDSA
+  - Your account adds a passkey (resident key and user verification required), names it, takes it away -
+    the last one too; ES256 (signed by the P-256 lines below, no package), RS256 and EdDSA
+  - a sign-in by the passkey alone, no name typed: the key found among every account's, a new sign-in
+    (token) of the same lifetime as a password's - and no second step after it, even with admin_2fa on
   - every refusal: a bad signature, another origin (http://, another name, another port), another RP ID,
-    another question, the answer given twice, the answer after the question was taken by a wrong one,
-    the user not present, the user not verified, the counter going back (a copied passkey), a key of
-    another account, a passkey of another name
-  - wrong answers counted as wrong codes: the fifth ends the sign-in, the address and the name counted
-  - offered only by a name: not on an address, not with nothing, not switched off; never without the app
-  - Your account: the list, Add (only soon after the second step), the name, taken away, never the last,
-    10 at most, the same device twice refused
-  - the reset (Accounts, as upnp user reset-2fa) takes the passkeys too
-  - the second step given (app or passkey, set up or given) opens a sign-in with a NEW token: the
-    password-only one is refused at once, for the pages and for the second step alike
+    another question, the answer given twice, an answer from another address, the user not present, not
+    verified, the counter going back, a key nobody has, a key taken away, another account's user handle, an
+    account switched off, a name or an address locked out - each counted as a wrong password is
+  - offered only by a name and only while switched on
+  - the second step is the app alone now: no passkey offered, set up or taken there; a sign-in that gives it
+    gets a NEW token, the password-only one refused at once
+  - from 1.9.2-1.9.6: a passkey kept as the second step becomes a passkey that signs in (never lost), the
+    second step cleared; the setting admin_2fa_passkey becomes passkey_signin
+  - Accounts and upnp user take an account's passkeys away; a reset of the second step leaves them
   - the bounds of otp 1.0.254 / 1.0.262: CBOR too deep, a huge RSA key or exponent, a short RSA key
 """
 import base64
@@ -144,6 +148,7 @@ class Device(object):
 
     def create(self, opts, origin=ORIGIN, rp_id=None, flags=0x45, kind="webauthn.create", challenge=None):
         o = opts["publicKey"]
+        self.user = o["user"]["id"]          # kept by a discoverable key, said back at each sign-in
         cd = json.dumps({"type": kind, "challenge": challenge or o["challenge"], "origin": origin,
                          "crossOrigin": False}).encode()
         ad = self._ad(rp_id or o["rp"]["id"], flags, with_key=True)
@@ -151,7 +156,7 @@ class Device(object):
         return {"device": "Test device", "clientDataJSON": b64(cd), "attestationObject": b64(att)}
 
     def get(self, opts, origin=ORIGIN, rp_id=None, flags=0x05, kind="webauthn.get", challenge=None,
-            bad_sig=False, count=None):
+            bad_sig=False, count=None, user=None):
         o = opts["publicKey"]
         cd = json.dumps({"type": kind, "challenge": challenge or o["challenge"], "origin": origin}).encode()
         ad = self._ad(rp_id or o["rpId"], flags)
@@ -161,7 +166,8 @@ class Device(object):
         if bad_sig:
             sig = self.sign(ad + hashlib.sha256(cd + b" ").digest())
         return {"id": b64(self.cid), "clientDataJSON": b64(cd), "authenticatorData": b64(ad),
-                "signature": b64(sig)}
+                "signature": b64(sig), "userHandle": user if user is not None else getattr(self, "user", ""),
+                "challenge": o["challenge"]}
 
 
 # ---- the API's functions, as fake_igd_api.py calls them ---------------------------------------------
@@ -178,10 +184,10 @@ class Handler(object):
 
 
 class Pages(object):
-    """One browser: its cookie (the token) and the name it opened the pages by."""
+    """One browser: its cookie (the token), the name it opened the pages by, its address."""
 
     def __init__(self, store, host=HOST, addr="192.0.2.7"):
-        self.S, self.host, self.addr, self.token = store, host, addr, ""
+        self.S, self.host, self.addr, self.token, self.old = store, host, addr, "", ""
 
     def call(self, fn, body=None, signed_in=False):
         import igd_panes as PN
@@ -193,20 +199,33 @@ class Pages(object):
                      {"site_name": "lab"}, AP, self.S.add_event)
         return fn(ctx)
 
-    def login(self, name="admin", pw="secret123"):
-        got = self.call(AP.login, {"name": name, "password": pw})
-        self.token = got["token"]
-        return got
-
-    def mfa(self, body=None):
-        got = self.call(AP.mfa_post if body is not None else AP.mfa_get, body)
+    def _cookie(self, got):
+        # As index.php does (?api=login, ?api=mfa, ?api=passkey-login): the token into the cookie,
+        # never to the page.
         if isinstance(got, dict) and got.get("token"):
-            # As index.php does: the new token into the cookie, never to the page (otp 1.0.149).
             self.old, self.token = self.token, got.pop("token")
         return got
 
+    def login(self, name="admin", pw="secret123"):
+        return self._cookie(self.call(AP.login, {"name": name, "password": pw}))
+
+    def mfa(self, body=None):
+        return self._cookie(self.call(AP.mfa_post if body is not None else AP.mfa_get, body))
+
     def pk(self, body=None):
         return self.call(AP.pk_do if body is not None else AP.pk_list, body, signed_in=True)
+
+    def offered(self):
+        return self.call(AP.pk_signin_get)
+
+    def begin(self):
+        return self.call(AP.pk_signin, {"action": "begin"})
+
+    def finish(self, answer):
+        return self._cookie(self.call(AP.pk_signin, dict(answer, action="finish")))
+
+    def pk_sign_in(self, dev, **kw):
+        return self.finish(dev.get(self.begin(), **kw))
 
 
 class Base(unittest.TestCase):
@@ -215,93 +234,83 @@ class Base(unittest.TestCase):
         self.S = ST.Store(os.path.join(self.dir, "t.db"))
         self.S.add_user("admin", "secret123", "fulladmin")
         self.S.add_user("viewer", "secret123", "readonly")
-        self.on(True, True)
+        self.on(False, True)
 
     def tearDown(self):
         self.S.close()
 
     def on(self, two, pk):
-        self.S.set_meta("settings", json.dumps({"admin_2fa": two, "admin_2fa_passkey": pk}))
+        self.S.set_meta("settings", json.dumps({"admin_2fa": two, "passkey_signin": pk}))
 
-    def enrol(self, dev, p=None, name="admin"):
-        p = p or Pages(self.S)
-        self.assertEqual(p.login(name)["mfa"], "enrol")
-        opts = p.mfa({"action": "enrol_start", "kind": "passkey"})
-        got = p.mfa(dict(dev.create(opts), action="enrol_confirm"))
-        self.assertTrue(got["done"])
-        self.assertTrue(self.S.session(p.token))
+    def add(self, dev, name="admin", p=None):
+        """The device's passkey added under Your account of a sign-in with the password."""
+        if p is None:
+            p = Pages(self.S)
+            self.assertEqual(p.login(name)["mfa"], "")
+        opts = p.pk({"action": "add_begin"})
+        got = p.pk(dict(dev.create(opts), action="add_finish"))
+        self.assertIn(dev_id(dev), [k["id"] for k in got["keys"]])
         return p
 
-    def sign_in(self, dev, p=None, **kw):
-        p = p or Pages(self.S)
-        self.assertEqual(p.login()["mfa"], "check")
-        opts = p.mfa({"action": "pk_begin"})
-        return p, opts, p.mfa(dict(dev.get(opts, **kw), action="check"))
+    def wrongs(self, what="password"):
+        return self.S.one("SELECT COUNT(*) AS n FROM fails WHERE what = ?", (what,))["n"]
 
-    def refused(self, p, words, body):
-        with self.assertRaises(ValueError) as e:
-            p.mfa(body)
-        self.assertIn(words, str(e.exception))
-        self.assertIsNone(self.S.session(p.token))
-        return str(e.exception)
-
-    def wrongs(self):
-        return self.S.one("SELECT COUNT(*) AS n FROM fails WHERE what = 'code'")["n"]
+    def events(self, n=30):
+        return " ".join(e["words"] for e in self.S.events(limit=n)["events"])
 
 
-class Register(Base):
-    def test_es256_whole_way(self):
+def dev_id(dev):
+    return b64(dev.cid)
+
+
+class Add(Base):
+    def test_options_ask_a_discoverable_verified_key(self):
+        p = Pages(self.S)
+        p.login()
+        o = p.pk({"action": "add_begin"})["publicKey"]
+        self.assertEqual(o["authenticatorSelection"], {"userVerification": "required", "residentKey": "required",
+                                                       "requireResidentKey": True})
+        self.assertEqual(o["rp"]["id"], HOST)
+        self.assertEqual(o["user"]["id"], WA.wa_user_id("admin"))
+
+    def test_es256_add_and_sign_in(self):
         dev = Device(-7)
-        p = self.enrol(dev)
-        rec = self.S.mfa_get("admin")
-        self.assertEqual(rec["kind"], "passkey")
-        self.assertEqual(rec["keys"][0]["host"], HOST)
-        self.assertEqual(rec["keys"][0]["alg"], -7)
-        # only the public half: what is kept, and nothing of the private key
-        self.assertEqual(sorted(rec["keys"][0]), ["alg", "at", "backed_up", "count", "host", "id", "name", "pub",
-                                                  "used"])
-        self.assertNotIn(b64(dev.d.to_bytes(32, "big")), json.dumps(rec))
-        self.assertTrue(self.S.session(p.token)["mfa_at"])
+        self.add(dev)
+        keys = self.S.passkeys("admin")
+        self.assertEqual(len(keys), 1)
+        self.assertEqual(sorted(keys[0]), ["alg", "at", "backed_up", "count", "host", "id", "name", "pub", "used"])
+        self.assertNotIn(b64(dev.d.to_bytes(32, "big")), json.dumps(keys))      # only the public half
+        self.assertEqual(self.S.mfa_get("admin"), {})                           # not the second step
         u = [x for x in self.S.users() if x["name"] == "admin"][0]
-        self.assertEqual(u["mfa"]["kind"], "passkey")
-        self.assertIn("Test device · fakeigd.test", u["mfa"]["dest"])
-        ev = [e["words"] for e in self.S.events(limit=20)["events"]]
-        self.assertTrue(any("set up the second step of signing in: a passkey" in w and "https://fakeigd.test/" in w
-                            for w in ev), ev)
-        # and signs in with it
-        p2, opts, got = self.sign_in(dev)
-        self.assertTrue(got["done"])
-        self.assertEqual(opts["publicKey"]["rpId"], HOST)
-        self.assertEqual(opts["publicKey"]["userVerification"], "required")
-        self.assertTrue(self.S.session(p2.token))
-        self.assertTrue(self.S.mfa_get("admin")["keys"][0]["used"])
-        self.assertEqual(self.S.mfa_get("admin")["keys"][0]["count"], dev.count)
-        self.assertIn("gave the second step (a passkey (Test device))",
-                      " ".join(e["words"] for e in self.S.events(limit=5)["events"]))
+        self.assertEqual((u["passkeys"], u["passkeys_said"]), (1, "Test device · fakeigd.test"))
+        p = Pages(self.S)
+        got = p.pk_sign_in(dev)
+        self.assertEqual((got["who"]["name"], got["mfa"]), ("admin", ""))
+        me = self.S.session(p.token)
+        self.assertEqual(me["name"], "admin")
+        self.assertTrue(self.S.passkeys("admin")[0]["used"])
+        self.assertIn("admin signed in with a passkey (Test device) from 192.0.2.7", self.events())
+        self.assertIn("added a passkey (Test device, for https://fakeigd.test/)", self.events())
 
     @unittest.skipUnless(HAVE_CRYPTO, "cryptography is not here")
     def test_rs256_and_eddsa(self):
         for alg in (-257, -8):
-            self.S.mfa_reset("admin")
             dev = Device(alg)
-            self.enrol(dev)
-            self.assertEqual(self.S.mfa_get("admin")["keys"][0]["alg"], alg)
-            _p, _o, got = self.sign_in(dev)
-            self.assertTrue(got["done"])
+            self.add(dev)
             p = Pages(self.S)
-            p.login()
-            opts = p.mfa({"action": "pk_begin"})
-            self.refused(p, "signature is not right", dict(dev.get(opts, bad_sig=True), action="check"))
+            self.assertEqual(p.pk_sign_in(dev)["who"]["name"], "admin")
+            with self.assertRaises(ValueError) as e:
+                Pages(self.S).pk_sign_in(dev, bad_sig=True)
+            self.assertIn("signature is not right", str(e.exception))
 
     @unittest.skipUnless(HAVE_CRYPTO, "cryptography is not here")
     def test_es256_by_cryptography(self):
         """A key made and signed by the `cryptography` package, checked by the lines of igd_webauthn."""
         k = ec.generate_private_key(ec.SECP256R1())
         pn = k.public_key().public_numbers()
-        msg = b"the pages"
-        sig = k.sign(msg, ec.ECDSA(hashes.SHA256()))
-        self.assertTrue(WA.wa_es256_ok(pn.x.to_bytes(32, "big"), pn.y.to_bytes(32, "big"), msg, sig))
-        self.assertFalse(WA.wa_es256_ok(pn.x.to_bytes(32, "big"), pn.y.to_bytes(32, "big"), msg + b"!", sig))
+        sig = k.sign(b"the pages", ec.ECDSA(hashes.SHA256()))
+        self.assertTrue(WA.wa_es256_ok(pn.x.to_bytes(32, "big"), pn.y.to_bytes(32, "big"), b"the pages", sig))
+        self.assertFalse(WA.wa_es256_ok(pn.x.to_bytes(32, "big"), pn.y.to_bytes(32, "big"), b"the pages!", sig))
 
     def test_eddsa_without_the_package(self):
         if not HAVE_CRYPTO:
@@ -317,351 +326,269 @@ class Register(Base):
         finally:
             WA._ed_crypto = was
 
-    def test_register_refusals(self):
-        cases = [
-            ("not from these pages", dict(origin="http://fakeigd.test")),
-            ("not from these pages", dict(origin="https://evil.test")),
-            ("not from these pages", dict(origin="https://fakeigd.test:8443")),
-            ("for another name", dict(rp_id="evil.test")),
-            ("another question", dict(challenge=b64(b"x" * 32))),
-            ("not of this step", dict(kind="webauthn.get")),
-            ("nobody was there", dict(flags=0x44)),
-            ("did not check who it was", dict(flags=0x41)),
-            ("gave no key", dict(flags=0x05)),
-        ]
-        for words, kw in cases:
-            p = Pages(self.S)
-            p.login()
-            opts = p.mfa({"action": "enrol_start", "kind": "passkey"})
+    def test_add_refusals(self):
+        p = Pages(self.S)
+        p.login()
+        for words, kw in (("not from these pages", dict(origin="https://evil.test")),
+                          ("not from these pages", dict(origin="http://fakeigd.test")),
+                          ("for another name", dict(rp_id="evil.test")),
+                          ("another question", dict(challenge=b64(b"x" * 32))),
+                          ("did not check who it was", dict(flags=0x41)),
+                          ("nobody was there", dict(flags=0x44))):
+            opts = p.pk({"action": "add_begin"})
             with self.assertRaises(ValueError) as e:
-                p.mfa(dict(Device(-7).create(opts, **kw), action="enrol_confirm"))
-            self.assertIn(words, str(e.exception), kw)
-            self.assertIn("the passkey was not taken", str(e.exception))
-            self.assertEqual(self.S.mfa_get("admin"), {})
-            self.assertIsNone(self.S.session(p.token))
-        self.assertEqual(self.wrongs(), len(cases))
+                p.pk(dict(Device(-7).create(opts, **kw), action="add_finish"))
+            self.assertIn(words, str(e.exception))
+        self.assertEqual(self.S.passkeys("admin"), [])
+        # the answer once
+        dev = Device(-7)
+        opts = p.pk({"action": "add_begin"})
+        ans = dict(dev.create(opts), action="add_finish")
+        p.pk(ans)
+        with self.assertRaises(ValueError) as e:
+            p.pk(ans)
+        self.assertIn("old question", str(e.exception))
+        # the same device twice, and another account's key
+        opts = p.pk({"action": "add_begin"})
+        self.assertEqual([c["id"] for c in opts["publicKey"]["excludeCredentials"]], [dev_id(dev)])
+        with self.assertRaises(ValueError) as e:
+            p.pk(dict(dev.create(opts), action="add_finish"))
+        self.assertIn("has a passkey for this account already", str(e.exception))
+        v = Pages(self.S)
+        v.login("viewer")
+        with self.assertRaises(ValueError) as e:
+            v.pk(dict(dev.create(v.pk({"action": "add_begin"})), action="add_finish"))
+        self.assertIn("another account's already", str(e.exception))
 
-    def test_register_answer_once(self):
-        p = Pages(self.S)
-        p.login()
-        opts = p.mfa({"action": "enrol_start", "kind": "passkey"})
-        ans = dict(Device(-7).create(opts), action="enrol_confirm")
-        self.assertTrue(p.mfa(ans)["done"])
-        # the same answer again: the sign-in is open now, nothing to give
+    def test_rename_delete_the_last_too(self):
+        dev = Device(-7)
+        p = self.add(dev)
+        kid = dev_id(dev)
+        self.assertEqual(p.pk({"action": "rename", "id": kid, "name": "  my   iPhone "})["keys"][0]["name"], "my iPhone")
         with self.assertRaises(ValueError):
-            p.mfa(ans)
-        # an answer to an old question in a new sign-in of another account set up nothing
-        p2 = Pages(self.S)
-        p2.login("viewer")
+            p.pk({"action": "rename", "id": kid, "name": "  "})
+        self.assertEqual(p.pk({"action": "delete", "id": kid})["keys"], [])    # the last one: the password stays
         with self.assertRaises(ValueError) as e:
-            p2.mfa(ans)
-        self.assertIn("choose a way first", str(e.exception))
-        self.assertEqual(self.S.mfa_get("viewer"), {})
+            Pages(self.S).pk_sign_in(dev)
+        self.assertIn("signs nobody in", str(e.exception))
+        self.assertEqual(Pages(self.S).login()["who"]["name"], "admin")
+        self.assertIn("took a passkey away (my iPhone", self.events())
 
-    def test_register_late(self):
+    def test_only_soon_after_signing_in(self):
         p = Pages(self.S)
         p.login()
-        opts = p.mfa({"action": "enrol_start", "kind": "passkey"})
-        s, _a = self.S.pending(p.token)
-        new = s["data"]["mfa_new"]
-        new["t"] -= WA.WA_CHALLENGE_S + 1
-        self.S.pending_merge(p.token, {"mfa_new": new})
-        with self.assertRaises(ValueError) as e:
-            p.mfa(dict(Device(-7).create(opts), action="enrol_confirm"))
-        self.assertIn("took too long", str(e.exception))
+        self.S.run("UPDATE sessions SET created = created - ?", (AP.PK_ADD_FRESH + 5,))
+        d = p.pk()
+        self.assertFalse(d["can_add"])
+        self.assertIn("within 15 minutes", d["why"])
+        with self.assertRaises(ValueError):
+            p.pk({"action": "add_begin"})
 
-
-class Offered(Base):
-    def test_only_by_a_name(self):
-        for host, offered in ((HOST, True), ("fakeigd.test:8443", True), ("localhost", True),
-                              ("127.0.0.1", False), ("127.0.0.1:8099", False), ("[::1]:443", False),
-                              ("", False), ("1.2.3", False), ("a..b", False), ("-a.test", False)):
-            p = Pages(self.S, host=host)
-            p.login()
-            self.assertEqual("passkey" in p.mfa()["methods"], offered, host)
-            self.assertIn("app", p.mfa()["methods"])
-            if not offered:
-                with self.assertRaises(ValueError) as e:
-                    p.mfa({"action": "enrol_start", "kind": "passkey"})
-                self.assertIn("not offered", str(e.exception))
-
-    def test_origin_of_a_port(self):
-        self.assertEqual(WA.wa_host("fakeigd.test:8443"), ("fakeigd.test", "https://fakeigd.test:8443"))
-        self.assertEqual(WA.wa_host("FakeIGD.test:443"), ("fakeigd.test", "https://fakeigd.test"))
+    def test_ten_at_most_and_not_by_an_address(self):
+        p = Pages(self.S)
+        p.login()
+        for _ in range(AP.PK_MAX):
+            self.add(Device(-7), p=p)
+        d = p.pk()
+        self.assertEqual((len(d["keys"]), d["can_add"]), (10, False))
+        with self.assertRaises(ValueError):
+            p.pk({"action": "add_begin"})
+        p.host = "127.0.0.1"
+        self.assertIn("not by an address", p.pk()["why"])
 
     def test_switched_off(self):
-        self.on(True, False)
+        self.on(False, False)
         p = Pages(self.S)
         p.login()
-        self.assertEqual(p.mfa()["methods"], ["app"])
+        self.assertEqual((p.pk()["on"], p.pk()["can_add"]), (False, False))
         with self.assertRaises(ValueError):
-            p.mfa({"action": "enrol_start", "kind": "passkey"})
-        self.on(False, True)
-        self.assertEqual(Pages(self.S).login()["mfa"], "")
-
-    def test_switched_off_later_stays_the_accounts(self):
-        dev = Device(-7)
-        self.enrol(dev)
-        self.on(True, False)
-        p, _o, got = self.sign_in(dev)
-        self.assertTrue(got["done"])
-        self.assertEqual(p.pk()["on"], False)
+            p.pk({"action": "add_begin"})
+        self.assertEqual(p.offered(), {"on": False, "here": False})
+        with self.assertRaises(ValueError):
+            p.begin()
 
 
 class SignIn(Base):
     def setUp(self):
         Base.setUp(self)
         self.dev = Device(-7)
-        self.enrol(self.dev)
+        self.add(self.dev)
 
-    def attempt(self, words, **kw):
-        p = Pages(self.S)
-        self.assertEqual(p.login()["mfa"], "check")
-        d = p.mfa()
-        self.assertEqual((d["kind"], d["hosts"]), ("passkey", [HOST]))
-        opts = p.mfa({"action": "pk_begin"})
+    def refused(self, words, p=None, **kw):
+        p = p or Pages(self.S)
         with self.assertRaises(ValueError) as e:
-            p.mfa(dict(self.dev.get(opts, **kw), action="check"))
+            p.pk_sign_in(self.dev, **kw)
         self.assertIn(words, str(e.exception))
-        self.assertIsNone(self.S.session(p.token))
-        return p, opts
+        self.assertEqual(p.token, "")
+        return p
 
-    def test_refusals(self):
-        self.attempt("signature is not right", bad_sig=True)
-        self.attempt("not from these pages", origin="http://fakeigd.test")
-        self.attempt("not from these pages", origin="https://fakeigd.test.evil.test")
-        self.attempt("for another name", rp_id="evil.test")
-        self.attempt("another question", challenge=b64(secrets.token_bytes(32)))
-        self.attempt("not of this step", kind="webauthn.create")
-        self.attempt("nobody was there", flags=0x04)
-        self.attempt("did not check who it was", flags=0x01)
-        self.assertEqual(self.wrongs(), 8)
-        ev = " ".join(e["words"] for e in self.S.events(limit=40)["events"])
-        self.assertIn("the passkey was refused - the passkey's signature is not right", ev)
+    def test_offered_only_by_a_name(self):
+        for host, here in ((HOST, True), ("fakeigd.test:8443", True), ("127.0.0.1", False), ("[::1]", False),
+                           ("", False)):
+            p = Pages(self.S, host=host)
+            self.assertEqual(p.offered(), {"on": True, "here": here}, host)
+            if not here:
+                with self.assertRaises(ValueError):
+                    p.begin()
+
+    def test_no_name_asked_and_a_whole_sign_in(self):
+        opts = Pages(self.S).begin()["publicKey"]
+        self.assertEqual((opts["allowCredentials"], opts["userVerification"], opts["rpId"]), ([], "required", HOST))
+        # with the second step on: still whole, no code asked
+        self.on(True, True)
+        p = Pages(self.S)
+        got = p.pk_sign_in(self.dev)
+        self.assertEqual(got["mfa"], "")
+        me = self.S.session(p.token)
+        self.assertTrue(me and me["name"] == "admin")
+        self.assertEqual(self.S.pending(p.token), (None, None))
+        # the same lifetime as a password's: idle and most
+        self.S.run("UPDATE sessions SET seen = seen - ? WHERE name = 'admin'", (121 * 60,))
+        self.assertIsNone(self.S.session(p.token))
+        # the password still signs in, and with admin_2fa on it asks the app as before
+        self.assertEqual(Pages(self.S).login()["mfa"], "enrol")
+
+    def test_refusals_counted(self):
+        self.refused("signature is not right", bad_sig=True)
+        self.refused("not from these pages", origin="http://fakeigd.test")
+        self.refused("not from these pages", origin="https://fakeigd.test:8443")
+        self.refused("for another name", rp_id="evil.test")
+        self.refused("another question", challenge=b64(secrets.token_bytes(32)))
+        self.refused("not of this step", kind="webauthn.create")
+        self.refused("nobody was there", flags=0x04)
+        self.refused("did not check who it was", flags=0x01)
+        self.refused("made for another account", user=WA.wa_user_id("viewer"))
+        self.assertEqual(self.wrongs(), 9)
+        self.assertEqual(self.S.one("SELECT COUNT(*) AS n FROM fails WHERE name = 'admin'")["n"], 9)
+        self.assertIn("admin could not sign in with a passkey from 192.0.2.7: the passkey's signature is not right",
+                      self.events())
 
     def test_counter_back(self):
-        p, _o = self.attempt("counter went back", count=1)
+        self.refused("counter went back", count=1)
         bad = [e for e in self.S.events(limit=5)["events"] if "counter went back" in e["words"]]
         self.assertEqual(bad[0]["level"], "bad")
 
-    def test_answer_once(self):
+    def test_question_once_and_bound(self):
         p = Pages(self.S)
-        p.login()
-        opts = p.mfa({"action": "pk_begin"})
-        ans = dict(self.dev.get(opts), action="check")
-        # a wrong answer first takes the question: the right one after it is to an old question
+        ans = self.dev.get(p.begin())
+        # from another address: refused there, and the question is still its own address's
+        q = Pages(self.S, addr="198.51.100.9")
+        with self.assertRaises(ValueError) as e:
+            q.finish(ans)
+        self.assertIn("old question", str(e.exception))
+        self.assertTrue(p.finish(ans)["who"])
+        # the same answer again (a replay): the question was taken
+        with self.assertRaises(ValueError) as e:
+            Pages(self.S).finish(ans)
+        self.assertIn("old question", str(e.exception))
+        # a wrong answer takes its question too
+        r = Pages(self.S)
+        opts = r.begin()
         with self.assertRaises(ValueError):
-            p.mfa(dict(self.dev.get(opts, bad_sig=True), action="check"))
+            r.finish(self.dev.get(opts, bad_sig=True))
         with self.assertRaises(ValueError) as e:
-            p.mfa(ans)
+            r.finish(self.dev.get(opts))
         self.assertIn("old question", str(e.exception))
-        self.assertIsNone(self.S.session(p.token))
-        # and the answer of one sign-in is no answer in the next
-        p2 = Pages(self.S)
-        p2.login()
-        p2.mfa({"action": "pk_begin"})
-        with self.assertRaises(ValueError) as e:
-            p2.mfa(ans)
-        self.assertIn("another question", str(e.exception))
-        # replayed after a good one: the sign-in is open, the replay has nothing to answer
-        p3, opts3, got = self.sign_in(self.dev)
-        self.assertTrue(got["done"])
-        p4 = Pages(self.S)
-        p4.login()
-        with self.assertRaises(ValueError) as e:
-            p4.mfa(dict(self.dev.get(opts3), action="check"))
-        self.assertIn("old question", str(e.exception))
+        # an old one
+        opts = r.begin()
+        self.S.run("UPDATE challenges SET at = at - ?", (ST.CHALLENGE_S + 1,))
+        with self.assertRaises(ValueError):
+            r.finish(self.dev.get(opts))
 
-    def test_another_accounts_key(self):
-        other = Device(-7)
-        self.enrol(other, name="viewer")
+    def test_questions_bounded(self):
         p = Pages(self.S)
-        p.login()
-        opts = p.mfa({"action": "pk_begin"})
-        with self.assertRaises(ValueError) as e:
-            p.mfa(dict(other.get(opts), action="check"))
-        self.assertIn("not this account's", str(e.exception))
+        for _ in range(ST.CHALLENGE_MOST_ADDR + 5):
+            p.begin()
+        self.assertEqual(self.S.one("SELECT COUNT(*) AS n FROM challenges")["n"], ST.CHALLENGE_MOST_ADDR)
 
-    def test_another_name(self):
-        p = Pages(self.S, host="other.test")
-        p.login()
-        with self.assertRaises(ValueError) as e:
-            p.mfa({"action": "pk_begin"})
-        self.assertIn("is for https://fakeigd.test/", str(e.exception))
-
-    def test_five_wrong_end_it(self):
+    def test_unknown_and_deleted_key(self):
+        stranger = Device(-7)
+        stranger.user = WA.wa_user_id("admin")
         p = Pages(self.S)
-        p.login()
-        for i in range(AP.MFA_WRONG_MOST):
-            opts = p.mfa({"action": "pk_begin"})
-            with self.assertRaises(ValueError) as e:
-                p.mfa(dict(self.dev.get(opts, bad_sig=True), action="check"))
-        self.assertIn("too many wrong codes - sign in again", str(e.exception))
-        self.assertEqual(self.S.pending(p.token), (None, None))
-        self.assertEqual(self.wrongs(), AP.MFA_WRONG_MOST)
+        with self.assertRaises(ValueError) as e:
+            p.pk_sign_in(stranger)
+        self.assertIn("signs nobody in", str(e.exception))
+        self.assertEqual(self.S.one("SELECT COUNT(*) AS n FROM fails WHERE name = '' AND addr = '192.0.2.7'")["n"], 1)
+        self.S.passkeys_remove("admin")
+        self.refused("signs nobody in")
+
+    def test_switched_off_account(self):
+        self.S.add_user("third", "secret123", "fulladmin")
+        self.S.set_disabled("admin", True)
+        self.refused("signs nobody in")
+        self.assertIsNone(self.S.one("SELECT * FROM sessions WHERE name = 'admin'"))
+
+    def test_locked_out(self):
+        # the name: as many wrong passwords as lock it out
+        tries = self.S.fail_limits()[1]
+        for _ in range(tries):
+            self.S.fail("203.0.113.1", "admin")
+        self.refused("too many wrong attempts")
+        self.S.clear_all_fails()
+        # the address: before the key is even looked at
+        for _ in range(self.S.fail_limits()[2]):
+            self.S.fail("192.0.2.7", "someone")
+        with self.assertRaises(ValueError) as e:
+            Pages(self.S).begin()
+        self.assertIn("too many wrong attempts", str(e.exception))
+        # another address is not held by it
+        self.assertTrue(Pages(self.S, addr="192.0.2.8").pk_sign_in(self.dev)["who"])
+
+    def test_wrong_keys_lock_the_address(self):
+        stranger = Device(-7)
+        for _ in range(self.S.fail_limits()[2]):
+            with self.assertRaises(ValueError):
+                Pages(self.S).pk_sign_in(stranger)
+        with self.assertRaises(ValueError) as e:
+            Pages(self.S).pk_sign_in(self.dev)
+        self.assertIn("too many wrong attempts", str(e.exception))
 
     def test_no_counter_device(self):
         """A device that keeps no counter (iCloud Keychain: always 0) is taken."""
-        self.S.mfa_reset("admin")
         dev = Device(-7, counter=False)
-        self.enrol(dev)
+        self.add(dev, name="viewer")
         for _ in range(2):
-            self.assertTrue(self.sign_in(dev)[2]["done"])
+            self.assertEqual(Pages(self.S).pk_sign_in(dev)["who"]["name"], "viewer")
 
-    def test_app_code_not_a_passkey(self):
+    def test_second_step_switched_on_leaves_it(self):
         p = Pages(self.S)
-        p.login()
-        with self.assertRaises(ValueError):
-            p.mfa({"action": "check", "code": "123456"})
-
-
-class YourAccount(Base):
-    def setUp(self):
-        Base.setUp(self)
-        self.dev = Device(-7)
-        self.p = self.enrol(self.dev)
-
-    def test_list_add_rename_delete(self):
-        d = self.p.pk()
-        self.assertEqual((d["on"], d["mine"], d["can_add"], d["max"], len(d["keys"])), (True, True, True, 10, 1))
-        opts = self.p.pk({"action": "add_begin"})
-        self.assertEqual([c["id"] for c in opts["publicKey"]["excludeCredentials"]], [d["keys"][0]["id"]])
-        second = Device(-7)
-        got = self.p.pk(dict(second.create(opts), action="add_finish"))
-        self.assertEqual(len(got["keys"]), 2)
-        # the answer once
-        with self.assertRaises(ValueError) as e:
-            self.p.pk(dict(second.create(opts), action="add_finish"))
-        self.assertIn("old question", str(e.exception))
-        # both sign in
-        for dev in (self.dev, second):
-            self.assertTrue(self.sign_in(dev)[2]["done"])
-        kid = got["keys"][1]["id"]
-        self.assertEqual(self.p.pk({"action": "rename", "id": kid, "name": "  my   iPhone "})["keys"][1]["name"],
-                         "my iPhone")
-        with self.assertRaises(ValueError):
-            self.p.pk({"action": "rename", "id": kid, "name": "  "})
-        with self.assertRaises(ValueError):
-            self.p.pk({"action": "rename", "id": "nope", "name": "x"})
-        self.assertEqual(len(self.p.pk({"action": "delete", "id": kid})["keys"]), 1)
-        with self.assertRaises(ValueError) as e:
-            self.p.pk({"action": "delete", "id": got["keys"][0]["id"]})
-        self.assertIn("the last passkey", str(e.exception))
-        # the one taken away signs in no more
-        p = Pages(self.S)
-        p.login()
-        opts = p.mfa({"action": "pk_begin"})
-        with self.assertRaises(ValueError):
-            p.mfa(dict(second.get(opts), action="check"))
-        ev = " ".join(e["words"] for e in self.S.events(limit=40)["events"])
-        for w in ("added a passkey (Test device, for https://fakeigd.test/)", "named a passkey my iPhone",
-                  "took a passkey away (my iPhone"):
-            self.assertIn(w, ev)
-
-    def test_add_refusals(self):
-        opts = self.p.pk({"action": "add_begin"})
-        for words, kw in (("not from these pages", dict(origin="https://evil.test")),
-                          ("for another name", dict(rp_id="evil.test")),
-                          ("did not check who it was", dict(flags=0x41))):
-            with self.assertRaises(ValueError) as e:
-                self.p.pk(dict(Device(-7).create(opts, **kw), action="add_finish"))
-            self.assertIn(words, str(e.exception))
-        # the same device twice
-        self.dev.count += 1
-        with self.assertRaises(ValueError) as e:
-            self.p.pk(dict(self.dev.create(opts), action="add_finish"))
-        self.assertIn("has a passkey for this account already", str(e.exception))
-
-    def test_only_soon_after_the_second_step(self):
-        self.S.session_merge(self.p.token, {"mfa_at": int(time.time()) - AP.PK_ADD_FRESH - 5})
-        d = self.p.pk()
-        self.assertFalse(d["can_add"])
-        self.assertIn("within 15 minutes", d["why"])
-        with self.assertRaises(ValueError):
-            self.p.pk({"action": "add_begin"})
-
-    def test_ten_at_most(self):
-        for _ in range(AP.PK_MAX - 1):
-            opts = self.p.pk({"action": "add_begin"})
-            self.p.pk(dict(Device(-7).create(opts), action="add_finish"))
-        d = self.p.pk()
-        self.assertEqual((len(d["keys"]), d["can_add"]), (10, False))
-        with self.assertRaises(ValueError):
-            self.p.pk({"action": "add_begin"})
-
-    def test_by_an_address(self):
-        self.p.host = "127.0.0.1"
-        d = self.p.pk()
-        self.assertFalse(d["can_add"])
-        self.assertIn("not by an address", d["why"])
-        with self.assertRaises(ValueError):
-            self.p.pk({"action": "add_begin"})
-
-    def test_not_a_passkey_account(self):
-        p = Pages(self.S)
-        p.login("viewer")
-        p.mfa({"action": "enrol_start", "kind": "app"})
-        s, _a = self.S.pending(p.token)
-        p.mfa({"action": "enrol_confirm", "code": ST.totp(s["data"]["mfa_new"])})
-        self.assertEqual(p.pk()["mine"], False)
-        with self.assertRaises(ValueError):
-            p.pk({"action": "add_begin"})
-
-    def test_a_waiting_sign_in_may_not(self):
-        p = Pages(self.S)
-        p.login()
-        with self.assertRaises(PermissionError):
-            p.pk()
-
-    def test_reset_takes_them(self):
+        p.pk_sign_in(self.dev)
+        a = Pages(self.S)
+        a.login("viewer")
         import igd_panes as PN
-        me = self.S.session(self.p.token)
-        ctx = PN.Ctx(Handler(HOST, self.p.token, {"action": "mfa_reset", "name": "admin"}), "POST", "/api/users",
-                     {}, me, self.S, {}, AP, self.S.add_event)
-        self.assertIn("is reset", AP.users_post(ctx)["message"])
-        self.assertEqual(self.S.mfa_get("admin"), {})
-        self.assertIsNone(self.S.session(self.p.token))
-        self.assertEqual(Pages(self.S).login()["mfa"], "enrol")
-        self.assertIn("(it was a passkey (Face ID, Touch ID, Windows Hello))",
-                      " ".join(e["words"] for e in self.S.events(limit=10)["events"]))
+        ctx = PN.Ctx(Handler(HOST, a.token, {}), "POST", "/api/settings", {}, self.S.session(a.token), self.S, {},
+                     AP, self.S.add_event)
+        AP.on_saved(ctx, {"admin_2fa": True})
+        self.assertTrue(self.S.session(p.token))
 
 
-class NewToken(Base):
-    """otp 1.0.149: whoever saw the cookie of the password-only sign-in gets nothing."""
+class SecondStep(Base):
+    """The app alone (1.9.7)."""
+
+    def test_no_passkey_offered(self):
+        self.on(True, True)
+        p = Pages(self.S)
+        self.assertEqual(p.login()["mfa"], "enrol")
+        self.assertEqual(p.mfa()["methods"], ["app"])
+        with self.assertRaises(ValueError):
+            p.mfa({"action": "enrol_start", "kind": "passkey"})
+        with self.assertRaises(ValueError):
+            p.mfa({"action": "pk_begin"})
 
     def check_swapped(self, p, before):
         self.assertNotEqual(p.token, before)
-        self.assertEqual(p.old, before)
         self.assertIsNone(self.S.session(before))
         self.assertEqual(self.S.pending(before), (None, None))
-        me = self.S.session(p.token)
-        self.assertTrue(me and me["name"] == "admin" and me["mfa_at"])
-        # the old one can do nothing: not the pages, not the second step, not Your account
+        self.assertTrue(self.S.session(p.token))
         old = Pages(self.S)
         old.token = before
         with self.assertRaises(ValueError):
             old.mfa()
         with self.assertRaises(PermissionError):
             old.pk()
-        self.assertEqual(self.S.one("SELECT COUNT(*) AS n FROM sessions WHERE name = 'admin'")["n"], 1)
 
-    def test_passkey_enrol_and_check(self):
-        dev = Device(-7)
-        p = Pages(self.S)
-        p.login()
-        before = p.token
-        opts = p.mfa({"action": "enrol_start", "kind": "passkey"})
-        self.assertNotIn("token", p.mfa(dict(dev.create(opts), action="enrol_confirm")))
-        self.check_swapped(p, before)
-        self.assertTrue(p.pk()["mine"])
-        p.call(AP.logout, {})
-        p.login()
-        before = p.token
-        opts = p.mfa({"action": "pk_begin"})
-        p.mfa(dict(dev.get(opts), action="check"))
-        self.check_swapped(p, before)
-
-    def test_app_enrol_and_check(self):
+    def test_new_token_app(self):
+        self.on(True, True)
         p = Pages(self.S)
         p.login()
         before = p.token
@@ -671,26 +598,97 @@ class NewToken(Base):
         p.mfa({"action": "enrol_confirm", "code": ST.totp(secret)})
         self.check_swapped(p, before)
         rec = self.S.mfa_get("admin")
-        rec["step"] = 0                         # the code of now is good once more, for the check below
+        rec["step"] = 0
         self.S.mfa_put("admin", rec)
         p2 = Pages(self.S)
         p2.login()
         before = p2.token
         p2.mfa({"action": "check", "code": ST.totp(secret)})
-        self.assertNotEqual(p2.token, before)
-        self.assertIsNone(self.S.session(before))
-        self.assertTrue(self.S.session(p2.token))
+        self.check_swapped(p2, before)
 
     def test_once(self):
-        """Two answers at once open one sign-in: the second finds the waiting one gone."""
+        self.on(True, True)
         p = Pages(self.S)
         p.login()
         new = self.S.mfa_passed(p.token)
-        self.assertTrue(self.S.session(new))
         with self.assertRaises(ST.StoreError):
             self.S.mfa_passed(p.token)
         with self.assertRaises(ST.StoreError):
-            self.S.mfa_passed(new)              # a whole sign-in is no waiting one
+            self.S.mfa_passed(new)
+
+    def test_reset_leaves_the_passkeys(self):
+        dev = Device(-7)
+        self.add(dev)
+        import igd_panes as PN
+        a = Pages(self.S)
+        a.login("viewer")
+        self.S.set_role("viewer", "fulladmin")
+        self.on(True, True)
+        self.S.mfa_put("admin", {"kind": "app", "secret": ST.b32_new(), "step": 0, "at": time.time()})
+        me = self.S.session(a.token)
+        ctx = PN.Ctx(Handler(HOST, a.token, {"action": "mfa_reset", "name": "admin"}), "POST", "/api/users", {}, me,
+                     self.S, {}, AP, self.S.add_event)
+        AP.users_post(ctx)
+        self.assertEqual(self.S.mfa_get("admin"), {})
+        self.assertEqual(len(self.S.passkeys("admin")), 1)
+        self.assertTrue(Pages(self.S).pk_sign_in(dev)["who"])
+        # Accounts → the key button: every passkey taken away
+        ctx = PN.Ctx(Handler(HOST, a.token, {"action": "passkeys_remove", "name": "admin"}), "POST", "/api/users",
+                     {}, me, self.S, {}, AP, self.S.add_event)
+        self.assertIn("taken away (1)", AP.users_post(ctx)["message"])
+        self.assertEqual(self.S.passkeys("admin"), [])
+        with self.assertRaises(ValueError):
+            Pages(self.S).pk_sign_in(dev)
+
+
+class Migration(unittest.TestCase):
+    """A database of 1.9.2-1.9.6: passkeys as the second step, the setting admin_2fa_passkey."""
+
+    def test_moved_never_lost(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        path = os.path.join(d, "old.db")
+        S = ST.Store(path)
+        S.add_user("admin", "secret123", "fulladmin")
+        S.add_user("bob", "secret123", "readonly")
+        dev = Device(-7)
+        cose = WA.wa_cose(dev.cose)
+        key = {"id": b64(dev.cid), "alg": cose[0], "pub": cose[1], "count": 0, "host": HOST, "name": "iPad",
+               "at": time.time(), "used": 0, "backed_up": False}
+        # as 1.9.6 wrote them: the key in users.mfa, no passkeys column filled, the old setting
+        S.run("UPDATE users SET mfa = ? WHERE name = 'admin'",
+              (json.dumps({"kind": "passkey", "keys": [key], "at": time.time(), "by": "admin"}),))
+        S.run("UPDATE users SET mfa = ? WHERE name = 'bob'",
+              (json.dumps({"kind": "app", "secret": ST.b32_new(), "step": 0, "at": time.time()}),))
+        S.set_meta("settings", json.dumps({"admin_2fa": True, "admin_2fa_passkey": True}))
+        S.close()
+        S = ST.Store(path)                                     # opened by 1.9.7
+        self.assertEqual(S.passkeys("admin"), [key])
+        self.assertEqual(S.mfa_get("admin"), {})
+        self.assertEqual(S.mfa_get("bob")["kind"], "app")      # the app stays
+        saved = json.loads(S.get_meta("settings"))
+        self.assertNotIn("admin_2fa_passkey", saved)
+        self.assertTrue(saved["passkey_signin"] and S.policy()["passkey_signin"])
+        self.assertIn("the passkeys of admin (1) sign in by themselves now",
+                      " ".join(e["words"] for e in S.events(limit=5)["events"]))
+        S.close()
+        S = ST.Store(path)                                     # and again: nothing more
+        self.assertEqual(len(S.passkeys("admin")), 1)
+        # the old key signs in by itself now, no second step asked (admin_2fa on)
+        dev.user = WA.wa_user_id("admin")
+        got = Pages(S).pk_sign_in(dev)
+        self.assertEqual((got["who"]["name"], got["mfa"]), ("admin", ""))
+        # the password asks the app's set-up (the passkey is no second step any more)
+        self.assertEqual(Pages(S).login()["mfa"], "enrol")
+        S.close()
+
+    def test_off_stays_off(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        S = ST.Store(os.path.join(d, "o.db"))
+        S.set_meta("settings", json.dumps({"admin_2fa": True, "admin_2fa_passkey": False}))
+        S.close()
+        S = ST.Store(os.path.join(d, "o.db"))
+        self.assertFalse(S.policy()["passkey_signin"])
+        S.close()
 
 
 class Bounds(unittest.TestCase):

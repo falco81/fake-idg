@@ -1,4 +1,4 @@
-# fake-igd 1.9.6
+# fake-igd 1.9.7
 
 A fake UPnP router (IGD) for reconnaissance: it finds out **which ports a PS5 (or any other device) wants to open**, without enabling UPnP on your real router. Everything is logged to `/var/log/fake-igd/` and controlled with the **`upnp`** command - or by its menus with **`upnp --console`**. It also shows and controls the **mDNS reflector (avahi-daemon)** running on the same server, and sends notifications to **ntfy** (ntfy.sh or your private server).
 
@@ -20,8 +20,8 @@ packages only, checked and put in by root, exactly as otp does it.
 ## Installation (AlmaLinux 9)
 
 ```bash
-tar xzf fake-igd-1.9.6.tar.gz
-cd fake-igd-1.9.6
+tar xzf fake-igd-1.9.7.tar.gz
+cd fake-igd-1.9.7
 sudo ./install.sh
 ```
 
@@ -92,7 +92,7 @@ Or on the pages: *Settings → Upgrades* - *Look now*, *Upgrade to X now*, or dr
 console: menu **14 Upgrades**. Or by hand, as before:
 
 ```bash
-tar xzf fake-igd-1.9.6.tar.gz && cd fake-igd-1.9.6
+tar xzf fake-igd-1.9.7.tar.gz && cd fake-igd-1.9.7
 sudo ./install.sh --upgrade
 ```
 
@@ -168,8 +168,9 @@ come back by themselves unless kept.
 ### Accounts (local, SQLite)
 
 **full admin** may change everything, **read only** may look. Passwords are kept as scrypt hashes, 8
-characters at least (*Settings → Accounts*: the least length, the second step by an authenticator app - or a passkey: Face ID,
-Touch ID, Windows Hello, on the pages opened by a name over HTTPS - for every account). Five wrong passwords for one name (an address: ten times as many, 50 at least) hold that
+characters at least (*Settings → Accounts*: the least length, the second step by an authenticator app for every account - and
+signing in with a passkey instead of the password: Face ID, Touch ID, Windows Hello, on the pages opened by a
+name over HTTPS, added by each account under *Your account*; such a sign-in asks no second step). Five wrong passwords for one name (an address: ten times as many, 50 at least) hold that
 name back for 15 minutes; a sign-in ends after 120 minutes without a request and after 12 hours however busy
 (all of these are set under *Settings → Accounts*). `sudo upnp user lockouts` shows who is held back, `sudo
 upnp user clear [NAME|ADDRESS]` lets them try again at once.
@@ -181,6 +182,7 @@ sudo upnp user passwd admin                # a new password, its sign-ins end
 sudo upnp user role bob --role fulladmin
 sudo upnp user del bob                     # its sign-ins and its own layout of the tables go with it
 sudo upnp user off bob                     # it may not sign in (on: again); must-change NAME, reset-2fa NAME
+sudo upnp user passkeys bob                # its passkeys; --remove-all takes them away (a lost phone)
 sudo upnp user list                        # upnp user sessions - who is signed in now; end ID ends one
 upnp web                                   # the pages' address, nginx, php-fpm, the API
 ```
@@ -583,7 +585,7 @@ upnp <command> [options]        upnp --help        upnp <command> --help        
 | `start` `stop` `restart` `enable` `disable` | | service control |
 | `clear` | | truncate logs (`--requests`, `--log`, `--all`) |
 | `upgrade` | `up` | new versions: `check`, `online [VERSION]`, `file PATH`, `status`, `follow`, `log`, `after [ID]`; `--downgrade` |
-| `user` | `users` | the pages' accounts: `list`, `add`, `passwd`, `role`, `note`, `must-change`, `off`, `on`, `reset-2fa`, `del`, `sessions`, `end`, `lockouts`, `clear` |
+| `user` | `users` | the pages' accounts: `list`, `add`, `passwd`, `role`, `note`, `must-change`, `off`, `on`, `reset-2fa`, `passkeys`, `del`, `sessions`, `end`, `lockouts`, `clear` |
 | `web` | | the pages: `status`, `apply [--restart]` |
 | `version` | | versions of the CLI, Python and colorama |
 

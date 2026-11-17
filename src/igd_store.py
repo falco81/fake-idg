@@ -4,14 +4,17 @@ One SQLite file, /var/lib/fake-igd/fake-igd.db, owned by the fake-igd account:
 
   users      the local accounts of the web pages - a name, a role, a password
              hash (scrypt), when it was made and last signed in, switched off
-             or not, and its second step of signing in (an authenticator app, or
-             the passkeys of its devices - their public halves only, 1.9.2)
+             or not, its second step of signing in (an authenticator app), and the
+             passkeys of its devices that sign it in by themselves (their public
+             halves only, users.passkeys, 1.9.7)
   sessions   who is signed in now - only the SHA-256 of each session's token
              is kept, the token itself lives in the browser's cookie alone; a
              sign-in still to give its second step is kept too, and is good
              for nothing else
   fails      wrong passwords and codes, by address and by name: too many in a
              while and signing in from there is refused until the while is over
+  challenges the questions asked of a passkey before anybody is signed in (1.9.7): each
+             taken by one answer, from the address that asked, within five minutes
   events     what was done - an account made, a setting changed, an upgrade
              asked for, a sign-in - by whom and from where
   meta       small values: the last look for a new version, and the like
@@ -60,8 +63,12 @@ POLICY = {
     "login_wait_min": 15,             # ... and the pause
     "password_min": MIN_PASSWORD,     # a password of these accounts at least this long
     "admin_2fa": False,               # a second step (an authenticator app) after the password
-    "admin_2fa_passkey": False,       # ...or a passkey: Face ID, Touch ID, Windows Hello (otp 1.0.254)
+    "passkey_signin": False,          # signing in with a passkey alone: Face ID, Touch ID, Windows Hello (1.9.7)
 }
+PASSKEY_MOST = 10                     # passkeys of one account (otp 1.0.257)
+CHALLENGE_S = 300                     # a passkey's question is good this long (igd_webauthn.WA_CHALLENGE_S)
+CHALLENGE_MOST_ADDR = 20              # questions waiting from one address - asked by nobody signed in
+CHALLENGE_MOST = 2000                 # ... and from all of them
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -99,6 +106,12 @@ CREATE TABLE IF NOT EXISTS events (
     words TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_at ON events(at);
+CREATE TABLE IF NOT EXISTS challenges (
+    id TEXT PRIMARY KEY,
+    at REAL NOT NULL,
+    addr TEXT NOT NULL DEFAULT '',
+    data TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS meta (
     k TEXT PRIMARY KEY,
     v TEXT
@@ -111,6 +124,7 @@ COLUMNS = (
     ("sessions", "mfa", "TEXT NOT NULL DEFAULT ''"),
     ("sessions", "data", "TEXT NOT NULL DEFAULT ''"),
     ("fails", "what", "TEXT NOT NULL DEFAULT ''"),
+    ("users", "passkeys", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -230,6 +244,14 @@ def _jload(text):
     return got if isinstance(got, dict) else {}
 
 
+def _jlist(text):
+    try:
+        got = json.loads(text or "[]")
+    except ValueError:
+        return []
+    return [k for k in got if isinstance(k, dict)] if isinstance(got, list) else []
+
+
 def _sid(token):
     return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
 
@@ -257,6 +279,39 @@ class Store(object):
                 if col not in have:
                     self.db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, kind))
         self._policy = (0.0, None)
+        self._passkeys_moved()
+
+    def _passkeys_moved(self):
+        """1.9.2-1.9.6 kept passkeys as the second step (users.mfa {"kind": "passkey", "keys"}) under
+        the setting admin_2fa_passkey. From 1.9.7 a passkey signs in by itself: the keys move to the
+        account's own users.passkeys (never lost - merged with what is there), the second step is
+        cleared (with admin_2fa on, the app is set up at the next sign-in with the password), and
+        the setting becomes passkey_signin. Once; nothing to do after."""
+        with self.lock:
+            moved = []
+            for r in self.db.execute("SELECT name, mfa, passkeys FROM users WHERE mfa LIKE '%passkey%'").fetchall():
+                m = _jload(r["mfa"])
+                if m.get("kind") != "passkey":
+                    continue
+                have = _jlist(r["passkeys"])
+                ids = set(k.get("id") for k in have)
+                for k in m.get("keys") or []:
+                    if isinstance(k, dict) and k.get("id") and k["id"] not in ids:
+                        have.append(k)
+                        ids.add(k["id"])
+                self.db.execute("UPDATE users SET passkeys = ?, mfa = '' WHERE name = ?",
+                                (json.dumps(have), r["name"]))
+                moved.append((r["name"], len(have)))
+            raw = self.db.execute("SELECT v FROM meta WHERE k = 'settings'").fetchone()
+            saved = _jload(raw["v"]) if raw else {}
+            if "admin_2fa_passkey" in saved:
+                if "passkey_signin" not in saved:
+                    saved["passkey_signin"] = bool(saved["admin_2fa_passkey"])
+                del saved["admin_2fa_passkey"]
+                self.db.execute("UPDATE meta SET v = ? WHERE k = 'settings'", (json.dumps(saved),))
+        for name, n in moved:
+            self.add_event("account", "the passkeys of %s (%d) sign in by themselves now - no longer the second "
+                           "step; the second step of %s is set up again (the app)" % (name, n, name), "warn", name)
 
     # ---- the bare minimum ------------------------------------------------------------
     def rows(self, sql, args=()):
@@ -374,7 +429,7 @@ class Store(object):
     # ---- accounts --------------------------------------------------------------------
     def users(self):
         rows = self.rows("SELECT name, role, note, must_change, created, changed, last_login, last_from, "
-                         "disabled, mfa FROM users ORDER BY name COLLATE NOCASE")
+                         "disabled, mfa, passkeys FROM users ORDER BY name COLLATE NOCASE")
         now = time.time()
         live = {}
         for s in self.rows("SELECT name, COUNT(*) AS n FROM sessions WHERE seen > ? AND mfa = '' "
@@ -386,13 +441,12 @@ class Store(object):
             r["must_change"] = bool(r["must_change"])
             r["disabled"] = bool(r["disabled"])
             m = _jload(r["mfa"])
-            dest = ""
-            if m.get("kind") == "passkey":
-                # which device, for which name of the pages (otp 1.0.254)
-                dest = ", ".join("%s \u00b7 %s" % (k.get("name") or "a device", k.get("host") or "?")
-                                 for k in m.get("keys") or [] if isinstance(k, dict))
-            r["mfa"] = {"kind": m.get("kind"), "at": m.get("at"), "dest": dest,
-                        "keys": len(m.get("keys") or [])} if m.get("kind") else None
+            r["mfa"] = {"kind": m.get("kind"), "at": m.get("at")} if m.get("kind") else None
+            # The passkeys that sign it in (1.9.7): how many, and which device for which name.
+            keys = _jlist(r.pop("passkeys"))
+            r["passkeys"] = len(keys)
+            r["passkeys_said"] = ", ".join("%s \u00b7 %s" % (k.get("name") or "a device", k.get("host") or "?")
+                                           for k in keys)
         return rows
 
     def user(self, name):
@@ -489,12 +543,95 @@ class Store(object):
         return self.rows("SELECT at, level, addr, words FROM events WHERE kind = 'sign-in' AND who = ? "
                          "COLLATE NOCASE ORDER BY id DESC LIMIT ?", (str(name), int(limit)))
 
-    # ---- the second step (an authenticator app, or passkeys) ----------------------------
+    # ---- passkeys: a sign-in by themselves (1.9.7) -----------------------------------------
+    # The account's own, in its row (users.passkeys, a JSON list) - so a backup of the database has
+    # them; never touched by a reset of the second step:
+    #   [{"id", "alg", "pub", "count", "host", "name", "at", "used", "backed_up"}]
+    def passkeys(self, name):
+        u = self.user(name)
+        return _jlist(u["passkeys"]) if u else []
+
+    def passkeys_put(self, name, keys):
+        self.run("UPDATE users SET passkeys = ? WHERE name = ?", (json.dumps(list(keys)), name))
+
+    def passkey_find(self, cred_id):
+        """(account, its key) of a passkey's credential ID among every account - or (None, None)."""
+        cid = str(cred_id or "")
+        if not cid:
+            return None, None
+        for u in self.rows("SELECT * FROM users WHERE passkeys <> ''"):
+            for k in _jlist(u["passkeys"]):
+                if hmac.compare_digest(str(k.get("id") or "").encode(), cid.encode()):
+                    return u, k
+        return None, None
+
+    def passkeys_remove(self, name):
+        """Every passkey of an account taken away (Accounts, upnp user passkeys NAME --remove-all): how many."""
+        u = self.user(name)
+        if not u:
+            raise StoreError("there is no account %s" % name)
+        n = len(_jlist(u["passkeys"]))
+        self.run("UPDATE users SET passkeys = '', changed = ? WHERE name = ?", (time.time(), name))
+        return n
+
+    def challenge_put(self, addr, data):
+        """A passkey's question asked before anybody is signed in (1.9.7), kept for its one answer:
+        bound to the address, five minutes. Bounded: 20 waiting from an address, 2000 in all."""
+        now = time.time()
+        addr = str(addr or "")[:64]
+        with self.lock:
+            self.run("DELETE FROM challenges WHERE at < ?", (now - CHALLENGE_S,))
+            if self.one("SELECT COUNT(*) AS n FROM challenges WHERE addr = ?", (addr,))["n"] >= CHALLENGE_MOST_ADDR:
+                self.run("DELETE FROM challenges WHERE id IN (SELECT id FROM challenges WHERE addr = ? ORDER BY at "
+                         "LIMIT 1)", (addr,))
+            if self.one("SELECT COUNT(*) AS n FROM challenges")["n"] >= CHALLENGE_MOST:
+                raise StoreError("too many sign-ins with a passkey at once - try again in a moment")
+            self.run("INSERT INTO challenges (id, at, addr, data) VALUES (?, ?, ?, ?)",
+                     (str(data["challenge"]), now, addr, json.dumps(data)))
+
+    def challenge_take(self, ident, addr):
+        """The question, taken away by its answer - from the address that asked it, in its time. None
+        otherwise (an old question, another address, or answered already)."""
+        ident = str(ident or "")[:100]
+        with self.lock:
+            r = self.one("SELECT at, addr, data FROM challenges WHERE id = ?", (ident,))
+            if not r:
+                return None
+            if r["addr"] != str(addr or "")[:64]:
+                return None                 # left where it is: its own address may still answer it
+            self.run("DELETE FROM challenges WHERE id = ?", (ident,))
+        if time.time() - r["at"] > CHALLENGE_S:
+            return None
+        return _jload(r["data"])
+
+    def passkey_login(self, name, key, addr="", agent="", idle_s=7200):
+        """A sign-in opened by a passkey (checked by igd_webauthn - the face, a finger or the PIN
+        verified): whole by itself, never a second step asked (1.9.7). The key, its counter moved on,
+        kept; the token of a new sign-in returned."""
+        with self.lock:
+            u = self.user(name)
+            if not u or u["disabled"]:
+                raise StoreError("that passkey signs nobody in here")
+            keys = _jlist(u["passkeys"])
+            if not any(k.get("id") == key["id"] for k in keys):
+                raise StoreError("that passkey signs nobody in here")
+            self.passkeys_put(u["name"], [key if k.get("id") == key["id"] else k for k in keys])
+            token = secrets.token_urlsafe(32)
+            now = time.time()
+            self.run("INSERT INTO sessions (id, name, created, seen, addr, agent, mfa, data) "
+                     "VALUES (?, ?, ?, ?, ?, ?, '', ?)",
+                     (_sid(token), u["name"], now, now, str(addr or "")[:64], str(agent or "")[:200],
+                      json.dumps({"by": "passkey"})))
+            self.run("UPDATE users SET last_login = ?, last_from = ? WHERE name = ?", (now, addr, u["name"]))
+        self.tidy_sessions(idle_s)
+        u = dict(u)
+        u.pop("hash", None)
+        return token, u
+
+    # ---- the second step (an authenticator app) ------------------------------------------
     # The account's own, in its row (users.mfa, JSON) - so a backup of the database has it, and
-    # a reset (Accounts, upnp user reset-2fa NAME) takes it all away, passkeys too:
+    # a reset (Accounts, upnp user reset-2fa NAME) takes it away (never the passkeys, 1.9.7):
     #   {"kind": "app", "secret", "step": the last code's step, used once, "at", "by"}
-    #   {"kind": "passkey", "keys": [{"id", "alg", "pub", "count", "host", "name", "at", "used",
-    #    "backed_up"}], "at", "by"}                                   (1.9.2, as otp's adm2fa:<name>)
     def mfa_get(self, name):
         u = self.user(name)
         return _jload(u["mfa"]) if u else {}
@@ -519,8 +656,6 @@ class Store(object):
         """The code of the account's app: True, or StoreError with the words. A code is good once."""
         with self.lock:
             rec = self.mfa_get(name)
-            if rec.get("kind") == "passkey":
-                raise StoreError("the second step of this account is a passkey - use it")
             if rec.get("kind") != "app" or not rec.get("secret"):
                 raise StoreError("this account has no second step set up")
             try:
@@ -545,6 +680,8 @@ class Store(object):
         since = time.time() - span
         which = "what = 'own'" if own else "what <> 'own'"
         a = self.one("SELECT COUNT(*) AS n FROM fails WHERE at > ? AND addr = ? AND " + which, (since, addr))["n"]
+        if name is None:                # the address alone (a passkey before its key told the name, 1.9.7)
+            return a >= most_addr
         n = self.one("SELECT COUNT(*) AS n FROM fails WHERE at > ? AND name = ? AND " + which, (since, name))["n"]
         return a >= most_addr or n >= most_name
 
@@ -708,19 +845,6 @@ class Store(object):
             self.run("UPDATE users SET mfa = ? WHERE name = ?", (json.dumps(rec), u["name"]))
         return self.mfa_passed(token)
 
-    def mfa_passkey_enrol(self, token, pk):
-        """The passkey set up in this sign-in (checked by igd_webauthn): kept, and the sign-in opened -
-        the new token returned (mfa_passed)."""
-        with self.lock:
-            s, u = self.pending(token)
-            if not s:
-                raise StoreError("this sign-in has ended - sign in again")
-            if self.mfa_get(u["name"]).get("kind"):
-                raise StoreError("this account has its second step set up already - sign in again")
-            rec = {"kind": "passkey", "keys": [pk], "at": time.time(), "by": u["name"]}
-            self.mfa_put(u["name"], rec)
-        return self.mfa_passed(token)
-
     def mfa_put(self, name, rec):
         self.run("UPDATE users SET mfa = ? WHERE name = ?", (json.dumps(rec), name))
 
@@ -728,7 +852,7 @@ class Store(object):
         """The second step given: a sign-in of its own from here on, with a NEW token, returned
         (otp 1.0.149, 1.9.2) - the one the password alone opened is ended, not made whole: whoever had
         seen its cookie had the pages once the code was given. When it was given is kept with the new
-        one (otp 1.0.262): a passkey is added only soon after."""
+        one (otp 1.0.262)."""
         sid = _sid(token)
         new = secrets.token_urlsafe(32)
         now = time.time()

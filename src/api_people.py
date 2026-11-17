@@ -6,18 +6,21 @@ and fake-igd has none: there is nothing between looking and changing everything 
 
   /api/users          the accounts: GET the list; POST add, role, password, note, must_change,
                       enable, disable, delete, mfa_reset (the second step set up again),
+                      passkeys_remove (every passkey of the account taken away, 1.9.7),
                       reset_cols (somebody's own layout of the tables put back as it comes)
   /api/users/history  ?name= the sign-ins of one account (and the refused ones), from the events
   /api/sessions       who is signed in now - POST {id} ends one
   /api/lockouts       the wrong attempts still counted, by address and by name - POST clear / clear_all
   /api/auth/login     (replaces the API's own) - the password, counted; then, when it is on,
   /api/auth/mfa       the second step: the code of an authenticator app (RFC 6238), set up at the
-  /api/mfa            first sign-in with a QR code - or a passkey (Face ID, Touch ID, Windows Hello;
-                      otp 1.0.254, igd_webauthn.py), set up the same way. Until it is given the
-                      sign-in is good for nothing but this (igd_store.Store.session says None for
-                      it). /api/mfa is the same, for the pages' ?api=mfa.
+  /api/mfa            first sign-in with a QR code. Until it is given the sign-in is good for
+                      nothing but this (igd_store.Store.session says None for it). /api/mfa is the
+                      same, for the pages' ?api=mfa.
+  /api/auth/passkey-login  signing in with a passkey alone (1.9.7; Face ID, Touch ID, Windows Hello,
+                      igd_webauthn.py): GET whether it is offered here; POST begin / finish - a
+                      sign-in of its own, no password and no second step after it
   /api/auth/passkeys  Your account: the passkeys of the account signed in (otp 1.0.257) - GET the
-  /api/passkeys       list; POST add_begin, add_finish, rename, delete (never the last one).
+  /api/passkeys       list; POST add_begin, add_finish, rename, delete.
   /api/auth/whoami    (replaces) - and, for a sign-in waiting for its second step, "mfa": the stage
   /api/auth/logout    (replaces) - a waiting sign-in ended too
   /api/auth/passwd    (replaces) - one's own password: the old one counted as a sign-in's, the
@@ -28,8 +31,8 @@ attempts before a pause and how long, the second step - and how long a password 
 read by igd_store.Store.policy(), so the command line (upnp user) keeps to them too.
 
 Left out, as they cannot be here: the directory (AD) accounts and its groups, Windows (Kerberos)
-and certificate sign-in, codes by mail and SMS (otp's other second steps - the app and a passkey
-need nothing more of this machine). The columns of the tables are the shell's
+and certificate sign-in, codes by mail and SMS (otp's other second steps - the app needs nothing
+more of this machine). The columns of the tables are the shell's
 (api_shell.py); how many each account has laid out is shown, and put back, here.
 """
 import base64
@@ -43,9 +46,9 @@ import igd_webauthn as WA
 
 NAME = "people"
 MFA_WRONG_MOST = 5          # wrong second-step codes of one sign-in, then the password again (otp 1.0.252)
-PK_MAX = 10                 # passkeys of one account (otp 1.0.257)
-# A passkey is added only within this long of the second step given, not on the sign-in's cookie
-# alone (otp 1.0.262): a passkey outlives the sign-in.
+PK_MAX = ST.PASSKEY_MOST    # passkeys of one account (otp 1.0.257)
+# A passkey is added only within this long of signing in, not on the sign-in's cookie alone
+# (otp 1.0.262): a passkey outlives the sign-in.
 PK_ADD_FRESH = int(os.environ.get("FAKE_IGD_PK_ADD_FRESH") or 900)
 
 SETTINGS = [
@@ -65,26 +68,28 @@ SETTINGS = [
     {"key": "admin_2fa", "name": "A second step when signing in to these pages", "kind": "bool",
      "default": False,
      "says": "After the password, every account gives a code too - from an authenticator app (Google or "
-             "Microsoft Authenticator…), its own. The first time, the account chooses how and sets it up "
-             "(an authenticator app - it scans a QR code and writes the code the app shows - or, where it is "
-             "on below, a passkey - Face ID, Touch ID, Windows Hello). Accounts → Reset the second step, or "
-             "upnp user reset-2fa NAME, makes it choose again. Sign-ins already open stay open."},
-    {"key": "admin_2fa_passkey", "name": "...with Face ID, Touch ID or Windows Hello (a passkey)", "kind": "bool",
-     "default": False, "only_when": ("admin_2fa", "true"),
-     "says": "The face, a finger or the PIN of the device, after the password - never instead of it: the "
-             "device keeps the key (an iPad and an iPhone in the iCloud Keychain, so on the person's other "
-             "Apple devices too), this server only its public half. Offered on these pages opened by a name "
-             "with a certificate the browser trusts (https://name/), not by an address; the passkey works on "
-             "that name only. Set up at the next sign-in, as the other ways; reset the same way."},
+             "Microsoft Authenticator…), its own. The first time, the account sets it up: it scans a QR "
+             "code and writes the code the app shows. Accounts → Reset the second step, or upnp user "
+             "reset-2fa NAME, makes it set it up again. Sign-ins already open stay open. A sign-in with a "
+             "passkey (below) asks no code: it is whole by itself."},
+    {"key": "passkey_signin", "name": "Sign in with Face ID, Touch ID or Windows Hello (a passkey)", "kind": "bool",
+     "default": False,
+     "says": "The sign-in page offers it beside the password: the face, a finger or the PIN of the device, "
+             "and no name or password typed. The device keeps the key (an iPad and an iPhone in the iCloud "
+             "Keychain, so on the person's other Apple devices too), this server only its public half. A "
+             "sign-in with a passkey is whole by itself - the device that holds the key and the face, finger "
+             "or PIN it checks - so no code of the second step is asked after it, even when the second step "
+             "is on. The password still signs in as before. Each account adds its passkeys under Your account "
+             "(within 15 minutes of signing in); Accounts takes them away. Only on these pages opened by a "
+             "name with a certificate the browser trusts (https://name/), not by an address: a passkey works "
+             "on the name it was added on."},
     {"key": "password_min", "name": "A password at least (characters)", "kind": "int", "default": 8, "min": 8,
      "max": 64,
      "says": "For a password set on these pages, by upnp user, and one's own. Passwords there already "
              "stay until they are changed."},
 ]
 
-KIND_WORDS = {"app": "an app", "passkey": "a passkey"}
-# The way written out in the events (otp's MFA_KIND_WORDS).
-KIND_SAID = {"app": "an app", "passkey": "a passkey (Face ID, Touch ID, Windows Hello)"}
+KIND_WORDS = {"app": "an app"}
 
 
 # ---- the QR code the app scans: otp's, made here rather than by a package ----------------------
@@ -568,12 +573,17 @@ def users_post(ctx):
         sh._mine_put(S, name, mine)
         _say(ctx, "account", "%s put the columns of every table of %s back as they come (%d)" % (who, name, n))
         return {"message": "the columns of %s are back as they come" % name}
+    if act == "passkeys_remove":
+        # Every passkey of the account taken away (1.9.7): it signs in with its password, as before.
+        n = S.passkeys_remove(name)
+        if not n:
+            return {"message": "%s has no passkey" % name}
+        _say(ctx, "account", "%s took every passkey of %s away (%d)" % (who, name, n), "warn")
+        return {"message": "the passkeys of %s are taken away (%d)" % (name, n)}
     if act == "mfa_reset":
-        was = S.mfa_get(name).get("kind")
         had = S.mfa_reset(name)
-        # Its passkeys go with it (1.9.2): they are the second step, kept in the same place.
-        _say(ctx, "account", "%s reset the second step of %s%s; their sign-ins are ended" % (
-            who, name, " (it was %s)" % KIND_SAID.get(was, was) if was else ""), "warn")
+        # The app only (1.9.7): its passkeys stay - they sign in by themselves, not as the second step.
+        _say(ctx, "account", "%s reset the second step of %s; their sign-ins are ended" % (who, name), "warn")
         return {"message": ("the second step of %s is reset: they set it up again at the next sign-in; their "
                             "sign-ins are ended" if had else "%s had no second step set up") % name}
     raise ValueError("no such thing to do to an account")
@@ -737,7 +747,7 @@ def passwd(ctx):
     return {"message": "the password is changed"}
 
 
-# ---- the second step -------------------------------------------------------------------------
+# ---- the second step: the app (since 1.9.7 the only one - a passkey signs in by itself) ----------
 def _pending(ctx):
     s, acc = ctx.store.pending(_token(ctx))
     if not s:
@@ -745,42 +755,23 @@ def _pending(ctx):
     return s, acc
 
 
-def _pk_on(S):
-    pol = S.policy()
-    return bool(pol["admin_2fa"] and pol.get("admin_2fa_passkey"))
-
-
-def mfa_methods(ctx):
-    """The ways offered when an account sets up its second step (otp's mfa_methods): the app, and a
-    passkey (otp 1.0.254) only where it can be - switched on, and the pages opened by a name."""
-    out = ["app"]
-    if _pk_on(ctx.store) and WA.wa_host_ok(_host(ctx)):
-        out.append("passkey")
-    return out
-
-
 def mfa_get(ctx):
     s, acc = _pending(ctx)
     stage = s["mfa"]
-    rec = ctx.store.mfa_get(acc["name"]) if stage == "check" else {}
-    return {"name": acc["name"], "display": "", "stage": stage, "methods": mfa_methods(ctx),
-            "kind": (rec.get("kind") or "app") if stage == "check" else "",
-            "hosts": sorted(set(k.get("host") for k in rec.get("keys") or [] if isinstance(k, dict)))
-            if stage == "check" else [], "dest": "", "started": None,
+    return {"name": acc["name"], "display": "", "stage": stage, "methods": ["app"],
+            "kind": "app" if stage == "check" else "", "hosts": [], "dest": "", "started": None,
             "digits": 6, "blocked": "", "send": None}
 
 
 mfa_get.PUBLIC = True
 
 
-def _mfa_wrong(ctx, s, name, words, said=None, level="warn"):
-    """A wrong answer of the second step - a code, or a passkey refused: counted on the address and
-    the name as the passwords are, and on this sign-in (otp 1.0.252) - at the fifth its password is
-    asked again. Raises: the words for the page."""
+def _mfa_wrong(ctx, s, name, words):
+    """A wrong code of the second step: counted on the address and the name as the passwords are,
+    and on this sign-in (otp 1.0.252) - at the fifth its password is asked again. Raises."""
     S = ctx.store
     S.fail(ctx.addr, name, "code")
-    _say(ctx, "sign-in", said or "%s: a wrong code of the second step from %s (%s)" % (name, ctx.addr, words),
-         level, name)
+    _say(ctx, "sign-in", "%s: a wrong code of the second step from %s (%s)" % (name, ctx.addr, words), "warn", name)
     n = int(s["data"].get("mfa_wrong") or 0) + 1
     try:
         S.pending_merge(_token(ctx), {"mfa_wrong": n})
@@ -792,75 +783,6 @@ def _mfa_wrong(ctx, s, name, words, said=None, level="warn"):
              "is asked again" % (name, MFA_WRONG_MOST), "warn", name)
         raise ST.StoreError("too many wrong codes - sign in again")
     raise ST.StoreError(words)
-
-
-def _mfa_passkey(ctx, s, acc, stage, act, b):
-    """A passkey's part of the second step (otp 1.0.254): the question kept with this sign-in, the
-    answer checked by igd_webauthn - wrong answers counted as wrong codes are."""
-    S = ctx.store
-    name = acc["name"]
-    tok = _token(ctx)
-    if act == "enrol_start":
-        try:
-            saved, opts = WA.wa_register_options(_host(ctx), name, "", _site(ctx))
-        except ValueError as e:
-            raise ST.StoreError(str(e))
-        S.pending_merge(tok, {"mfa_new": dict(saved, kind="passkey")})
-        return dict(opts, kind="passkey")
-    if act == "pk_begin":
-        if stage != "check":
-            raise ST.StoreError("set the second step up first")
-        rec = S.mfa_get(name)
-        if rec.get("kind") != "passkey":
-            raise ST.StoreError("the second step of this account is not a passkey")
-        try:
-            saved, opts = WA.wa_login_options(_host(ctx), rec.get("keys") or [])
-        except ValueError as e:
-            raise ST.StoreError(str(e))
-        S.pending_merge(tok, {"mfa_pk": saved})
-        return opts
-    if S.too_many(ctx.addr, name):
-        raise ST.StoreError(S._locked_words())
-    if act == "enrol_confirm":
-        new = s["data"].get("mfa_new")
-        if not isinstance(new, dict) or new.get("kind") != "passkey":
-            raise ST.StoreError("choose a way first")
-        try:
-            pk = WA.wa_register_finish(new, b)
-        except (ValueError, TypeError, KeyError) as e:
-            _mfa_wrong(ctx, s, name, "the passkey was not taken: %s" % e,
-                       "%s: the passkey was not taken from %s - %s" % (name, ctx.addr, e))
-        # The question once (otp's session_take): taken only by the answer that was right.
-        if not S.session_take(tok, "mfa_new"):
-            raise ST.StoreError("that answer was taken already - start again")
-        new_tok = S.mfa_passkey_enrol(tok, pk)
-        _say(ctx, "account", "%s set up the second step of signing in: %s (%s, for https://%s/)" % (
-            name, KIND_SAID["passkey"], pk.get("name") or "a device", pk["host"]), "info", name)
-        _say(ctx, "sign-in", "%s gave the second step (set up now: %s) from %s" % (name, KIND_SAID["passkey"],
-                                                                                  ctx.addr), "info", name)
-        return {"message": "the second step is set up", "done": True, "token": new_tok}
-    # act == "check"
-    rec = S.mfa_get(name)
-    if rec.get("kind") != "passkey":
-        raise ST.StoreError("the second step of this account is not a passkey")
-    # The question once, as a code is: taken before the answer is looked at.
-    saved = S.session_take(tok, "mfa_pk")
-    if not isinstance(saved, dict) or not saved:
-        _mfa_wrong(ctx, s, name, "that answer is to an old question - try again")
-    with S.lock:
-        rec = S.mfa_get(name)
-        try:
-            used = WA.wa_login_finish(saved, rec.get("keys") or [], b)
-        except PermissionError as e:
-            _mfa_wrong(ctx, s, name, str(e), "%s: the passkey was refused - %s" % (name, e), "bad")
-        except (ValueError, TypeError, KeyError) as e:
-            _mfa_wrong(ctx, s, name, str(e), "%s: the passkey was refused - %s" % (name, e))
-        rec["keys"] = [used if k.get("id") == used["id"] else k for k in rec.get("keys") or []]
-        S.mfa_put(name, rec)
-    new_tok = S.mfa_passed(tok)
-    _say(ctx, "sign-in", "%s gave the second step (a passkey (%s)) from %s" % (
-        name, used.get("name") or "a device", ctx.addr), "info", name)
-    return {"message": "signed in", "done": True, "token": new_tok}
 
 
 def mfa_post(ctx):
@@ -875,25 +797,15 @@ def mfa_post(ctx):
     if act in ("enrol_start", "enrol_confirm") and (stage != "enrol" or S.mfa_get(name).get("kind")):
         raise ValueError("this account has its second step set up already - sign in again")
     if act == "enrol_start":
-        kind = str(b.get("kind") or "app")
-        if kind not in mfa_methods(ctx):
+        if str(b.get("kind") or "app") != "app":
             raise ValueError("that way is not offered here")
-        if kind == "passkey":
-            return _mfa_passkey(ctx, s, acc, stage, act, b)
         secret = ST.b32_new(20)
         S.pending_merge(_token(ctx), {"mfa_new": secret})
         uri = ST.otpauth_uri(secret, name, "%s (fake-igd)" % _site(ctx))
         return {"kind": "app", "qr": qr_data_uri(uri), "uri": uri,
                 "secret": " ".join(secret[i:i + 4] for i in range(0, len(secret), 4))}
-    if act == "pk_begin":
-        return _mfa_passkey(ctx, s, acc, stage, act, b)
     if act not in ("enrol_confirm", "check"):
         raise ValueError("no such thing to do")
-    new = s["data"].get("mfa_new")
-    if (act == "enrol_confirm" and ((isinstance(new, dict) and new.get("kind") == "passkey")
-                                    or "attestationObject" in b)) or \
-            (act == "check" and stage == "check" and S.mfa_get(name).get("kind") == "passkey"):
-        return _mfa_passkey(ctx, s, acc, stage, act, b)
     if S.too_many(ctx.addr, name):
         raise ValueError(S._locked_words())
     try:
@@ -924,10 +836,90 @@ def mfa_post(ctx):
 mfa_post.PUBLIC = True
 
 
-# ---- Your account: the passkeys of the account signed in (otp 1.0.257) -------------------------
-# Listed, one added from another device, named, taken away - while the second step is on and it is
-# a passkey. The last one is the second step itself: taken away only by a reset (another full
-# admin on Accounts, or root with upnp user reset-2fa NAME).
+# ---- signing in with a passkey (1.9.7): Face ID, Touch ID, Windows Hello - by itself -------------
+# Instead of the password, never after it: the device that keeps the key, and the face, a finger or
+# its PIN verified there (UV), are two factors of their own - so no second step is asked after it,
+# even while admin_2fa is on. Discoverable keys: no name typed, the device offers the passkeys it
+# has for this name of the pages, and the key found says which account it is.
+def _pk_on(S):
+    return bool(S.policy().get("passkey_signin"))
+
+
+def pk_signin_get(ctx):
+    """Whether the sign-in page offers it: switched on, and the pages opened by a name."""
+    on = _pk_on(ctx.store)
+    return {"on": on, "here": on and WA.wa_host_ok(_host(ctx))}
+
+
+pk_signin_get.PUBLIC = True
+
+
+def _pk_refused(ctx, name, words, level="warn", count=True):
+    """A passkey that did not sign in: counted as a wrong password is (the address, and the name when
+    the key told it), said in the events - the page is told only the words."""
+    if count:
+        ctx.store.fail(ctx.addr, name or "", "password")
+    said = "".join(c if c.isprintable() else "?" for c in (name or ""))
+    _say(ctx, "sign-in", "%s could not sign in with a passkey from %s: %s" % (said or "(no account)", ctx.addr, words),
+         level, said)
+    raise ValueError(words)
+
+
+def pk_signin(ctx):
+    """begin: a question for the device, kept here (bound to the address, once, five minutes).
+    finish: the answer - the key found among every account's, checked as WebAuthn says; a new
+    sign-in, whose token the pages put into the cookie (never shown to the page)."""
+    S = ctx.store
+    b = ctx.body()
+    act = str(b.get("action") or "")
+    if not _pk_on(S):
+        raise ValueError("signing in with a passkey is switched off (Settings - Accounts)")
+    # The address counted first: the name is told only by the key, once it is found.
+    if S.too_many(ctx.addr, None):
+        raise ValueError(S._locked_words())
+    if act == "begin":
+        saved, opts = WA.wa_signin_options(_host(ctx))
+        S.challenge_put(ctx.addr, saved)
+        return opts
+    if act != "finish":
+        raise ValueError("no such thing to do")
+    saved = S.challenge_take(b.get("challenge"), ctx.addr)
+    if not saved:
+        _pk_refused(ctx, "", "that answer is to an old question - try again")
+    acc, key = S.passkey_find(b.get("id"))
+    if not acc:
+        _pk_refused(ctx, "", "that passkey signs nobody in here (taken away, or of another server)")
+    name = acc["name"]
+    if S.too_many(ctx.addr, name):
+        _pk_refused(ctx, name, S._locked_words(), count=False)
+    # The device names the account the key was made for (userHandle): it must be this one.
+    uh = str(b.get("userHandle") or "")
+    if uh and uh != WA.wa_user_id(name):
+        _pk_refused(ctx, name, "that passkey was made for another account")
+    try:
+        used = WA.wa_login_finish(saved, [key], b)
+    except PermissionError as e:
+        _pk_refused(ctx, name, str(e), "bad")
+    except (ValueError, TypeError, KeyError) as e:
+        _pk_refused(ctx, name, str(e))
+    if acc["disabled"]:
+        # Said as any passkey that signs nobody in, and counted (as a password of an account switched off).
+        _pk_refused(ctx, name, "that passkey signs nobody in here (taken away, or of another server)")
+    try:
+        token, usr = S.passkey_login(name, used, ctx.addr, _agent(ctx), _idle_s(ctx))
+    except ST.StoreError as e:
+        _pk_refused(ctx, name, str(e))
+    _say(ctx, "sign-in", "%s signed in with a passkey (%s) from %s" % (name, used.get("name") or "a device", ctx.addr),
+         "info", name)
+    return {"token": token, "must_change": bool(usr["must_change"]), "mfa": "",
+            "who": {"name": usr["name"], "role": usr["role"]}}
+
+
+pk_signin.PUBLIC = True
+
+
+# ---- Your account: the passkeys of the account signed in (otp 1.0.257; 1.9.7 a sign-in) ----------
+# Listed, one added from another device, named, taken away - the last one too: the password stays.
 def _pk_row(k):
     def n(v):
         try:
@@ -938,19 +930,11 @@ def _pk_row(k):
             "at": n(k.get("at")), "used": n(k.get("used")), "backed_up": bool(k.get("backed_up"))}
 
 
-def _pk_own(ctx):
-    me = ctx.need("readonly")
-    if not _pk_on(ctx.store):
-        raise ValueError("the second step by a passkey is switched off (Settings - Accounts)")
-    rec = ctx.store.mfa_get(me["name"])
-    if rec.get("kind") != "passkey":
-        raise ValueError("the second step of this account is not a passkey")
-    return me, rec
-
-
 def _pk_stale(me):
+    """Added only soon after signing in (otp 1.0.262): a passkey outlives the sign-in, so not on its
+    cookie alone - within a quarter of an hour of the password (and its second step) or a passkey."""
     try:
-        at = float(me.get("mfa_at") or 0)
+        at = max(float(me.get("session_started") or 0), float(me.get("mfa_at") or 0))
     except (TypeError, ValueError):
         at = 0.0
     return time.time() - at > PK_ADD_FRESH
@@ -959,34 +943,32 @@ def _pk_stale(me):
 def pk_list(ctx):
     me = ctx.need("readonly")
     on = _pk_on(ctx.store)
-    rec = ctx.store.mfa_get(me["name"]) if on else {}
-    mine = rec.get("kind") == "passkey"
+    keys = ctx.store.passkeys(me["name"])
     why = ""
-    if mine and not WA.wa_host_ok(_host(ctx)):
+    if on and not WA.wa_host_ok(_host(ctx)):
         why = "A passkey is added on these pages opened by a name over HTTPS (https://name/), not by an address."
-    elif mine and len(rec.get("keys") or []) >= PK_MAX:
+    elif on and len(keys) >= PK_MAX:
         why = "This account has %d passkeys, as many as it may." % PK_MAX
-    elif mine and _pk_stale(me):
+    elif on and _pk_stale(me):
         # Said before the button is pressed (otp 1.0.262), not only after.
         why = "A passkey is added within %d minutes of signing in - sign in again to add one." % (PK_ADD_FRESH // 60)
-    return {"on": on, "mine": mine, "kind": rec.get("kind") or "",
-            "keys": [_pk_row(k) for k in rec.get("keys") or []] if mine else [],
-            "can_add": mine and not why, "why": why, "max": PK_MAX}
+    return {"on": on, "mine": on, "keys": [_pk_row(k) for k in keys],
+            "can_add": on and not why, "why": why, "max": PK_MAX}
 
 
 def pk_do(ctx):
-    me, rec = _pk_own(ctx)
+    me = ctx.need("readonly")
     S = ctx.store
     b = ctx.body()
     act = str(b.get("action") or "")
     name = me["name"]
     tok = _token(ctx)
+    if act in ("add_begin", "add_finish") and not _pk_on(S):
+        raise ValueError("signing in with a passkey is switched off (Settings - Accounts)")
     if act == "add_begin":
-        keys = rec.get("keys") or []
+        keys = S.passkeys(name)
         if len(keys) >= PK_MAX:
             raise ValueError("this account has %d passkeys, as many as it may" % PK_MAX)
-        # otp 1.0.262: not on the cookie alone - a passkey outlives the sign-in, so it is added only
-        # within a quarter of an hour of the second step given (sign in again otherwise).
         if _pk_stale(me):
             raise ValueError("a passkey is added within %d minutes of signing in - sign in again and add it "
                              "then" % (PK_ADD_FRESH // 60))
@@ -1006,17 +988,17 @@ def pk_do(ctx):
         if not S.session_take(tok, "pk_add"):
             raise ValueError("that answer was taken already - press the button again")
         with S.lock:
-            rec = S.mfa_get(name)
-            if rec.get("kind") != "passkey":
-                raise ValueError("the second step of this account is not a passkey")
-            keys = list(rec.get("keys") or [])
+            keys = S.passkeys(name)
             if any(k.get("id") == pk["id"] for k in keys):
                 raise ValueError("this device has a passkey for this account already")
+            # One credential signs in one account (1.9.7): found by its ID alone.
+            other, _k = S.passkey_find(pk["id"])
+            if other:
+                raise ValueError("that passkey is another account's already")
             if len(keys) >= PK_MAX:
                 raise ValueError("this account has %d passkeys, as many as it may" % PK_MAX)
             keys.append(pk)
-            rec["keys"] = keys
-            S.mfa_put(name, rec)
+            S.passkeys_put(name, keys)
         _say(ctx, "account", "%s added a passkey (%s, for https://%s/)" % (name, pk.get("name") or "a device",
                                                                          pk["host"]), "info", name)
         return {"message": "the passkey is added", "keys": [_pk_row(k) for k in keys]}
@@ -1026,30 +1008,23 @@ def pk_do(ctx):
         if not label:
             raise ValueError("a name for the passkey")
         with S.lock:
-            rec = S.mfa_get(name)
-            keys = list(rec.get("keys") or [])
+            keys = S.passkeys(name)
             hit = next((k for k in keys if k.get("id") == ident), None)
             if hit is None:
                 raise ValueError("no such passkey of this account")
             was = hit.get("name") or "a device"
             hit["name"] = label
-            rec["keys"] = keys
-            S.mfa_put(name, rec)
+            S.passkeys_put(name, keys)
         _say(ctx, "account", "%s named a passkey %s (was %s)" % (name, label, was), "info", name)
         return {"message": "named", "keys": [_pk_row(k) for k in keys]}
     if act == "delete":
         with S.lock:
-            rec = S.mfa_get(name)
-            keys = list(rec.get("keys") or [])
+            keys = S.passkeys(name)
             hit = next((k for k in keys if k.get("id") == ident), None)
             if hit is None:
                 raise ValueError("no such passkey of this account")
-            if len(keys) <= 1:
-                raise ValueError("the last passkey is the second step of this account: another full admin "
-                                 "resets it (Accounts), or root with  upnp user reset-2fa %s" % name)
             keys = [k for k in keys if k.get("id") != ident]
-            rec["keys"] = keys
-            S.mfa_put(name, rec)
+            S.passkeys_put(name, keys)
         _say(ctx, "account", "%s took a passkey away (%s, for https://%s/)" % (
             name, hit.get("name") or "a device", hit.get("host") or "?"), "warn", name)
         return {"message": "taken away", "keys": [_pk_row(k) for k in keys]}
@@ -1072,10 +1047,12 @@ def on_saved(ctx, changed):
     S = ctx.store
     tok = _token(ctx)
     who = (ctx.me or {}).get("name", "")
+    # A sign-in with a passkey stays (1.9.7): it is whole by itself, no second step is asked after it.
+    by_pk = "data NOT LIKE '%\"by\": \"passkey\"%'"
     if tok:
-        gone = S.run("DELETE FROM sessions WHERE mfa = '' AND id <> ?", (ST._sid(tok),)).rowcount
+        gone = S.run("DELETE FROM sessions WHERE mfa = '' AND " + by_pk + " AND id <> ?", (ST._sid(tok),)).rowcount
     else:
-        gone = S.run("DELETE FROM sessions WHERE mfa = '' AND name <> ?", (who,)).rowcount
+        gone = S.run("DELETE FROM sessions WHERE mfa = '' AND " + by_pk + " AND name <> ?", (who,)).rowcount
     if gone:
         _say(ctx, "account", "the second step was switched on: %d other sign-in(s) to the pages ended" % gone,
              "warn", who)
@@ -1096,6 +1073,7 @@ ROUTES = {
     ("POST", "/api/auth/passwd"): passwd, ("POST", "/api/auth/password"): passwd,
     ("GET", "/api/auth/mfa"): mfa_get, ("POST", "/api/auth/mfa"): mfa_post,
     ("GET", "/api/mfa"): mfa_get, ("POST", "/api/mfa"): mfa_post,
+    ("GET", "/api/auth/passkey-login"): pk_signin_get, ("POST", "/api/auth/passkey-login"): pk_signin,
     ("GET", "/api/auth/passkeys"): pk_list, ("POST", "/api/auth/passkeys"): pk_do,
     ("GET", "/api/passkeys"): pk_list, ("POST", "/api/passkeys"): pk_do,
 }

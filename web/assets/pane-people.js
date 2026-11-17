@@ -7,7 +7,8 @@
 
 /* ---- accounts ------------------------------------------------------------- */
 var US = {d: null};
-var MFA_TAG = {app: 'an app', passkey: 'a passkey'};
+var MFA_TAG = {app: 'an app'};
+function pkCount(n) { return n === 1 ? '1 passkey' : num(n) + ' passkeys'; }
 function loadUsers() {
   if (typeof colsCardSay === 'function') colsCardSay();
   api('users').then(function (d) {
@@ -20,7 +21,15 @@ function loadUsers() {
       tr.appendChild(n);
       var r = el('td'); r.appendChild(el('span', 'tag ' + roleTone(u.role), roleWords(u.role))); tr.appendChild(r);
       /* How it signs in (otp's): every account here with a password of its own - there is no directory. */
-      tr.appendChild(el('td', 'muted', 'a password here'));
+      /* ...and its passkeys, which sign it in by themselves (1.9.7): how many, of which devices. */
+      var how = el('td', 'muted');
+      how.appendChild(el('span', '', 'a password here'));
+      if (u.passkeys) {
+        var pks = el('span', 'sub', pkCount(u.passkeys));
+        pks.title = u.passkeys_said || '';
+        how.appendChild(pks);
+      }
+      tr.appendChild(how);
       var st = el('td'); st.appendChild(el('span', 'tag ' + (u.disabled ? 'crit' : 'ok'), u.disabled ? 'off' : 'on'));
       if (u.must_change) { st.appendChild(document.createTextNode(' ')); st.appendChild(el('span', 'tag info', 'to change at sign-in')); }
       tr.appendChild(st);
@@ -28,9 +37,7 @@ function loadUsers() {
       var mf = el('td', 'small');
       if (u.mfa) {
         mf.appendChild(el('span', 'tag ok', MFA_TAG[u.mfa.kind] || u.mfa.kind));
-        /* a passkey: of which device, for which name of the pages (otp 1.0.254) */
-        if (u.mfa.dest) mf.appendChild(noI18n(el('span', 'sub mono', u.mfa.dest)));
-        else if (u.mfa.at) mf.appendChild(el('span', 'sub', 'since ' + stamp(u.mfa.at)));
+        if (u.mfa.at) mf.appendChild(el('span', 'sub', 'since ' + stamp(u.mfa.at)));
       } else {
         mf.appendChild(el('span', 'muted', d.mfa_on ? 'set up at the next sign-in' : '–'));
       }
@@ -121,7 +128,7 @@ function loadUsers() {
           mr.onclick = function (ev) {
             ev.stopPropagation();
             confirmThen('Reset the second step of ' + u.name + '?',
-              htmlText('The way ' + u.name + ' gives the second step is taken away, and their sign-ins are ended. At the next sign-in they choose and set it up again - with the password alone, so do it only when you know it is them (a lost phone, a new one).'),
+              htmlText('The app ' + u.name + ' gives the second step with is taken away, and their sign-ins are ended. At the next sign-in they set it up again - with the password alone, so do it only when you know it is them (a lost phone, a new one). Their passkeys stay.'),
               'Reset it', function () {
                 api('users', {action: 'mfa_reset', name: u.name}).then(function (r) { toast(r.message, 'good'); loadUsers(); }).catch(oops);
               }, true);
@@ -130,6 +137,24 @@ function loadUsers() {
           mr.disabled = true;
         }
         tools.appendChild(mr);
+        /* Its passkeys taken away (1.9.7) - a lost iPhone: it signs in with its password then. */
+        var pr = iconButton('key', u.passkeys
+          ? 'Take away the passkeys of ' + u.name + ' (' + pkCount(u.passkeys) + '): they no longer sign in. The password does, as before.'
+          : u.name + ' has no passkey: nothing to take away.');
+        if (u.passkeys) {
+          pr.onclick = function (ev) {
+            ev.stopPropagation();
+            confirmThen('Take away the passkeys of ' + u.name + '?',
+              htmlText('Every passkey of ' + u.name + ' (' + pkCount(u.passkeys) + (u.passkeys_said ? ': ' + u.passkeys_said : '')
+                + ') no longer signs them in. Their password does, as before, and they can add passkeys again under Your account.'),
+              'Take them away', function () {
+                api('users', {action: 'passkeys_remove', name: u.name}).then(function (r) { toast(r.message, 'good'); loadUsers(); }).catch(oops);
+              }, true);
+          };
+        } else {
+          pr.disabled = true;
+        }
+        tools.appendChild(pr);
       }
       tr.appendChild(tools);
       return tr;
@@ -261,7 +286,8 @@ function userInfo(u) {
       ['Last signed in', u.last_login ? stamp(u.last_login) + (u.last_from ? ' from ' + u.last_from : '') : 'never'],
       ['Signed in now', u.sessions ? num(u.sessions) : 'no'],
       ['Second step', u.mfa ? (MFA_TAG[u.mfa.kind] || u.mfa.kind) + ', since ' + stamp(u.mfa.at)
-        + (u.mfa.dest ? ' (' + u.mfa.dest + ')' : '') : (US.d && US.d.mfa_on ? 'set up at the next sign-in' : '–')]
+        : (US.d && US.d.mfa_on ? 'set up at the next sign-in' : '–')],
+      ['Passkeys', u.passkeys ? pkCount(u.passkeys) + (u.passkeys_said ? ' (' + u.passkeys_said + ')' : '') : 'none']
     ]));
     var g = el('div', 'formgrid');
     note = textBox(u.note || '', 'who it is, what it is for');

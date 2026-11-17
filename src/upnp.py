@@ -17,7 +17,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from xml.etree import ElementTree as ET
 
-VERSION = "1.9.6"
+VERSION = "1.9.7"
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 APP = "fake-igd"
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
@@ -2182,8 +2182,10 @@ def build_parser():
             "  end ID                    end one sign-in\n"
             "  must-change NAME          a new password asked for at its next sign-in\n"
             "  off NAME / on NAME        switch an account off (it may not sign in) and on again\n"
-            "  reset-2fa NAME            the second step (the app, or the passkeys) taken away - set up again at\n"
-            "                            sign-in\n"
+            "  reset-2fa NAME            the second step (the app) taken away - set up again at sign-in;\n"
+            "                            its passkeys stay\n"
+            "  passkeys NAME [--remove-all]  its passkeys (Face ID, Touch ID, Windows Hello - each signs\n"
+            "                            it in by itself); --remove-all takes every one away\n"
             "  lockouts                  the names and addresses held back by wrong passwords\n"
             "  clear [NAME|ADDRESS]      let them try again at once (all of them without one)\n"
             "The password: --password - asks for it twice, --password @env takes UPNP_PASSWORD;\n"
@@ -2194,15 +2196,16 @@ def build_parser():
             "  sudo upnp user passwd admin\n"
             "  sudo upnp user list", aliases=("users",))
     s.add_argument("what", nargs="?", choices=("list", "add", "passwd", "role", "note", "must-change", "off", "on",
-                                               "disable", "enable", "reset-2fa", "del", "sessions", "end",
+                                               "disable", "enable", "reset-2fa", "passkeys", "del", "sessions", "end",
                                                "lockouts", "clear", "lockouts-clear", "unlock"),
-                   metavar="list|add|passwd|role|note|must-change|off|on|reset-2fa|del|sessions|end|lockouts|clear")
+                   metavar="list|add|passwd|role|note|must-change|off|on|reset-2fa|passkeys|del|sessions|end|lockouts|clear")
     s.add_argument("name", nargs="?", metavar="NAME|ID")
     s.add_argument("--role", choices=("fulladmin", "readonly"))
     s.add_argument("--password", metavar="-|@env", help="'-' asks for it, '@env' reads UPNP_PASSWORD")
     s.add_argument("--note", default=None)
     s.add_argument("--yes", "-y", action="store_true", help="do not ask")
-    s.add_argument("--json", action="store_true", help="JSON output (list, sessions)")
+    s.add_argument("--remove-all", action="store_true", help="passkeys: take every passkey of NAME away")
+    s.add_argument("--json", action="store_true", help="JSON output (list, sessions, passkeys)")
     s.set_defaults(func=admin("cmd_user"))
 
     s = add("web", "the web pages: their address, nginx, php-fpm, the API",

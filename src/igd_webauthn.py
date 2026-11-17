@@ -1,14 +1,16 @@
-"""igd_webauthn.py - a passkey (Face ID, Touch ID, Windows Hello) as the second step of the pages (1.9.2).
+"""igd_webauthn.py - a passkey (Face ID, Touch ID, Windows Hello) to sign in to the pages (1.9.2;
+a sign-in of its own, instead of the password, since 1.9.7).
 
 otp's WebAuthn (otp.py 1.0.254-1.0.262: wa_b64 ... wa_login_finish), taken whole: the rules
 of WebAuthn checked here, in Python, with nothing but the standard library - no package, nothing
-run, nothing written to a file. After the password, never instead of it (api_people.py).
+run, nothing written to a file. The sign-in itself is api_people.py's (pk_signin).
 
-  The question (challenge) once - kept with the sign-in it was asked for (igd_store's pending
-  session, or the session signed in for Your account), taken from there by the one answer; its
+  The question (challenge) once - kept by igd_store (its table challenges, bound to the address
+  that asked, five minutes; or the session signed in for Your account's Add), taken from there by
+  the one answer; its
   type (webauthn.create / webauthn.get); the origin and the name the pages were opened by (the RP
   ID - a name over HTTPS, never an address); the user present AND verified (a face, a finger,
-  the device's PIN: without it there is no second step); the signature (ES256, RS256, EdDSA); the
+  the device's PIN: without it a passkey is no sign-in); the signature (ES256, RS256, EdDSA); the
   counter (it may not go back: a copied passkey). The attestation is not asked for ("none"): the
   server keeps only the public half of the key.
 
@@ -392,14 +394,16 @@ def wa_user_id(name):
 
 # ---- the two questions and their answers --------------------------------------------------------
 def wa_register_options(host, name, display, site, have=()):
-    """(kept with the sign-in, sent to the browser) for a new passkey."""
+    """(kept with the sign-in, sent to the browser) for a new passkey. A discoverable one (1.9.7):
+    the device keeps the account's name with it, so a sign-in needs no name typed."""
     rp_id, origin = wa_host(host)
     ch = wa_b64(secrets.token_bytes(32))
     return {"challenge": ch, "host": rp_id, "origin": origin, "t": time.time()}, {"publicKey": {
         "challenge": ch, "rp": {"id": rp_id, "name": "%s (fake-igd)" % str(site or "fake-igd")[:60]},
         "user": {"id": wa_user_id(name), "name": name, "displayName": display or name},
         "pubKeyCredParams": [{"type": "public-key", "alg": a} for a in WA_ALGS],
-        "authenticatorSelection": {"userVerification": "required", "residentKey": "preferred"},
+        "authenticatorSelection": {"userVerification": "required", "residentKey": "required",
+                                   "requireResidentKey": True},
         "excludeCredentials": [{"type": "public-key", "id": k} for k in have],
         "attestation": "none", "timeout": WA_TIMEOUT_MS}}
 
@@ -426,17 +430,14 @@ def wa_register_finish(saved, b):
             "name": " ".join(str(b.get("device") or "").split())[:60]}
 
 
-def wa_login_options(host, keys):
+def wa_signin_options(host):
+    """(kept, sent to the browser) for a sign-in by a passkey alone (1.9.7): no name, no list of
+    keys - the device offers the passkeys it has for this name of the pages (discoverable)."""
     rp_id, origin = wa_host(host)
-    mine = [k for k in keys if k.get("host") == rp_id]
-    if not mine:
-        raise ValueError("the passkey of this account is for https://%s/ - open these pages "
-                         "there (or a full admin resets the second step)"
-                         % (keys[0].get("host") if keys else "?"))
     ch = wa_b64(secrets.token_bytes(32))
     return {"challenge": ch, "host": rp_id, "origin": origin, "t": time.time()}, {"publicKey": {
         "challenge": ch, "rpId": rp_id, "userVerification": "required", "timeout": WA_TIMEOUT_MS,
-        "allowCredentials": [{"type": "public-key", "id": k["id"]} for k in mine]}}
+        "allowCredentials": []}}
 
 
 def wa_login_finish(saved, keys, b):
