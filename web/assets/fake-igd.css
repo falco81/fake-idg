@@ -4265,14 +4265,14 @@ ul.se-confirm code{font-size:12px;overflow-wrap:anywhere;white-space:normal}
   .modal .box,.modal .box.large,.modal .box.medium,.modal .box.narrow,.modal .box.small{width:100%;max-height:96vh}
 }
 /* ... and their content uses the width: facts in as many columns as fit, tables and notes full width */
-.modal .body .facts{grid-template-columns:repeat(auto-fill,minmax(180px,1fr))}
+.modal .body .facts{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
 .modal .body .facts .fact.wide{grid-column:span 2}
 .modal .body table{width:100%}
 .modal .body p.note,.modal .body .note,.modal .body p.muted{max-width:none}
 
 /* A note is as wide as the boxes it stands with (a max-width beside a full-width table or facts looked
    like a mistake); the pane's lede keeps its measure. */
-.card > p.note,.card > .note,.card.held > .note,.subpanel > p.note{max-width:none}
+p.note,.card > p.note,.card > .note,.card.held > .note{max-width:none}
 
 /* heading -> what it heads */
 .card.held > h2{margin-bottom:10px}
@@ -4286,8 +4286,15 @@ h3.peek-h + *{margin-top:0}
 /* what stands above a note, a table, a log or another block: never glued to it */
 :is(.card,.modal .body,.subpanel,.ctl-pane) > :is(.scroll,pre,.btnrow,.net-facts,.fw-h,.lt-paged):not(:last-child){margin-bottom:12px}
 :is(.card,.modal .body,.subpanel) > .card + :is(p,.note){margin-top:12px}
-:is(.card,.modal .body,.subpanel) > :is(.scroll,pre,.lt-paged) + h3.peek-h{margin-top:22px}
-details[open] > summary{margin-bottom:8px}
+/* content -> the next heading: 20 px whatever the content (its own bottom margin counted) */
+:is(.card,.modal .body,.subpanel) > :is(.scroll,pre,.lt-paged,.btnrow,.net-facts) + :is(h3.peek-h,h3,h4){margin-top:8px}
+:is(.card,.modal .body,.subpanel) > .facts + :is(h3.peek-h,h3,h4){margin-top:4px}
+:is(.card,.modal .body,.subpanel) > :is(p.note,.note) + :is(h3.peek-h,h3,h4){margin-top:6px}
+#readonly-note{margin-bottom:14px}
+details > summary:not(:last-child){margin-bottom:8px}
+.fw-h + :is(p,.note){margin-top:8px}
+:is(pre,.scroll,.lt-paged,.net-facts) + :is(p,.note,.btnhelp){margin-top:12px}
+.card + :is(p.note,.note){margin-top:12px}
 p.small.muted + p.small.muted{margin-top:8px}
 p.btnhelp{margin-bottom:10px}
 

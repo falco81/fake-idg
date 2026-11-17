@@ -2,6 +2,20 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.7.13 (2026-11-17)
+
+- **The UPnP service answers a search within 50 ms.** It waited a random time up to MX seconds (UDA spreads
+  the answers of many devices so); a PS5 searching with MX=1 was answered about a second later - and never
+  came for the device description. fake-igd is one device: the answer goes at once (5-50 ms).
+- **Spaces between things, everywhere, measured**: no two blocks closer than 8 px, the same transition with
+  the same space on every tab, pane and popup - a heading 8-12 px above what it heads and 20 px below what
+  came before, a row of pills (a client's steps) with air under it, a note never glued to the table, log,
+  button row or box above it, an empty list with the room of a row, a folded part's contents below its
+  title. Notes as wide as the boxes and tables beside them. (A checker walks every tab, pane and popup.)
+- **Popups generous and responsive**: up to 1880 px (95 % of the screen), the medium ones up to 1600 px
+  (90 %), the small ones 760 px, up to 94 % of the height, the whole width on a phone; the facts fill as many
+  columns as fit, tables full width - still one scroller.
+
 ## 1.7.12 (2026-11-17)
 
 - **Settings → The database → Erase the collected data** erases the history kept outside the database too
