@@ -402,6 +402,59 @@ Secrets are passed to `config set` as `-` (asked for) or `@env` (the `UPNP_VALUE
 
 ---
 
+## The MikroTik - is the port really open? (read-only)
+
+fake-igd answers a PS5's UPnP and opens nothing; the real router does. When it is a **MikroTik**, *Settings →
+MikroTik* reads it and says, for every port a device asked for, whether the router carries it - and draws its
+whole firewall. **Read-only**: fake-igd only ever asks the router to *print*; everything else is refused in the
+code before it is sent (`src/igd_mikrotik.py`, tested in `test/mikrotik/`). What is missing is shown as
+RouterOS commands for you to type - never sent.
+
+How it reaches the router (as isemon reads one):
+
+* **REST** over HTTPS (RouterOS 7, `www-ssl`) - `GET /rest/...` only;
+* **the RouterOS API** - `api-ssl` (8729) over TLS, or `api` (8728) - `<menu>/print` only, also RouterOS 6;
+* **ssh** - signed in with a key made here (ed25519, its private half sealed beside the database) or a password;
+  each menu printed `as-value`.
+
+The certificate is trusted by its SHA-256 fingerprint after *Try reaching it* has shown it (or checked by an
+authority, and the router's name); the ssh host key is pinned in `mikrotik_known_hosts` beside the database
+after *Look at its host key* - a router answering with another one is refused before anything (not even the
+password) is sent. Through *Settings → Proxy* only where it is switched on for the MikroTik (REST and the API).
+
+On the router, an account that may only read (*How to set it up on the router…* has the commands):
+
+```
+/user group add name=fake-igd-read policy=read,rest-api,!local,!telnet,!ssh,!ftp,!reboot,!write,!policy,!test,!winbox,!password,!web,!sniff,!sensitive,!romon,!api
+/user add name=fake-igd-read group=fake-igd-read address=<this server> password="choose-a-long-one"
+/user ssh-keys add user=fake-igd-read key="ssh-ed25519 AAAA…"        # ssh with a key (RouterOS 7)
+```
+
+What it reads, every few minutes: identity, resource, routerboard, interfaces and interface lists, IPv4/IPv6
+addresses, the default route, ARP and IPv6 neighbours, `/ip firewall` and `/ipv6 firewall` filter, nat, mangle,
+raw and address lists, `/ip upnp` (the router's own UPnP - ON is a warning: two UPnP routers on one network).
+
+How a port is checked - the first packet of a connection from the internet, first match wins:
+raw prerouting → `nat` `dstnat` (an enabled `dst-nat` to the device and its port, not shadowed by an earlier
+rule; a disabled one said as such; one that sends it elsewhere) → `filter` `forward` after the translation
+(RouterOS's default *drop all from WAN not DSTNATed* lets translated traffic through) → IPv6: `filter` `forward`
+to the device's global addresses (from the router's neighbour table by its MAC). A matcher that depends on
+what cannot be known (who connects, a limit, a time, a mark) is **cannot tell**, never a guess.
+
+The ports come from the request log (30 days), the mappings held and the devices of *Gateway for devices*.
+They show on the pane (open / no dst-nat / dropped by the filter / shadowed / disabled / forwarded elsewhere /
+cannot tell, with the commands), as a column on the *Ports* tab, on *Overview*, and as an alert (*A port asked
+for not open on the MikroTik*, off by default). The firewall view: IPv4 / IPv6, each table's chains as lanes,
+each rule a card - its action in colour, its matchers as chips, its counters and the hits since the read
+before; what concerns the ports asked for is lit; a rule opens with all its fields.
+
+```
+sudo upnp mikrotik                    # how it is read, and the ports it does not carry
+sudo upnp mikrotik check              # every port, and the commands that would add what is missing
+sudo upnp mikrotik rules ipv4 --table nat
+sudo upnp mikrotik try                # sign in and say each step
+```
+
 ## mDNS reflector (avahi-daemon)
 
 The server's avahi-daemon with `enable-reflector=yes` repeats mDNS (Bonjour, AirPlay, Chromecast, printers, ...) between its networks. `upnp mdns` shows and controls it - and the console's menu **13**.

@@ -256,7 +256,7 @@
         var f = cmdButton('Forget it', 'forget', 'danger small');
         f.disabled = !ADMIN;
         explain(f, 'Forget the trusted certificate: the next Try reaching it shows the one the router answers with, to trust again. Until then nothing is read.');
-        f.onclick = function () { ask({do: 'trust-forget'}).catch(oops); };
+        f.onclick = function () { confirmThen('Forget its certificate?', 'The certificate trusted now is forgotten: nothing is read until Try reaching it shows the one the router answers with and you trust it again.', 'Forget it', function () { ask({do: 'trust-forget'}).catch(oops); }); };
         h.appendChild(f);
       } else {
         h.appendChild(tag('not trusted yet', 'warn'));
@@ -299,7 +299,7 @@
     if ((d.hostkeys || []).length) {
       var fg = cmdButton('Forget it', 'forget', 'danger small');
       fg.disabled = !ADMIN;
-      fg.onclick = function () { ask({do: 'hostkey-forget'}).catch(oops); };
+      fg.onclick = function () { confirmThen('Forget its host key?', 'The host key trusted now is forgotten: nothing is sent to the router until Look at its host key shows it and you trust it again.', 'Forget it', function () { ask({do: 'hostkey-forget'}).catch(oops); }); };
       hk.appendChild(fg);
     }
     box.appendChild(hk);
