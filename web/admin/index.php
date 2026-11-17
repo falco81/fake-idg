@@ -504,9 +504,9 @@ $title   = $site !== '' ? $site . ' · fake-igd' : 'fake-igd';
     <div class="gt-headrow">
       <h2>The gateway for devices</h2>
       <div class="gt-subtabs" role="tablist" aria-label="Gateway">
-        <button type="button" role="tab" data-sub="devices" aria-selected="true" data-icon="router"
+        <button type="button" role="tab" data-sub="devices" aria-selected="true"
                 title="The devices that use this server as their gateway: what they send, their DNS, rules, drops and connections - and FAKE-IGD-FWD line by line.">Devices<span class="gt-subn" id="gt-subn-devices"></span></button>
-        <button type="button" role="tab" data-sub="mikrotik" aria-selected="false" data-icon="wall"
+        <button type="button" role="tab" data-sub="mikrotik" aria-selected="false"
                 title="The real router, read (read-only): each device's way out and the public address it goes out as, every port asked for on it, and its whole firewall.">MikroTik<span class="gt-subdot" id="gt-subdot-mt"></span></button>
       </div>
       <span class="gt-tools"><span class="small muted" id="gt-read"></span>

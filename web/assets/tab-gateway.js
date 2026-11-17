@@ -39,6 +39,10 @@
     dotMikrotik();
   }
   document.querySelectorAll('#tab-gateway .gt-subtabs button[data-sub]').forEach(function (b) {
+    /* the icon put in here, not by data-icon: that one rewrites the words and took the count and the light */
+    var ic = el('span', 'gt-subic');
+    ic.innerHTML = iconMarkup(b.getAttribute('data-sub') === 'mikrotik' ? 'wall' : 'router', 16);
+    b.insertBefore(ic, b.firstChild);
     b.onclick = function () {
       if (GT.sub === b.getAttribute('data-sub') && !GT.more) return;
       GT.more = ''; GT.focus = null;

@@ -4580,3 +4580,194 @@ td.mt-why{max-width:520px;color:var(--tx-dim);white-space:normal}
 .qs-tool:hover{background:var(--bg);color:var(--tx)}
 .qs-tool[hidden]{display:none}
 .qs-wrap.qs-open .qs-offer{color:var(--info);background:var(--bg)}
+
+/* ==== 1.9.2: Gateway sub-tabs, MikroTik (Gateway → MikroTik: the way out, the ports, the firewall), the links
+   between the tabs, Settings fields hidden where they do not apply ===================================== */
+.set-item.only-hidden{display:none !important}
+.mt-see{display:inline-block;margin-top:10px;font-weight:600;color:var(--info);cursor:pointer;text-decoration:none}
+.mt-see:hover{text-decoration:underline}
+/* the head of the Gateway tab: its title, the two sub-tabs, the tools */
+.gt-headrow{display:flex;align-items:center;gap:14px 22px;flex-wrap:wrap}
+.card .gt-headrow h2{margin:0}
+.gt-subtabs{display:inline-flex;gap:4px;padding:4px;background:var(--bg);border:1px solid var(--line);border-radius:12px}
+.gt-subtabs button{appearance:none;border:0;margin:0;background:transparent;color:var(--tx-dim);font:600 14px/1 var(--face);
+  padding:9px 16px;border-radius:9px;display:inline-flex;align-items:center;gap:8px;cursor:pointer;transition:background .15s,color .15s}
+.gt-subtabs button:hover{color:var(--tx);background:var(--panel)}
+.gt-subtabs button[aria-selected="true"]{background:var(--panel2);color:var(--tx);box-shadow:inset 0 0 0 1px var(--line),0 1px 2px rgba(0,0,0,.25)}
+.gt-subtabs button[aria-selected="true"] svg{color:var(--info)}
+.gt-subn{font-size:11px;font-weight:700;padding:2px 7px;border-radius:999px;background:var(--info-bg);color:var(--info)}
+.gt-subn:empty{display:none}
+.gt-subdot{display:none;width:8px;height:8px;border-radius:50%}
+.gt-subdot.ok,.gt-subdot.warn,.gt-subdot.crit{display:inline-block}
+.gt-subdot.ok{background:var(--ok)} .gt-subdot.warn{background:var(--warn)} .gt-subdot.crit{background:var(--crit)}
+.gt-tools{margin-left:auto;display:inline-flex;align-items:center;gap:12px;flex-wrap:wrap}
+.gt-tools [hidden]{display:none !important}
+.gt-top .note{margin:14px 0 0;max-width:1100px}
+#gt-mt > .card + .card,#gt-mt > div > .card{margin-top:16px}
+/* Devices: a compact card each */
+.gt-devgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,660px),1fr));gap:16px;margin:16px 0}
+.gt-devgrid.one{grid-template-columns:minmax(0,1fr)}
+.gt-devgrid > .gt-device{margin:0;display:flex;flex-direction:column;gap:16px;min-width:0}
+.gt-device .gt-dev-head,.modal .gt-dev-head{display:flex;align-items:center;justify-content:space-between;gap:10px 16px;flex-wrap:wrap;margin:0}
+.modal .gt-dev-head{margin:0 0 16px}
+.gt-dev-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+.gt-dev-title b{font-size:18px}
+.gt-dev-title .dot{width:10px;height:10px;border-radius:50%;background:var(--tx-mut);flex:none}
+.gt-dev-title .dot.ok{background:var(--ok);box-shadow:0 0 0 4px var(--ok-bg)}
+.gt-dev-state{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.gt-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.gt-stat{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:10px 14px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.gt-stat .k{font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--tx-mut)}
+.gt-stat b{font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gt-stat .sub{font-size:12px;color:var(--tx-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gt-stat.warn b{color:var(--warn)}
+.gt-chart .gt-area{fill:rgba(88,166,255,.18);stroke:none}
+.gt-chart .gt-line{stroke:var(--info)}
+.gt-chart .gt-grid-l{stroke:var(--line);stroke-width:1}
+.gt-chart .gt-axis{fill:var(--tx-mut)}
+.gt-chart .gt-drop{fill:var(--crit)}
+.gt-chart .tip .gt-tip-v{color:var(--info)}
+.gt-chart.gt-chart-s{height:130px;margin:0}
+.gt-dev-two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
+.gt-dev-two h3.peek-h:first-child{margin-top:0}
+.gt-lanes-s .gwf-lane{padding:6px 10px}
+.gt-dev-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-top:14px;margin-top:auto;border-top:1px solid var(--line)}
+.gt-dev-foot .gx-links{margin-left:auto}
+.gt-chip{appearance:none;font:inherit;color:var(--tx);background:var(--panel2);cursor:pointer;gap:4px;padding:4px 10px}
+.gt-chip:hover{border-color:var(--info)}
+.gt-chip.crit{border-color:var(--crit)} .gt-chip.dim{border-color:var(--line)}
+.gt-chip-s{margin-left:4px;font-size:11.5px;color:var(--tx-dim)}
+.gt-chip.ok .gt-chip-s{color:var(--ok)} .gt-chip.crit .gt-chip-s{color:var(--crit)} .gt-chip.warn .gt-chip-s{color:var(--warn)}
+.gt-mt-way{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:0 0 8px}
+.gt-mt-k{font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--tx-mut)}
+.gt-mt-way b.good{color:var(--ok)} .gt-mt-way b.bad{color:var(--crit)}
+.gt-mt .gt-chips{margin:0}
+@media (max-width:1000px){.gt-dev-two{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:700px){
+  .gt-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .gt-dev-foot .gx-links{margin-left:0}
+  .gt-subtabs{width:100%}
+  .gt-subtabs button{flex:1;justify-content:center}
+  .gt-tools{margin-left:0}
+}
+/* the links between the tabs of the main menu */
+.gx-links{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.gx-links[hidden]{display:none}
+.gx-link{appearance:none;margin:0;display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px;
+  border:1px solid var(--line);background:transparent;color:var(--info);font:600 12.5px/1.2 var(--face);cursor:pointer;white-space:nowrap}
+.gx-link:hover{background:var(--info-bg);border-color:rgba(88,166,255,.5)}
+.gx-link.ok{color:var(--ok)} .gx-link.crit{color:var(--crit)} .gx-link.warn{color:var(--warn)} .gx-link.dim{color:var(--tx-dim)}
+.gx-links-k{font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--tx-mut);margin-right:4px}
+.gx-links-gw{margin:14px 0 4px;padding:10px 12px;border:1px dashed var(--line);border-radius:12px}
+@keyframes gxlit{0%,60%{box-shadow:0 0 0 3px rgba(88,166,255,.75),0 0 28px rgba(88,166,255,.25)}100%{box-shadow:0 0 0 0 rgba(88,166,255,0)}}
+.gx-lit{animation:gxlit 2.6s ease-out}
+/* an empty state, with a way to configure it for a full admin */
+.gx-empty{display:flex;flex-direction:column;align-items:center;text-align:center;gap:6px;padding:44px 24px;margin-top:16px}
+.gx-empty-ic{width:68px;height:68px;border-radius:20px;background:var(--info-bg);color:var(--info);display:flex;align-items:center;justify-content:center;margin-bottom:10px}
+.gx-empty h2{justify-content:center}
+.gx-empty .note{max-width:720px}
+.gx-empty-go{justify-content:center;margin-top:8px}
+/* Gateway → MikroTik: the router */
+.gx-strip{border-left:4px solid var(--warn)}
+.gx-strip.good{border-left-color:var(--ok)} .gx-strip.bad{border-left-color:var(--crit)}
+.gx-strip-head{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.gx-strip-ic{flex:none;width:52px;height:52px;border-radius:15px;background:var(--warn-bg);color:var(--warn);display:flex;align-items:center;justify-content:center}
+.gx-strip.good .gx-strip-ic{background:var(--ok-bg);color:var(--ok)} .gx-strip.bad .gx-strip-ic{background:var(--crit-bg);color:var(--crit)}
+.gx-strip-words{flex:1 1 280px;min-width:0}
+.gx-strip-who{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.gx-strip-who b{font-size:20px}
+.gx-strip-state{font-size:15px;font-weight:650;color:var(--warn);margin-top:2px}
+.gx-strip.good .gx-strip-state{color:var(--ok)} .gx-strip.bad .gx-strip-state{color:var(--crit)}
+.gx-strip-acts{display:flex;gap:8px;flex-wrap:wrap}
+.gx-facts{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 0}
+.gx-fact{display:inline-flex;gap:8px;align-items:baseline;padding:6px 12px;border-radius:10px;background:var(--panel2);border:1px solid var(--line);
+  font-size:13px;min-width:0;max-width:100%}
+.gx-fact .k{font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--tx-mut);white-space:nowrap}
+.gx-fact .v{overflow-wrap:anywhere}
+.gx-fact.bad .v{color:var(--crit);font-weight:700} .gx-fact.good .v{color:var(--ok)}
+.gx-counts{margin:14px 0 0}
+.gx-why{margin-top:14px;display:flex;flex-direction:column;gap:6px}
+.gx-why-l{padding:8px 12px;border-radius:10px;font-size:13px;border-left:3px solid var(--line);background:var(--panel2);overflow-wrap:anywhere}
+.gx-why-l.warn{border-left-color:var(--warn);background:var(--warn-bg)} .gx-why-l.bad{border-left-color:var(--crit);background:var(--crit-bg)}
+/* each device: its way out */
+.gx-dev{border:1px solid var(--line);border-radius:14px;padding:18px 20px;background:var(--bg);margin-top:16px;min-width:0}
+.gx-dev.bad{border-color:rgba(248,81,73,.55)}
+.gx-dev-head{display:flex;align-items:center;gap:10px 16px;flex-wrap:wrap;margin:0 0 16px}
+.gx-dev-title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.gx-dev-title b{font-size:17px}
+.gx-dev-title .dot{width:10px;height:10px;border-radius:50%;background:var(--tx-mut)}
+.gx-dev-title .dot.ok{background:var(--ok);box-shadow:0 0 0 4px var(--ok-bg)} .gx-dev-title .dot.bad{background:var(--crit);box-shadow:0 0 0 4px var(--crit-bg)}
+.gx-dev-sum{display:flex;gap:6px;flex-wrap:wrap}
+.gx-dev-head .gx-links{margin-left:auto}
+.gx-path{display:flex;align-items:stretch;flex-wrap:wrap;row-gap:12px}
+.gx-node{appearance:none;margin:0;font:inherit;text-align:left;color:var(--tx);display:flex;flex-direction:column;gap:3px;padding:10px 14px;
+  border-radius:12px;border:1px solid var(--line);border-top:3px solid var(--tx-mut);background:var(--panel);min-width:130px;max-width:280px;flex:0 1 auto}
+button.gx-node{cursor:pointer;transition:border-color .12s,transform .12s}
+button.gx-node:hover,button.gx-node:focus-visible{border-color:var(--info);border-top-color:var(--info);outline:none;transform:translateY(-1px)}
+.gx-node-k{font-size:10.5px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:var(--tx-mut)}
+.gx-node-t{font-weight:700;font-size:14.5px;overflow-wrap:anywhere}
+.gx-node-s{font-size:12px;color:var(--tx-dim);overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.gx-node.dev{border-top-color:var(--info)}
+.gx-node.if{border-top-color:var(--ok)}
+.gx-node.mark{border-top-color:var(--warn)}
+.gx-node.route{border-top-color:var(--info)}
+.gx-node.nat{border-top-color:var(--violet)}
+.gx-node.pub{border-top-color:var(--ok);background:var(--ok-bg);border-color:rgba(63,185,80,.45)}
+.gx-node.pub .gx-node-t{font-size:18px;color:var(--ok);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.gx-node.pub.bad{border-top-color:var(--crit);background:var(--crit-bg);border-color:rgba(248,81,73,.5)}
+.gx-node.pub.bad .gx-node-t{color:var(--crit)}
+.gx-arrow{flex:0 0 30px;align-self:center;height:2px;background:var(--line);position:relative;margin:0 2px}
+.gx-arrow::after{content:"";position:absolute;right:-1px;top:-4px;border:5px solid transparent;border-left:7px solid var(--tx-mut);border-right:0}
+.gx-trouble{margin:12px 0 0}
+.gx-some{margin-top:12px;padding:10px 14px;border-radius:10px;background:var(--info-bg);border-left:3px solid var(--info);font-size:13px}
+.gx-some ul{margin:4px 0 0;padding-left:18px}
+.gx-some li.tappable{cursor:pointer}
+.gx-some li.tappable:hover{color:var(--info)}
+/* each device: its ports on its public address */
+.gx-ports{margin-top:20px}
+.gx-ports h3.peek-h{margin:0 0 4px}
+.gx-noports{margin:14px 0 0}
+.gx-port{display:grid;grid-template-columns:minmax(150px,230px) minmax(0,1fr) auto auto;grid-template-areas:"p mini st t" "why why why why";
+  gap:6px 16px;align-items:center;padding:10px 14px;border:1px solid var(--line);border-left:4px solid var(--ok);border-radius:10px;
+  background:var(--panel);margin-top:8px;cursor:pointer;min-width:0}
+.gx-port:hover,.gx-port:focus{border-color:var(--info);outline:none}
+.gx-port.ok{border-left-color:var(--ok)} .gx-port.crit{border-left-color:var(--crit)} .gx-port.warn{border-left-color:var(--warn)} .gx-port.dim{border-left-color:var(--tx-mut)}
+.gx-port-p{grid-area:p;display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.gx-port-p b{font-size:14.5px}
+.gx-port-d{flex-basis:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gx-mini{grid-area:mini;display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0}
+.gx-hop{appearance:none;margin:0;font:600 12px/1.3 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;padding:3px 9px;border-radius:999px;
+  border:1px solid var(--line);background:var(--bg);color:var(--tx-dim);white-space:nowrap}
+button.gx-hop{cursor:pointer}
+button.gx-hop:hover{border-color:var(--info)}
+.gx-hop.ok{color:var(--ok);border-color:rgba(63,185,80,.4)} .gx-hop.crit{color:var(--crit);border-color:rgba(248,81,73,.5);background:var(--crit-bg)}
+.gx-hop-a{color:var(--tx-mut)}
+.gx-port-st{grid-area:st;display:flex;gap:6px;flex-wrap:wrap}
+.gx-port-t{grid-area:t;display:flex;gap:4px}
+.gx-port-why{grid-area:why;color:var(--tx-dim);overflow-wrap:anywhere}
+.gx-merged{margin-top:18px;border:1px solid var(--line);border-radius:12px;padding:12px 16px}
+.gx-merged > summary{cursor:pointer;font-weight:650}
+.gx-merged[open] > summary{margin-bottom:8px}
+@media (max-width:1250px){
+  .gx-port{grid-template-columns:minmax(0,1fr) auto auto;grid-template-areas:"p st t" "mini mini mini" "why why why"}
+}
+@media (max-width:700px){
+  .gx-dev{padding:14px}
+  .gx-dev-head .gx-links{margin-left:0}
+  .gx-path{flex-direction:column;flex-wrap:nowrap}
+  .gx-node{max-width:none}
+  .gx-arrow{flex:0 0 18px;width:2px;height:auto;margin:2px 0;align-self:flex-start;margin-left:22px}
+  .gx-arrow::after{right:auto;left:-4px;top:auto;bottom:-1px;border:5px solid transparent;border-top:7px solid var(--tx-mut);border-bottom:0}
+  .gx-port{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"p t" "st st" "mini mini" "why why"}
+  .gx-strip-acts{width:100%}
+}
+/* the firewall, in Gateway → MikroTik */
+.mt-qrow{margin:0 0 12px}
+.mt-qrow .qs-wrap{width:100%}
+.mt-qrow .mt-q{width:100%}
+.mt-lanes{grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr))}
+.mt-lane-h .mt-lane-says{flex-basis:100%}
+.gt-subic{display:inline-flex}
+.mt-more{appearance:none;margin:2px 0 0;padding:9px 12px;border-radius:10px;border:1px dashed var(--line);background:transparent;
+  color:var(--info);font:600 13px/1.3 var(--face);cursor:pointer;text-align:center}
+.mt-more:hover{border-style:solid;background:var(--info-bg)}

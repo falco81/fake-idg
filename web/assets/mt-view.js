@@ -12,7 +12,8 @@
 (function () {
   'use strict';
   var MV = {d: null, r: null, fam: 'ip', table: 'nat', q: '', mine: false, focus: null, poll: null, host: null, busy: false,
-            qInput: null};
+            qInput: null, open: {}};
+  var FOLD = 12;
   var STATE = {
     ok: ['open', 'ok', 'The MikroTik carries it: a dst-nat to the device, and nothing in forward drops it.'],
     no_dnat: ['no dst-nat', 'crit', 'No enabled dst-nat rule sends this port to the device.'],
@@ -636,7 +637,16 @@
       lh.appendChild(el('span', 'mt-n', keep.length === all.length ? String(all.length) : keep.length + ' / ' + all.length));
       lh.appendChild(el('span', 'muted small mt-lane-says', CHAIN_SAYS[ch] || 'a chain of its own (jumped to)'));
       lane.appendChild(lh);
-      keep.forEach(function (r) { lane.appendChild(ruleCard(r, total, concern[MV.fam + ':' + r['.id']])); });
+      /* a long chain is shown by its first rules (a page of 81 cards is a noodle) - all of them on a press,
+         or whenever a search or "only what concerns" narrows it */
+      var key = MV.fam + ':' + MV.table + ':' + ch, cut = !MV.q.trim() && !MV.mine && !MV.open[key] && keep.length > FOLD + 3;
+      (cut ? keep.slice(0, FOLD) : keep).forEach(function (r) { lane.appendChild(ruleCard(r, total, concern[MV.fam + ':' + r['.id']])); });
+      if (cut || (MV.open[key] && keep.length > FOLD + 3 && !MV.q.trim() && !MV.mine)) {
+        var more = el('button', 'mt-more', cut ? 'Show all ' + num(keep.length) + ' rules of ' + ch + ' (' + num(keep.length - FOLD) + ' more)' : 'Show the first ' + FOLD + ' only');
+        more.type = 'button';
+        more.onclick = function () { MV.open[key] = cut; paintFirewall(true); if (!cut) lane.scrollIntoView({block: 'start'}); };
+        lane.appendChild(more);
+      }
       if (!keep.length) lane.appendChild(el('div', 'mt-empty muted small', all.length ? 'nothing here matches' : 'no rule'));
       lane.appendChild(el('div', 'mt-lane-end muted small', MV.table === 'filter' || MV.table === 'raw' ? 'then: accept (a chain lets through what no rule stopped)' : (MV.table === 'nat' ? 'then: not translated' : 'then: on, unmarked')));
       lanes.appendChild(lane);
