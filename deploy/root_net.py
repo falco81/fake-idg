@@ -178,6 +178,13 @@ def trial_read():
 
 
 # ---- the request, every value in its one shape (otp's net_checked) --------------------
+def as_list(x):
+    """A list as it was sent, or one value of it - never the letters of a string."""
+    if isinstance(x, (list, tuple)):
+        return list(x)
+    return [x] if isinstance(x, str) and x.strip() else []
+
+
 def checked(r):
     out = {"con": str(r.get("con") or "")}
     if not out["con"] or len(out["con"]) > 120 or any(c in out["con"] for c in "\n\r\x00"):
@@ -207,7 +214,7 @@ def checked(r):
             out["gw4"] = str(g)
     v6 = r.get("ipv6") if isinstance(r.get("ipv6"), dict) else {}
     dns = []
-    for d in list(v4.get("dns") or [])[:4] + list(v6.get("dns") or [])[:4]:
+    for d in as_list(v4.get("dns"))[:4] + as_list(v6.get("dns"))[:4]:
         try:
             dns.append(str(plain(d, "address")))
         except ValueError:
@@ -215,7 +222,7 @@ def checked(r):
     out["dns4"] = [d for d in dns if ":" not in d]
     out["dns6"] = [d for d in dns if ":" in d]
     search = []
-    for s_ in list(v4.get("search") or [])[:6]:
+    for s_ in as_list(v4.get("search"))[:6]:
         if not NAME_RE.match(str(s_)):
             raise Refused("%r is not a domain" % str(s_)[:60])
         search.append(str(s_))
@@ -402,6 +409,16 @@ def apply(n):
     host_was = static_hostname()
     if n["trial_min"]:
         said.append(snapshot(n["con"], n["snapshot"]))
+        # The timer before anything changes, and the trial written down with it: whatever happens
+        # from here on (this helper killed, the machine restarted), the old comes back by itself.
+        try:
+            said.append(timer_start(n["snapshot"], n["trial_min"]))
+        except (Refused, OSError) as e:
+            snap_drop()
+            raise Refused("the timer that takes the change back could not be started, so nothing was changed: %s" % e)
+        until = time.time() + n["trial_min"] * 60
+        trial_write({"state": "trial", "snapshot": n["snapshot"], "con": n["con"],
+                     "until": until, "minutes": n["trial_min"], "said": said, "apply_said": said})
     args = [NMCLI, "connection", "modify", n["con"]]
     if n["method4"] == "manual":
         args += ["ipv4.method", "manual",
@@ -449,21 +466,27 @@ def apply(n):
                 said.append("%s: this machine's lines" % HOSTS_FILE)
         con_up(n["con"])
         said.append("the connection %s is up with it" % n["con"])
-    except Refused as e:
+    except (Refused, OSError) as e:
         # It did not go in: what was there comes back at once, when it was kept.
         if n["trial_min"]:
             try:
                 back = restore({"snapshot": n["snapshot"]}, quiet=True)
                 said += back["said"]
-            except Refused as e2:
+            except (Refused, OSError) as e2:
                 said.append("could not put the old back: %s" % e2)
+                # Kept, and the timer left running: it tries again when its time comes.
+                trial_write({"state": "trial", "snapshot": n["snapshot"], "con": n["con"],
+                             "until": until, "minutes": n["trial_min"],
+                             "said": said, "apply_said": said, "failed": "could not go back: %s" % e2})
+                raise Refused("%s - %s" % (e, "; ".join(said)))
+            timer_stop(n["snapshot"])
             snap_drop()
+            trial_write({"state": "back", "snapshot": n["snapshot"], "con": n["con"], "why": "did not go in",
+                         "said": said, "apply_said": said})
         raise Refused("%s%s" % (e, " - " + "; ".join(said) if said else ""))
     if n["trial_min"]:
-        said.append(timer_start(n["snapshot"], n["trial_min"]))
         trial_write({"state": "trial", "snapshot": n["snapshot"], "con": n["con"],
-                     "until": time.time() + n["trial_min"] * 60, "minutes": n["trial_min"], "said": said,
-                     "apply_said": said})
+                     "until": until, "minutes": n["trial_min"], "said": said, "apply_said": said})
     else:
         trial_write({"state": "kept", "snapshot": n["snapshot"], "con": n["con"], "said": said,
                      "apply_said": said})

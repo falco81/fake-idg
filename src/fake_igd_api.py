@@ -57,6 +57,8 @@ CFG = {}
 CFG_AT = [0.0]
 STORE = [None]
 TOKEN = [""]
+# What a sign-in whose password is to be changed may still ask (otp's MUST_CHANGE_ALLOWED).
+MUST_CHANGE_ALLOWED = ("/api/auth/password", "/api/auth/passwd", "/api/auth/logout", "/api/auth/whoami")
 LOCK = threading.RLock()
 
 NAMES = {
@@ -194,15 +196,8 @@ def settings_save(changes, who, addr):
     cfg = load_cfg()
     good = {}
     theirs = {k: changes.pop(k) for k in list(changes) if k in PN.SETTINGS}
-    mod_changed = PN.save(STORE[0], theirs) if theirs else {}
-    for name, ch in mod_changed.items():
-        shown = ", ".join("%s=%s" % (k, "(hidden)" if PN.SETTINGS[k].get("kind") == "secret" else v)
-                          for k, v in ch.items())
-        STORE[0].add_event("setting", "%s changed %s" % (who, shown), "info", who, addr)
-        mod = PN.module(name)
-        if mod is not None and hasattr(mod, "on_saved"):
-            mod.on_saved(PN.Ctx(None, "POST", "", {}, {"name": who, "role": "fulladmin"}, STORE[0], CFG, mod,
-                                STORE[0].add_event), ch)
+    # Every value of config.json checked before anything is kept (1.7.4): one that is refused
+    # no longer leaves the panes' settings of the same save changed behind it.
     for key, raw in changes.items():
         if key not in U.DEFAULTS:
             raise ValueError("%s is not a setting" % key)
@@ -224,6 +219,15 @@ def settings_save(changes, who, addr):
             raise ValueError(err)
         if v != cfg.get(key):
             good[key] = v
+    mod_changed = PN.save(STORE[0], theirs) if theirs else {}
+    for name, ch in mod_changed.items():
+        shown = ", ".join("%s=%s" % (k, "(hidden)" if PN.SETTINGS[k].get("kind") == "secret" else v)
+                          for k, v in ch.items())
+        STORE[0].add_event("setting", "%s changed %s" % (who, shown), "info", who, addr)
+        mod = PN.module(name)
+        if mod is not None and hasattr(mod, "on_saved"):
+            mod.on_saved(PN.Ctx(None, "POST", "", {}, {"name": who, "role": "fulladmin"}, STORE[0], CFG, mod,
+                                STORE[0].add_event), ch)
     mod_saved = sorted(k for ch in mod_changed.values() for k in ch)
     if not good:
         return {"saved": mod_saved, "restart": False}
@@ -466,9 +470,12 @@ def log_view(q):
     except ValueError:
         n = 600
     lines = guarded(U.read_log_lines, cfg, n) or []
-    want = (q.get("q") or [""])[0]
+    want = (q.get("q") or [""])[0][:200]
     if want:
         try:
+            # A pattern that may take for ever (nested repeats) is looked for as plain words.
+            if re.search(r"[+*}]\)?[+*{]|\)[+*{].*\)[+*{]|\([^)]*[+*][^)]*\)[+*{]", want):
+                raise re.error("nested repeats")
             rx = re.compile(want, re.I)
             lines = [x for x in lines if rx.search(x)]
         except re.error:
@@ -624,7 +631,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def body(self, most=1024 * 1024):
-        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            raise Refused(400, "Content-Length is not a number")
+        if n < 0:
+            raise Refused(400, "Content-Length is not a number")
         if n > most:
             raise Refused(413, "that is more than the API takes")
         raw = self.rfile.read(n) if n else b""
@@ -646,6 +658,10 @@ class Handler(BaseHTTPRequestHandler):
         u = STORE[0].session(tok, idle) if tok else None
         if not u:
             raise Refused(401, "not signed in", "signed_out")
+        # A password to change at sign-in is changed first (otp's MUST_CHANGE_ALLOWED): until then
+        # the sign-in may change it, sign out and say who it is - nothing else, here as on the pages.
+        if u.get("must_change") and urlparse(self.path).path not in MUST_CHANGE_ALLOWED:
+            raise Refused(403, "change the password first", "must_change")
         if need == "fulladmin" and u["role"] != "fulladmin":
             raise Refused(403, "this account may look, not change (read only)", "read_only")
         return u

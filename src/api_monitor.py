@@ -745,12 +745,20 @@ def snmp_view(ctx):
     c = snmp_c(S)
     st = dict(SN.SNMP_STATE) if AGENT["a"] is not None else {}
     if not st:
-        # Never started in this process (off since it started): the engine ID as it will be.
+        # Never started in this process (off since it started): the engine ID as it will be (made now,
+        # once, as otp's is - the receiver of traps can be set before SNMPv3 is switched on) and the
+        # starts counted so far.
+        sd = ctx.cfg.get("state_dir") or "/var/lib/fake-igd"
+        st = {}
         try:
-            with open(os.path.join(ctx.cfg.get("state_dir") or "/var/lib/fake-igd", "snmp-engine")) as f:
-                st = {"engine": f.read().strip()}
-        except OSError:
-            st = {}
+            st["engine"] = SN.snmp_engine_id(sd).hex() if os.path.isdir(sd) else ""
+        except (OSError, ValueError):
+            pass
+        try:
+            with open(os.path.join(sd, "snmp-boots")) as f:
+                st["boots"] = int(f.read().strip() or 0)
+        except (OSError, ValueError):
+            pass
     traps = bool(_setting(S, "snmp_traps"))
     return {"on": bool(_setting(S, "snmp")), "ready": bool(c), "node": _node(), "at": time.time(),
             "agent": st, "user": c["user"] if c else str(_setting(S, "snmp_user") or ""),

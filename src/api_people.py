@@ -5,7 +5,8 @@ roles - full admin and read only. otp's third, token admin, looks after people's
 and fake-igd has none: there is nothing between looking and changing everything here.
 
   /api/users          the accounts: GET the list; POST add, role, password, note, must_change,
-                      enable, disable, delete, mfa_reset (the second step set up again)
+                      enable, disable, delete, mfa_reset (the second step set up again),
+                      reset_cols (somebody's own layout of the tables put back as it comes)
   /api/users/history  ?name= the sign-ins of one account (and the refused ones), from the events
   /api/sessions       who is signed in now - POST {id} ends one
   /api/lockouts       the wrong attempts still counted, by address and by name - POST clear / clear_all
@@ -25,7 +26,8 @@ read by igd_store.Store.policy(), so the command line (upnp user) keeps to them 
 
 Left out, as they cannot be here: the directory (AD) accounts and its groups, Windows (Kerberos)
 and certificate sign-in, codes by mail and SMS and passkeys (otp's other second steps - the app is
-the one that needs nothing more of this machine), the columns of the tables (the shell's).
+the one that needs nothing more of this machine). The columns of the tables are the shell's
+(api_shell.py); how many each account has laid out is shown, and put back, here.
 """
 import base64
 import secrets
@@ -422,6 +424,22 @@ def _roles():
     return [{"role": r, "words": ST.ROLE_WORDS[r]} for r in ST.ROLES]
 
 
+def _shell():
+    import sys
+    return sys.modules.get("api_shell")
+
+
+def _own(store, name):
+    """An account's own (api_shell's): the columns of its tables, the looks of the meter."""
+    sh = _shell()
+    if sh is None:
+        return {}
+    try:
+        return sh._mine(store, name)
+    except Exception:                                   # noqa: BLE001 - a list of accounts is drawn anyway
+        return {}
+
+
 def _site(ctx):
     return str(ctx.cfg.get("site_name") or socket.gethostname().split(".")[0])
 
@@ -431,7 +449,13 @@ def users_get(ctx):
     me = ctx.need("readonly")
     S = ctx.store
     pol = S.policy()
-    return {"users": S.users(), "may_change": me["role"] == "fulladmin", "mfa_on": bool(pol["admin_2fa"]),
+    users = S.users()
+    for u in users:
+        # Every account here signs in with a password of its own (otp's "Signs in": no directory),
+        # and how many tables it has laid out by hand (otp's "Columns").
+        u["source"] = "local"
+        u["cols_tables"] = len(_own(S, u["name"]).get("cols") or {})
+    return {"users": users, "may_change": me["role"] == "fulladmin", "mfa_on": bool(pol["admin_2fa"]),
             "roles": _roles(), "me": me["name"], "password_min": pol["password_min"],
             "sessions": S.sessions() if me["role"] == "fulladmin" else []}
 
@@ -464,6 +488,10 @@ def users_post(ctx):
     name = acc["name"]
     if act == "delete":
         S.delete_user(name)
+        # Its own layout goes with it: an account made later with the same name starts as it comes.
+        sh = _shell()
+        if sh is not None:
+            S.run("DELETE FROM meta WHERE k = ?", (sh._mine_key(name),))
         _say(ctx, "account", "%s removed the account %s" % (who, name), "warn")
         return {"message": "the account %s is gone" % name}
     if act == "role":
@@ -498,6 +526,19 @@ def users_post(ctx):
         _say(ctx, "account", "%s switched %s %s" % (who, name, "off" if act == "disable" else "on"),
              "warn" if act == "disable" else "info")
         return {"message": "saved"}
+    if act == "reset_cols":
+        # Somebody's own layout of the tables put back as it comes (otp's): nothing else of theirs.
+        sh = _shell()
+        if sh is None:
+            raise ValueError("the columns of the tables are not kept here")
+        mine = sh._mine(S, name)
+        n = len(mine.get("cols") or {})
+        if not n:
+            return {"message": "%s has every table as it comes already" % name}
+        mine["cols"] = {}
+        sh._mine_put(S, name, mine)
+        _say(ctx, "account", "%s put the columns of every table of %s back as they come (%d)" % (who, name, n))
+        return {"message": "the columns of %s are back as they come" % name}
     if act == "mfa_reset":
         had = S.mfa_reset(name)
         _say(ctx, "account", "%s reset the second step of %s; their sign-ins are ended" % (who, name), "warn")

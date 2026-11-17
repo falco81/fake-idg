@@ -8,9 +8,12 @@ What the alerts look at, every minute (each switched on or off by itself):
   fake-igd.service down · avahi-daemon down (where it is installed and enabled) ·
   another UPnP router on the network · a new version of fake-igd out · a disk filling ·
   the pages' certificate running out · an upgrade that failed · mail that does not go ·
-  system updates waiting or a restart needed (as System updates last found them)
+  system updates waiting or a restart needed (as System updates last found them) · a clock that
+  is off · an address or name held back for guessing (off by default) · a certificate the ACME
+  CA did not renew
 and, as they happen: the pages' API was away (seen when it is back - nothing on this
-machine can mail while it is away) · a new port asked for (off by default).
+machine can mail while it is away) · a new port asked for (off by default) · a change on
+trial (the network, the firewall, the SSH server) that went back by itself.
 
 State in the database: meta "alerts:state" (what is wrong and since when, what was mailed,
 the mails sent), "report:sent" (the last period whose report went).
@@ -19,6 +22,7 @@ import collections
 import html
 import json
 import os
+import re
 import socket
 import threading
 import time
@@ -39,6 +43,13 @@ def _addrs(v):
         M.addresses(v)
     except ValueError as e:
         return str(e)
+    return ""
+
+
+def _url(v):
+    v = str(v or "").strip()
+    if v and not re.match(r'^https?://[^\s"<>]+\Z', v):
+        return "an address starting https://"
     return ""
 
 
@@ -101,6 +112,22 @@ SETTINGS = [
     {"key": "alerts_updates", "name": "System updates and a restart waiting", "kind": "bool", "default": False,
      "only_when": ON, "says": "Security updates waiting, or a restart an update left - as System updates last "
                               "found them."},
+    {"key": "alerts_time", "name": "A clock that is off", "kind": "bool", "default": True, "only_when": ON,
+     "says": "chrony out of sync, or the clock off by more than half a second - the times of the requests, "
+             "the log and the certificates are read from it."},
+    {"key": "alerts_guard", "name": "A source blocked for guessing", "kind": "bool", "default": False,
+     "only_when": ON, "says": "Each address or name held back by wrong passwords at the sign-in to these pages, "
+                              "as it is held back (Settings → Accounts)."},
+    {"key": "alerts_acme", "name": "A certificate the CA did not renew", "kind": "bool", "default": True,
+     "only_when": ON, "says": "ACME ordered a certificate and none came - said at once, not only once it is about "
+                              "to run out."},
+    {"key": "alerts_trial", "name": "A change on trial that went back", "kind": "bool", "default": True,
+     "only_when": ON, "says": "A change of the network, the firewall or the SSH server on trial that was not kept "
+                              "and went back by itself - whoever made it may have lost the way in."},
+    {"key": "alerts_url", "name": "The administration\u2019s address in the mails", "kind": "text", "default": "",
+     "check": _url, "most": 300,
+     "says": "Where the links in the mails lead, <code>https://fake-igd.example.cz/admin/</code>. "
+             "Empty: this machine\u2019s name."},
     {"key": "report", "name": "A report by mail", "kind": "bool", "default": False,
      "says": "A report of the period by mail: the ports asked for, by whom and what they were answered, the "
              "devices, the events worth a look and what is wrong now."},
@@ -262,6 +289,34 @@ def problems(ctx, c=None):
         if osup.get("security"):
             out["updates"] = {"level": "warn", "title": "%d security update(s) waiting" % osup["security"],
                               "pane": "osup", "said": "As System updates found them %s." % _ago(osup.get("at"))}
+    if c.get("alerts_time", True):
+        try:
+            out.update(time_problems())
+        except Exception:                               # noqa: BLE001
+            pass
+    if c.get("alerts_guard"):
+        try:
+            for r in ctx.store.lockouts():
+                if r.get("locked"):
+                    who = str(r.get("who") or "?")
+                    out["guard:%s:%s" % (r.get("by"), who)] = {
+                        "level": "warn", "title": "%s %s is held back for guessing" % (
+                            "The name" if r.get("by") == "name" else "The address", who), "pane": "people",
+                        "said": "%d %s, %s - no sign-in %s until %s. Settings → Accounts lets it in again." % (
+                            int(r.get("fails") or 0), r.get("words") or "wrong passwords", r.get("what") or "",
+                            "by this name" if r.get("by") == "name" else "from it", _when(r.get("until")))}
+        except Exception:                               # noqa: BLE001
+            pass
+    if c.get("alerts_acme", True):
+        try:
+            import igd_panes as PN
+            if PN.value(ctx.store, "acme"):
+                st = __import__("api_acme").state(ctx.store)
+                if st.get("ok") is False and time.time() - float(st.get("failed_at") or 0) <= 14 * 86400:
+                    out["acme"] = {"level": "warn", "title": "The CA did not renew the certificate", "pane": "acme",
+                                   "said": str(st.get("said") or "see Settings → Automatic certificates")[:300]}
+        except Exception:                               # noqa: BLE001
+            pass
     if c.get("alerts_snmp", True):
         try:
             mon = __import__("api_monitor")
@@ -276,6 +331,61 @@ def problems(ctx, c=None):
         except Exception:                               # noqa: BLE001
             pass
     return out
+
+
+def time_problems():
+    """otp's: chrony out of sync, or the clock off by more than half a second; without chrony,
+    what timedatectl says."""
+    t = __import__("api_time").read()
+    tr = t.get("tracking") or {}
+    if not t.get("chrony") or not tr:
+        if t.get("ntp") == "yes" and t.get("ntpsynchronized") == "no":
+            return {"time": {"level": "bad", "title": "The clock is off", "pane": "time",
+                             "said": "The clock is not synchronised (timedatectl: NTPSynchronized=no)."}}
+        return {}
+    try:
+        off = abs(float(tr.get("offset") or 0))
+    except (TypeError, ValueError):
+        off = 0.0
+    unsynced = str(tr.get("leap") or "").lower().startswith("not")
+    if not unsynced and off <= 0.5:
+        return {}
+    return {"time": {"level": "bad" if off > 5 or unsynced else "warn", "title": "The clock is off", "pane": "time",
+                     "said": "chrony %s, off by %.2f s - the times of the requests and the log are read from the "
+                             "clock." % ("is not in sync" if unsynced else "OK", off)}}
+
+
+def trials_back(ctx, st):
+    """Changes on trial that went back by themselves since the last look (otp's alerts_trial events):
+    the network (root_net's trial file), the firewall (root_fw's), the SSH server (root's answer)."""
+    import igd_panes as PN
+    found = []
+    try:
+        t = __import__("api_net").trial(ctx)
+        if t.get("state") == "back" and t.get("why") == "not kept in time":
+            found.append(("net:%s" % t.get("snapshot"), "net",
+                          "The new network of %s was not kept in time and went back to the one it had before."
+                          % (t.get("con") or "?")))
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
+        t = __import__("api_fw").trial_read()
+        if t.get("done") == "back" and str(t.get("done_by") or "").startswith("not kept"):
+            found.append(("fw:%s" % t.get("id"), "web", "The firewall and access went back to what they were "
+                          "before - the change was %s." % t.get("done_by")))
+    except Exception:                                   # noqa: BLE001
+        pass
+    r = PN.root_result(ctx.cfg.get("state_dir"), "sshd")
+    if r.get("back_at") and "not kept" in str(r.get("back_why") or "not kept"):
+        found.append(("sshd:%s" % r.get("back_at"), "sshd", "The change of the SSH server went back - it was "
+                      "not kept in time."))
+    seen = st.get("trials_seen")
+    keys = [k for k, _p, _w in found]
+    st["trials_seen"] = keys
+    if seen is None:                                    # the first look: what is there was before
+        return []
+    return [{"level": "warn", "title": "A change on trial went back", "pane": pane, "since": time.time(),
+             "said": words} for k, pane, words in found if k not in seen]
 
 
 def backup_problems(ctx):
@@ -360,10 +470,13 @@ def _page(title, kicker, band, body, foot, width=640):
                AL_FONT, foot))
 
 
-def _card(level, title, lines):
+def _card(level, title, lines, link=""):
     edge, back, ink = AL_COLORS.get(level, AL_COLORS["info"])
     rows = "".join('<div style="margin-top:4px;font-size:13.5px;line-height:1.5;color:#374151">%s</div>' % ln
                    for ln in lines if ln)
+    if link:
+        rows += ('<div style="margin-top:8px;font-size:13px"><a href="%s" style="color:#1d4ed8;'
+                 'text-decoration:none;font-weight:600">%s</a></div>' % (_h(link[0]), _h(link[1])))
     return ('<table role="presentation" width="100%%" cellspacing="0" cellpadding="0" border="0" '
             'style="margin:0 0 10px"><tr><td bgcolor="%s" style="background:%s;border-left:4px solid %s;'
             'border-radius:8px;padding:12px 16px;%s"><div style="font-size:15px;font-weight:700;color:%s">%s</div>'
@@ -403,8 +516,15 @@ def _table(head, rows):
             'style="margin:0 0 6px;%s"><tr>%s</tr>%s</table>' % (AL_FONT, th, "".join(trs)))
 
 
+def admin_url(ctx):
+    """otp's alerts_link: The administration's address in the mails, or this machine's name."""
+    import igd_panes as PN
+    url = str(PN.value(ctx.store, "alerts_url") or "").strip()
+    return url or "https://%s/admin/" % socket.getfqdn()
+
+
 def _link(ctx, pane):
-    return "Settings → %s" % pane
+    return "%s#settings/%s" % (admin_url(ctx), pane)
 
 
 def alert_mail(ctx, new, still, gone, events, test=False, left=0):
@@ -435,9 +555,9 @@ def alert_mail(ctx, new, still, gone, events, test=False, left=0):
             lines = [_h(p["said"])]
             if p.get("since"):
                 lines.append('<span style="color:#6b7280">Since: %s</span>' % _h(_when(p["since"])))
-            if p.get("pane") and (level or p["level"]) != "good":
-                lines.append('<span style="color:#6b7280">%s</span>' % _h(_link(ctx, p["pane"])))
-            body.append(_card(level or p["level"], p["title"], lines))
+            link = (_link(ctx, p["pane"]), "Open in the administration →") \
+                if p.get("pane") and (level or p["level"]) != "good" else ""
+            body.append(_card(level or p["level"], p["title"], lines, link))
             text.append("- %s: %s" % (p["title"], p["said"]))
         text.append("")
     if test:
@@ -458,7 +578,8 @@ def alert_mail(ctx, new, still, gone, events, test=False, left=0):
         section("Events", events, "info")
     foot = _h("Sent by fake-igd on %s, %s. Settings → Alerts and reports." % (socket.gethostname(), _when(time.time())))
     text += ["-- ", "Sent by fake-igd on %s, %s. Settings → Alerts and reports." % (socket.gethostname(),
-                                                                                     _when(time.time()))]
+                                                                                     _when(time.time())),
+             admin_url(ctx)]
     return subject, "\n".join(text), _page(title, "fake-igd · " + site, band, "".join(body), foot)
 
 
@@ -556,6 +677,10 @@ def evaluate(ctx, force=False):
                                    e.get("description") or "-", e.get("result") or "?")})
         else:
             st.pop("ports_seen", None)
+        if c.get("alerts_trial", True):
+            events += trials_back(ctx, st)
+        else:
+            st.pop("trials_seen", None)
         to = _to(c)
         mailing = bool(to and c.get("alerts"))
         held_back = mailing and now - float(st.get("fail_at") or 0) <= 900

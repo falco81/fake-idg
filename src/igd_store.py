@@ -659,14 +659,14 @@ class Store(object):
                          "ORDER BY seen DESC")
 
     def end_session(self, short_id):
-        if not re.match(r"^[0-9a-f]{6,64}\Z", str(short_id or "")):
+        if not re.match(r"^[0-9a-f]{12,64}\Z", str(short_id or "")):
             raise StoreError("no such sign-in")
         n = self.run("DELETE FROM sessions WHERE substr(id, 1, ?) = ?", (len(short_id), short_id)).rowcount
         if not n:
             raise StoreError("that sign-in has ended already")
 
     def session_of(self, short_id):
-        if not re.match(r"^[0-9a-f]{6,64}\Z", str(short_id or "")):
+        if not re.match(r"^[0-9a-f]{12,64}\Z", str(short_id or "")):
             return None
         return self.one("SELECT name, addr FROM sessions WHERE substr(id, 1, ?) = ?", (len(short_id), short_id))
 

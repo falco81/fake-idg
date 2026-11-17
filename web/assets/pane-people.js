@@ -7,15 +7,18 @@
 /* ---- accounts ------------------------------------------------------------- */
 var US = {d: null};
 function loadUsers() {
+  if (typeof colsCardSay === 'function') colsCardSay();
   api('users').then(function (d) {
     US.d = d;
     var host = $('us-table');
     clear(host);
-    host.appendChild(listTable(['Name', 'Role', 'State', 'Second step', 'Last signed in', 'From', 'Note', ''], d.users, function (u) {
+    host.appendChild(listTable(['Name', 'Role', 'Signs in', 'State', 'Second step', 'Last signed in', 'From', 'Columns', 'Note', ''], d.users, function (u) {
       var tr = el('tr');
       var n = el('td'); n.appendChild(noI18n(el('span', 'mono', u.name)));
       tr.appendChild(n);
       var r = el('td'); r.appendChild(el('span', 'tag ' + roleTone(u.role), roleWords(u.role))); tr.appendChild(r);
+      /* How it signs in (otp's): every account here with a password of its own - there is no directory. */
+      tr.appendChild(el('td', 'muted', 'a password here'));
       var st = el('td'); st.appendChild(el('span', 'tag ' + (u.disabled ? 'crit' : 'ok'), u.disabled ? 'off' : 'on'));
       if (u.must_change) { st.appendChild(document.createTextNode(' ')); st.appendChild(el('span', 'tag info', 'to change at sign-in')); }
       tr.appendChild(st);
@@ -30,6 +33,7 @@ function loadUsers() {
       tr.appendChild(mf);
       tr.appendChild(u.last_login ? stampCell(u.last_login) : el('td', 'muted', 'never'));
       tr.appendChild(noI18n(el('td', 'mono small', u.last_from || '')));
+      tr.appendChild(el('td', 'muted small', u.cols_tables ? num(u.cols_tables) + ' table(s) laid out' : 'as they come'));
       tr.appendChild(noI18n(el('td', 'muted small', u.note || '')));
       var tools = el('td', 'rowtools');
       /* Every row has the same buttons in the same places (otp 1.0.18): one that does not
@@ -84,6 +88,28 @@ function loadUsers() {
             });
         };
         tools.appendChild(off); tools.appendChild(x);
+        /* Somebody's own layout of the tables, put back as it comes (otp's). */
+        var cb = iconButton('undo', u.cols_tables
+          ? u.name + ' has laid out ' + num(u.cols_tables) + ' table(s) by hand. Put every one of them back as it comes: the widths, the order and the hidden columns. Nothing else of theirs changes.'
+          : u.name + ' has every table as it comes: nothing to put back.');
+        cb.classList.add('cols-back');
+        if (u.cols_tables) {
+          cb.onclick = function (ev) {
+            ev.stopPropagation();
+            confirmThen('The columns of ' + u.name,
+              'Every table ' + htmlText(u.name) + ' has laid out goes back as it comes. They see it '
+              + 'the next time a page loads.',
+              'Put them back', function () {
+                colsReset(u.name).then(function () {
+                  if (userIsMe(u.name) && typeof colsCardSay === 'function') colsCardSay();
+                  loadUsers();
+                }).catch(oops);
+              });
+          };
+        } else {
+          cb.disabled = true;
+        }
+        tools.appendChild(cb);
         var mr = iconButton('shield', u.mfa
           ? 'Reset the second step: ' + u.name + ' sets it up again at the next sign-in. Their sign-ins are ended.'
           : u.name + ' has no second step set up: nothing to reset.');
