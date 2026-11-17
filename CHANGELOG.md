@@ -2,6 +2,47 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.7.6 (2026-11-17)
+
+Round 4, run 3 of 3 (the last): everything of runs 1-2 checked again, a last side-by-side with otp, a bug
+hunt by reading every code path for errors and races, two administrators at once, the daemon under stress,
+upgrades 1.7.4 → 1.7.5 → a test version through the pages in a sandbox, a security review of the whole tree.
+
+**Sign-in and accounts, as otp's**
+- Counted as otp counts it: a name may make four times "Wrong passwords before a pause" (20), an address
+  ten times (50); wrong attempts before a right password stay counted; an attempt holds its place before the
+  password is checked, so many at once no longer slip past the count (30 at once: 21 got through).
+- One's own password typed wrong where it is changed is counted apart ("changing a password": 5 min) - it
+  no longer locks the account out of signing in; Locked out, `upnp user lockouts` and the alert say which.
+- Five wrong codes of the second step end that sign-in (otp 1.0.252).
+- Accounts are made, switched off, changed and removed one at a time - two full administrators removing
+  each other at once could leave none.
+
+**Two administrators at once, a full disk**
+- Two "Upgrade this server" or two network changes at once both went to root - one is told it is going on.
+- No room on the disk (or no right to write) for a package, a backup, a dump, a copy: said plainly, not
+  "the API broke".
+- `sudo upnp user add|passwd` opened the database as root - with the API stopped, root made its -wal/-shm
+  files and the API could no longer write; read as the fake-igd account now.
+- The API queues a burst of requests (128) instead of resetting them (40 at once: 9 reset).
+
+**The UPnP service, under stress**
+- Its HTTP backlog 128 (50 devices at once were reset); 1100 AddPortMapping from 50 threads, 5000 questions
+  from 100 threads, 3000 fuzzed SSDP packets, 300 idle connections - nothing crashed or hung, memory flat.
+- A device gone mid-answer is a debug line, not a traceback; another UPnP router warned once an hour; a
+  failing packet warned once in 10 minutes per address.
+
+**As otp's**
+- Events in otp's groups (sign-ins, starting and stopping, backups, certificates, ...), filtered by them.
+- The Requests tab's badge: the refused of the last 24 hours, red - as otp's Log.
+- `upnp export-config`, `import-config`, `power` (otp's --export-config, --import-config, --restart-nodes),
+  in the console too.
+- The units hardened as otp's: fake-igd.service with no capabilities, a system-call filter,
+  RestrictSUIDSGID; fake-igd-api.service RestrictRealtime, RestrictSUIDSGID.
+- `upnp config validate` checks what `config set` and the pages check (a JSON list slipped past).
+- DH parameters of 2048 bits say "usually under a minute".
+- README brought up to date with everything of 1.7.x.
+
 ## 1.7.5 (2026-11-17)
 
 Round 4, run 2 of 3: deeper - every flow end to end with root's side running in a sandbox (TOTP, lockouts,
