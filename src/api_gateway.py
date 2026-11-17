@@ -145,14 +145,16 @@ def view(ctx):
     counters = fv.get("counters") or {}
     seen = st.get("seen") or {}
     applied = {d.get("ip"): d for d in st.get("devices") or [] if isinstance(d, dict)} if st.get("on") else {}
+    by_comment = fv.get("by_comment") or {}
     devices = []
     for d in meta["devices"]:
-        _ok, bad = R.device_checked(d, net)
+        ok, bad = R.device_checked(d, net)
         ip = str(d.get("ip") or "")
         a = applied.get(ip)
         devices.append(dict(d, why=bad, applied=bool(a and a.get("on")),
                             mac_applied=(a or {}).get("mac") or "", counters=counters.get(ip) or {},
-                            seen=(seen.get(ip) or {}).get("changed") or 0))
+                            seen=(seen.get(ip) or {}).get("changed") or 0,
+                            **(designer_of(ok, net, by_comment) if ok else {})))
     fwd_now = R.proc_read("net/ipv4/ip_forward")
     t = st.get("trial") if isinstance(st.get("trial"), dict) else {}
     return {"on": meta["on"], "devices": devices, "by": meta.get("by") or "", "at": meta.get("at") or 0,
@@ -169,6 +171,62 @@ def view(ctx):
             "neigh": neighbours(), "asked": asked(ctx),
             "trial": {k: t.get(k) for k in ("id", "until", "min", "by", "at", "done", "done_by", "done_at")}
             if R.pending(t) else {}, "confirm_min": ctx.setting("fw_confirm_min"), "now": time.time()}
+
+
+def _hits(by_comment, prefix):
+    """Packets and bytes of the lines whose comment starts so (a rule: its way out; "back" counted apart)."""
+    out = {"pkts": 0, "bytes": 0, "back_pkts": 0, "back_bytes": 0}
+    for c, n in by_comment.items():
+        if c == prefix or c.startswith(prefix + " ") or c.startswith(prefix + ":"):
+            k = "back_" if c.endswith(" back") else ""
+            out[k + "pkts"] += int(n.get("pkts") or 0)
+            out[k + "bytes"] += int(n.get("bytes") or 0)
+    return out
+
+
+def designer_of(dev, net, by_comment):
+    """What the FW designer of a device shows: its DNS servers and rules as root reads them (where each is
+    reached, "direct" ones need no rule), what is left out and why, the lines root puts in for it, and the
+    packets of each from iptables -vnx."""
+    who = "fake-igd: %s (%s)" % (dev["name"], dev["ip"])
+    dns = [dict(x, hits=_hits(by_comment, "%s dns %s" % (who, x["ip"]))) for x in dev["dns"]]
+    rules = [dict(r, hits=_hits(by_comment, "%s rule %s" % (who, r["id"]))) for r in dev["rules"]]
+    lines = R.allow_lines(dev, net) + [x for x in R.lines_for([dev], net) if "gateway for %s" % dev["name"] in x]
+    return {"dns": dns, "rules": rules, "left_out": dev.get("left_out") or [], "lines": lines,
+            "internet": _hits(by_comment, "fake-igd: gateway for %s (%s)" % (dev["name"], dev["ip"]))}
+
+
+def _plain(dev):
+    """A device as it is kept in the database: what was typed, nothing worked out."""
+    return {"id": dev["id"], "name": dev["name"], "ip": dev["ip"], "mac": dev.get("mac") or "",
+            "on": dev.get("on") is not False,
+            "dns": [{"ip": x["ip"], "dot": bool(x.get("dot"))} for x in dev.get("dns") or []],
+            "rules": [{k: r.get(k) for k in ("id", "to", "proto", "ports", "comment", "on")} for r in dev.get("rules") or []]}
+
+
+def designed(raw, old, net):
+    """A device's DNS servers and rules as the designer sends them - checked as root checks them; refused
+    whole with every reason when anything does not pass (on the pages nothing is left out silently)."""
+    dns = raw.get("dns") if isinstance(raw.get("dns"), list) else []
+    rules = raw.get("rules") if isinstance(raw.get("rules"), list) else []
+    if len(rules) > R.MOST_RULES:
+        raise ValueError("%d rules at most for a device" % R.MOST_RULES)
+    if len(dns) > R.MOST_DNS:
+        raise ValueError("%d DNS servers at most for a device" % R.MOST_DNS)
+    for r in rules:
+        if isinstance(r, dict) and not R.RULE_ID_RE.match(str(r.get("id") or "")):
+            r["id"] = secrets.token_hex(4)
+    got, bad = R.device_checked(dict(old, dns=dns, rules=rules), net)
+    if bad:
+        raise ValueError(bad)
+    if got["left_out"]:
+        raise ValueError("; ".join(got["left_out"]))
+    seen = set()
+    for x in got["dns"]:
+        if x["ip"] in seen:
+            raise ValueError("%s twice among the DNS servers" % x["ip"])
+        seen.add(x["ip"])
+    return got
 
 
 def get_gateway(ctx):
@@ -238,9 +296,27 @@ def post_gateway(ctx):
                     ("turns the forwarding on for %s" % ", ".join(d.get("name") for d in meta["devices"]
                                                                 if d.get("on") is not False)
                      if want else "turns the forwarding off")}
+        if act in ("designer_save", "try"):
+            did = str(b.get("id") or "")
+            old = next((d for d in meta["devices"] if d.get("id") == did), None)
+            if old is None:
+                raise ValueError("no such device")
+            got = designed(b, old, net)
+            if act == "try":
+                return try_it(meta, got, b, net)
+            meta["devices"] = [_plain(got) if d.get("id") == did else d for d in meta["devices"]]
+            ident = _put(ctx, meta, "the firewall of the device %s (%s): %d DNS server(s), %d rule(s) of its own" % (
+                got["name"], got["ip"], len(got["dns"]), len(got["rules"])))
+            return {"id": ident, "message": "saved - root puts it in within seconds" + (
+                ", on trial" if meta["on"] and ctx.setting("fw_confirm_min") else "") if meta["on"]
+                else "saved - put in when the gateway is switched on"}
         if act == "device_save":
             got = device_in(ctx, b.get("device"), meta, net)
             old = next((d for d in meta["devices"] if d.get("id") == got["id"]), None)
+            if old:                             # its DNS servers and rules stay (the designer's)
+                got["dns"] = old.get("dns") or []
+                got["rules"] = old.get("rules") or []
+            got = _plain(got)
             if old is None and b.get("device", {}).get("id"):
                 raise ValueError("no such device")
             meta["devices"] = [got if d.get("id") == got["id"] else d for d in meta["devices"]] if old else \
@@ -265,6 +341,44 @@ def post_gateway(ctx):
             ident = _put(ctx, meta, words)
             return {"id": ident, "message": "asked: root puts it in within seconds"}
     raise ValueError("no such action")
+
+
+def try_it(meta, dev, b, net):
+    """"Try a packet": from the device (or a box that takes its address, mac_other) to dst - through the lines
+    as they would be with what the designer holds now (the other devices as they are kept)."""
+    dst = str(b.get("dst") or "").strip()
+    preview = {"lines": R.allow_lines(dev, net) + [x for x in R.lines_for([dev], net) if "gateway for %s" % dev["name"] in x],
+               "dns": dev["dns"], "rules": dev["rules"]}
+    if not dst:
+        return preview                          # what root would put in for it - nothing tried
+    try:
+        a = ipaddress.ip_address(dst)
+    except ValueError:
+        raise ValueError("the destination: one IPv4 address")
+    if a.version != 4:
+        raise ValueError("the destination: IPv4")
+    proto = str(b.get("proto") or "tcp")
+    if proto not in ("tcp", "udp", "icmp"):
+        raise ValueError("tcp, udp or icmp")
+    try:
+        port = int(b.get("port") or 0)
+    except (TypeError, ValueError):
+        raise ValueError("the port: a number")
+    if proto in ("tcp", "udp") and not 1 <= port <= 65535:
+        raise ValueError("the port: 1 to 65535")
+    others = []
+    for d in meta["devices"]:
+        if d.get("id") == dev["id"]:
+            others.append(dict(dev, on=True))
+            continue
+        ok, _bad = R.device_checked(d, net)
+        if ok:
+            others.append(ok)
+    got = R.try_packet(others, dev, str(a), proto, port, net, mac="aa:bb:cc:00:00:01" if b.get("mac_other") else None)
+    words = {"ACCEPT": "forwarded", "DROP": "dropped", "FALLTHROUGH": "not decided by fake-igd"}.get(got["verdict"], got["verdict"])
+    if got["direct"]:
+        words = "reached directly on its own network - this server is not asked (no rule needed)"
+    return dict(got, words=words, **preview)
 
 
 def get_trial(ctx):

@@ -931,7 +931,7 @@ def forward_view():
     """FORWARD as the kernel has it: its policy, the first rules, whether ours is first and ends in its own
     DROP, and the packets and bytes of each rule of FAKE-IGD-FWD by address (iptables -vnx: root's)."""
     out = {"iptables": have_iptables(), "backend": fw_backend(), "policy": "", "first": [], "ours_first": False,
-           "chain": False, "ends_drop": False, "counters": {}, "dropped": 0}
+           "chain": False, "ends_drop": False, "counters": {}, "dropped": 0, "by_comment": {}}
     if not out["iptables"]:
         return out
     r = subprocess.run(["iptables", "-S", "FORWARD"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -951,6 +951,13 @@ def forward_view():
         and " -d " not in mine[-1] and " -i " not in mine[-1]
     v = subprocess.run(["iptables", "-v", "-x", "-n", "-L", FWD_CHAIN], stdout=subprocess.PIPE,
                        stderr=subprocess.DEVNULL, universal_newlines=True)
+    for ln in v.stdout.splitlines()[2:]:
+        m = re.search(r"/\* (fake-igd: .*?) \*/", ln)
+        f = ln.split()
+        if m and f and f[0].isdigit():
+            c = out["by_comment"].setdefault(m.group(1), {"pkts": 0, "bytes": 0})
+            c["pkts"] += int(f[0])
+            c["bytes"] += int(f[1])
     rows = [ln.split() for ln in v.stdout.splitlines()[2:]]
     rows = [f for f in rows if len(f) >= 9 and f[0].isdigit()]
     for f in rows:
