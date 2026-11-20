@@ -906,9 +906,9 @@ def steps(ctx):
     def when(name):
         try:
             v = float(ctx.arg(name) or 0)
-        except ValueError:
-            v = 0
-        return datetime.fromtimestamp(v).astimezone() if v > 0 else None
+            return datetime.fromtimestamp(v).astimezone() if v > 0 else None
+        except (ValueError, OverflowError, OSError):       # since=1e20: no end, not a 500 (1.9.9)
+            return None
     client = str(ctx.arg("client") or "")[:64] or None
     got = _steps_of(ctx.cfg, when("since"), when("until"), client)
     _gateway_of(ctx, got)

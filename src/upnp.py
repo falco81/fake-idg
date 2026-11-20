@@ -17,7 +17,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from xml.etree import ElementTree as ET
 
-VERSION = "1.9.8"
+VERSION = "1.9.9"
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 APP = "fake-igd"
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
@@ -878,6 +878,7 @@ def cmd_mappings(args, cfg):
         hint_perm(path)
     except ValueError:
         fail("Corrupted %s" % path)
+    data = [m for m in data if isinstance(m, dict)] if isinstance(data, list) else []    # (1.9.9) a traceback
     names = ptr_names([m.get("internal_client") for m in data])
     if args.json:
         for m in data:

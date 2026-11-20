@@ -2,6 +2,94 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.9.9 (2026-11-20)
+
+A hunt for bugs across the whole application; every fix has a regression test (test/auth, test/mikrotik/test_fixes_199.py, test/upnp/test_daemon.py).
+
+### Security, sign-in, backups
+
+- **Security: a database put back no longer brings ended sign-ins back to life.** Settings → Database (a kept
+  copy, an upload) and Settings → Backups (putting a backup back) replaced the sessions table with the file's
+  own: a sign-in ended since the copy was made - signed out, ended under Accounts, or ended because its password
+  was changed - opened the pages again for whoever still had its cookie, within its idle time; and the one who put
+  it back was signed out when the copy was older than their sign-in. Who is signed in now stays so, and only they;
+  the passkeys' waiting questions are dropped.
+- **A database of an older version put back gets this version's columns at once** - signing in and Accounts broke
+  on "no such column" until fake-igd-api was restarted - and a 1.9.2-1.9.6 one has its passkeys moved from the
+  second step as on opening (until then, with the second step on, its accounts were asked a code they had no
+  app for). The columns are also added only once when the API and `upnp user` open an old database at the same
+  moment ("duplicate column name").
+- **Security: a passkey taken away ends the sign-ins it opened.** Your account → Passkeys → take one away (a lost
+  phone) ends the sign-ins opened by that passkey (not the one doing it); Accounts → the key button and
+  `upnp user passkeys NAME --remove-all` end every sign-in opened by the account's passkeys. Before, the lost
+  phone stayed signed in for the rest of the sign-in's hours. The sign-in now remembers which passkey opened it.
+- **Security: Export and import - an account's password written over by the file ends its sign-ins**, as setting a
+  password does everywhere else; the same password leaves them.
+- **Export and import keeps the last full admin who can sign in one**: an import (also `upnp carry import`, which
+  is no account of its own) could make every full admin read only; the account stays a full admin and the import
+  says so. Before, an account set read only by the file through Accounts' own check stopped the import half way.
+- **Security (root's helpers): no link of the fake-igd account is followed.** Stopping a system update wrote
+  `web/osup.stop` as root through a link the API's account could lay there (`osup.stop -> /etc/shadow` was
+  overwritten); it is written as every other file there is (new, renamed in, never through a link) and read the
+  same way, as osup.json is. The network's trial (`web/net-trial.json`) is written and read without following a
+  link, and the queue of asks (`web/ask/`) is opened one folder at a time without following one - through a link
+  laid in place of web/ root took and removed the files of another folder's ask/.
+- **Security: a database put back brings nothing but its tables.** A trigger or a view in the file (a trigger on
+  the sign-ins making an account a full admin, say) stayed in the live database and ran on; fake-igd makes none,
+  so every one is dropped, and the restore says which.
+- **A crafted file cannot fill the disk when it is opened.** A database put back (an upload, a kept copy, a copy
+  with its key) unpacks to 1 GB at most; a backup opened (sent, fetched, tried) holds 200 files at most, its
+  database 1 GB at most and every other file 16 MB at most - refused, and said so, at the first that is more.
+- **Security: a backup's manifest names only its own files.** An absolute path or `..` in manifest.json had a
+  file of this machine read for the comparison; refused now like a name in the archive.
+- **Security: a token or password goes only to the server it was typed for.** Changing the ntfy server (its URL's
+  scheme, host or port), the mail server or the proxy while keeping the stored ntfy token/password, mail password
+  or proxy password is refused - "the server changed: type ... again in the same save" - as Backups' destinations
+  already do. A save that leaves the server as it is, or empties it, is unaffected. Export and import: a file that
+  names another server without its secret takes the kept one away (and says so). `upnp config set ntfy_url` with
+  another server takes the kept token and password away and says to set them again.
+- **Security: the MikroTik account's password goes only to the router it was typed for.** Changing the MikroTik's address while keeping the stored password is refused - "the server changed: type the MikroTik account's password again in the same save" - as for ntfy, mail and the proxy.
+
+### MikroTik and Gateway for devices
+
+- MikroTik: the built-in interface list `dynamic` is now the interfaces RouterOS flags as dynamic, not those whose name begins with pppoe-/l2tp-/ovpn-... A PPPoE client (`pppoe-out1`) or an OpenVPN server (`ovpn-server1`) was taken as dynamic and left out of `static`, so a rule with `in-interface-list=static` or `in-interface-list=dynamic` was judged wrongly.
+- MikroTik: interface lists that include or exclude other lists (`/interface list add name=INSIDE include=LAN,VPN exclude=...`) now have those members. Before, such a list counted only its own members, and the checks and the way out got rules with it wrong.
+- MikroTik over ssh: a line on the router that looks like one of fake-igd's section marks (in a comment or a log message, for example) can no longer pass for a mark. Before, it could put what followed it in place of another menu, such as the interfaces or the firewall. Each read's marks now carry a nonce of that read's own.
+- MikroTik over ssh: a menu the account may not read (for example "not enough permissions" for /log) no longer loses every menu after it. RouterOS stops the whole line at the refused print, so the menus after it were "not answered", firewall included. They are now read again in a line of their own.
+- MikroTik over REST: a router that stops answering in the middle of a read now ends the read. Before, every remaining menu waited out its timeout twice, which kept the read "busy" for many minutes.
+- MikroTik: "Read it now" and the regular reads no longer stop for good when the settings cannot be read once. The "being read" flag was set before the settings were read and was never cleared on an error there.
+- MikroTik: after the router's address changes, the last read of the old router is no longer checked and shown as the new one's (ports, ways out, firewall, Gateway tab, alerts). Its rule counters are also no longer taken as "hits since the read before".
+- MikroTik: the memory of which ports turned open (drops before that are history) keeps only the ports asked for now. Before, it grew with every port ever asked for and was rewritten on every page load.
+- MikroTik log: these firewall lines are now read: a log-prefix written right before the chain without a space (`DROPforward: in:...`), ICMPv6 lines with bare IPv6 addresses, and lines of the router's own traffic (`in:(unknown 0)`). Before, the prefix was lost, so drops were not counted under the rule's prefix. IPv6 ICMP lines were dropped, or read as an IPv4 address "2001".
+- MikroTik log: a line dated without a year (`dec/31 23:59:00`) read early in January is now last year's, not a date a year ahead. The `11-17 16:36:44` form is also understood.
+- MikroTik: the WAN told from the default route now takes every gateway of an ECMP route (`gateway=a,b`). It also takes the interface written in `gateway=a%ether1` when the router gives no immediate-gw.
+- Gateway for devices: a device's IPv6 addresses refuse IPv4 addresses written as IPv6 (`::ffff:192.0.2.7`), reserved addresses (`64:ff9b::/96` and the like) and the old site-local `fec0::/10`.
+- Gateway tab: with reading the MikroTik switched off, the devices no longer show "the MikroTik's word" on their ports from the last read before it was switched off.
+
+### UPnP service, the command line, the pages
+
+- **The UPnP service refuses a SOAP request with a DOCTYPE** (entities: XXE, "billion laughs") with 402 Invalid Args,
+  as SOAP 1.1 forbids one and miniupnpd never reads one - a request of a few hundred bytes was expanded into a
+  description of 300 KB (cut to 256 characters) and a log line as long.
+- **The log line of a SOAP request is cut**: each argument at 256 characters, the whole at 1 KB - a request of 64 KB
+  was one line of 64 KB in fake-igd.log.
+- **An M-SEARCH whose lines end by LF alone is answered** as one ended by CRLF (such a search was never answered).
+- **IGD:2 AddAnyPortMapping with the external port 0** (a wildcard) gets a port picked by the service, as
+  WANIPConnection:2 says and miniupnpd does - it was refused with 402.
+- **fake-igd.py --summary** passes by a line of the request log that is not a request (cut by a full disk or a
+  crash) - it stopped with a traceback.
+- **upnp requests / upnp log -n**: a negative number is refused - it showed everything but the first N.
+- **upnp requests** passes by a line of the request log that is not a request; **upnp mappings** shows an added
+  time kept in seconds - both stopped with a traceback.
+- **A mappings.json of another shape** (an object, a list of numbers - edited by hand): **upnp mappings** and the
+  pages' **Mappings** show no mapping, as the service reads the file - a traceback and a 500.
+- **upnp updates** before any run: no more "the last run None, None None%".
+- **The pages' API**: a time picker's since/until/hours past what the clock can say (since=1e20, inf, hours=1e300,
+  nan) is taken as no end - it was a 500 "the API broke on that" on Requests, Ports, Clients, Overview, Events.
+- **A refresh of a Settings pane on a phone no longer creeps the page up**: scrolled to the bottom of mDNS
+  reflector or Web pages, each refresh moved it up a line (a long note drawn whole, then folded after the scroll
+  was put back); a long note opened by a click now stays open through a refresh (it was shut again).
+
 ## 1.9.8 (2026-11-17)
 
 - **On a home screen** (an iPad's Share → Add to Home Screen, as otp 1.0.254): an icon of its own (the shield

@@ -1165,8 +1165,9 @@ def cmd_updates(M, args, cfg):
                                           M.C.yellow if c.get("count") else M.C.green)))
     if c.get("reboot_now") or d.get("reboot"):
         M.warn("a restart is needed: %s" % ", ".join(c.get("reboot_why") or []))
-    if j:
-        print("  %-22s %s" % ("the last run", "%s, %s %s%%" % (j.get("kind"), j.get("state"), j.get("pct"))))
+    if j.get("state"):           # the API sends every key of the job, None when there was none: "None, None None%" (1.9.9)
+        print("  %-22s %s" % ("the last run", "%s, %s%s" % (j.get("kind") or "-", j.get("state"),
+                                                            (" %s%%" % j["pct"]) if j.get("pct") is not None else "")))
     for p in (c.get("packages") or [])[:40]:
         print("    " + M.col(p if isinstance(p, str) else (p.get("name") or json.dumps(p)), M.C.dim))
     return 0

@@ -38,7 +38,7 @@ from xml.etree import ElementTree as ET
 from xml.parsers import expat
 from xml.sax.saxutils import escape
 
-__version__ = '1.9.8'
+__version__ = '1.9.9'
 VERSION = __version__
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
 DEFAULTS = {
@@ -698,6 +698,9 @@ def _free_port(key, ic):
 
 
 def _add(action, a, client):
+    if action == "AddAnyPortMapping" and a.get("NewExternalPort", "").strip() == "0":
+        # the external port a wildcard: the gateway picks one (WANIPConnection:2), as miniupnpd - it was 402 (1.9.9)
+        a = dict(a, NewExternalPort=str(random.randint(1024, 65535)))
     try:
         key = _key(a)
     except UPnPError:

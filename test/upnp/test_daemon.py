@@ -12,6 +12,13 @@ What it proves:
   - fake-igd.py --summary passes by request-log lines that are not a request (it stopped with a traceback)
   - upnp requests / log -n: a negative N is refused (it showed all but the first N); upnp requests passes by
     a line that is not a request; upnp mappings shows an added_at in seconds (it stopped with a traceback)
+  - IGD:2 AddAnyPortMapping with the external port 0 (a wildcard): a port is picked (it was 402); AddPortMapping
+    with 0 stays 402
+  - mappings.json of another shape ({...}, [1, "x"]): upnp mappings and the pages' Mappings show none, not a
+    traceback / a 500
+  - upnp updates with no run yet: no "the last run None, None None%"
+  - the pages' API: a time picker's since/until/hours past what the clock can say (1e20, inf, nan, 1e300) is
+    no end, not a 500 "the API broke on that"
 """
 import importlib.util
 import io
@@ -133,6 +140,22 @@ class Http(Base):
                                 if json.loads(ln).get("description")))
 
 
+class AnyPort(Base):
+    def test_wildcard(self):
+        D.set_version(2)
+        try:
+            a = dict(add_args("0"))
+            got = D.handle_ipc("AddAnyPortMapping", a, "127.0.0.1")
+            port = got[0][1]
+            self.assertTrue(1024 <= port <= 65535, got)
+            self.assertIn(("", port, "TCP"), D.mappings)
+            with self.assertRaises(D.UPnPError) as e:
+                D.handle_ipc("AddPortMapping", dict(add_args("0")), "127.0.0.1")
+            self.assertEqual(e.exception.code, 402)
+        finally:
+            D.set_version(1)
+
+
 class Ssdp(Base):
     def handler(self):
         ss = object.__new__(D.SSDP)
@@ -205,6 +228,71 @@ class Cli(Base):
         self.assertRegex(upnp.fmt_time(1794854519.7), r"^20\d\d-\d\d-\d\d \d\d:\d\d:\d\d$")
         self.assertEqual(upnp.fmt_time("2026-11-20T10:00:00"), "2026-11-20 10:00:00")
         self.assertEqual(upnp.fmt_time(None), "-")
+
+
+class OddMappings(Base):
+    def test_shapes(self):
+        import argparse
+        import upnp
+        import fake_igd_api as A
+        upnp.PAL = upnp.Palette(False)
+        upnp.NO_DNS = True
+        st = os.path.join(self.tmp, "odd")
+        os.makedirs(st, exist_ok=True)
+        for raw in ('{"a": 1}', '[1, "x", null]', '{}'):
+            with open(os.path.join(st, "mappings.json"), "w", encoding="utf-8") as f:
+                f.write(raw)
+            out = io.StringIO()
+            stdout, sys.stdout = sys.stdout, out
+            try:
+                upnp.cmd_mappings(argparse.Namespace(json=False), {"state_dir": st})
+                upnp.cmd_mappings(argparse.Namespace(json=True), {"state_dir": st})
+            finally:
+                sys.stdout = stdout
+            self.assertIn("No active mappings", out.getvalue())
+            real = A.load_cfg
+            A.load_cfg = lambda force=False: {"state_dir": st}
+            try:
+                self.assertEqual(A.mappings_view()["mappings"], [])
+            finally:
+                A.load_cfg = real
+
+
+class CliUpdates(unittest.TestCase):
+    def test_no_run(self):
+        import argparse
+        import upnp
+        import upnp_admin
+        upnp.PAL = upnp.Palette(False)
+        real = upnp_admin.api
+        out = io.StringIO()
+        for job, want in (({"id": None, "kind": None, "state": None, "pct": None}, None),
+                          ({"kind": "update", "state": "done", "pct": 100}, "update, done 100%")):
+            upnp_admin.api = lambda M, method, path, body=None, **k: {"check": {}, "job": job}
+            out.seek(0)
+            out.truncate()
+            stdout, sys.stdout = sys.stdout, out
+            try:
+                upnp_admin.cmd_updates(upnp, argparse.Namespace(what=None, json=False), {})
+            finally:
+                sys.stdout = stdout
+                upnp_admin.api = real
+            self.assertNotIn("None", out.getvalue())
+            if want:
+                self.assertIn(want, out.getvalue())
+            else:
+                self.assertNotIn("the last run", out.getvalue())
+
+
+class ApiWindow(unittest.TestCase):
+    def test_window(self):
+        import fake_igd_api as A
+        self.assertEqual(A.window({"since": ["1e20"], "until": ["inf"]}), (None, None))
+        self.assertEqual(A.window({"since": ["1e12"]})[0], None)
+        self.assertIsNone(A.since_hours({"hours": ["1e300"]}))
+        self.assertIsNotNone(A.since_hours({"hours": ["nan"]}))
+        since, until = A.window({"since": ["1700000000"], "until": ["1700003600"]})
+        self.assertEqual((since.timestamp(), until.timestamp()), (1700000000, 1700003600))
 
 
 if __name__ == "__main__":

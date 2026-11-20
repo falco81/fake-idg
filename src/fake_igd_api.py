@@ -326,9 +326,10 @@ def window(q, default_s=None):
     def one(name):
         try:
             v = float((q.get(name) or ["0"])[0])
-        except ValueError:
-            v = 0
-        return datetime.fromtimestamp(v).astimezone() if v > 0 else None
+            # a time past what the clock can say (since=1e20, inf) is no end: it was a 500 (1.9.9)
+            return datetime.fromtimestamp(v).astimezone() if v > 0 else None
+        except (ValueError, OverflowError, OSError):
+            return None
     since, until = one("since"), one("until")
     if since is None and "hours" in q:
         return since_hours(q, 24), until
@@ -348,9 +349,14 @@ def since_hours(q, default=24):
         h = float((q.get("hours") or [default])[0])
     except ValueError:
         h = default
+    if h != h:                                 # nan (1.9.9)
+        h = default
     if h <= 0:
         return None
-    return datetime.now().astimezone() - timedelta(hours=h)
+    try:
+        return datetime.now().astimezone() - timedelta(hours=h)
+    except (OverflowError, ValueError):        # hours=1e300: all time, not a 500 (1.9.9)
+        return None
 
 
 PHP_FIXED = {"8.2": (8, 2, 35), "8.3": (8, 3, 36), "8.4": (8, 4, 27), "8.5": (8, 5, 12)}
@@ -546,6 +552,8 @@ def mappings_view():
             data = json.load(f)
     except (OSError, ValueError):
         data = []
+    # only what is a mapping, as the service reads the file (1.9.9: a file of another shape was a 500)
+    data = [m for m in data if isinstance(m, dict)] if isinstance(data, list) else []
     names = U.ptr_names([m.get("internal_client") for m in data])
     for m in data:
         m["name"] = names.get(m.get("internal_client"), "")

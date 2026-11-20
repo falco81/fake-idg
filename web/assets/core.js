@@ -2443,6 +2443,11 @@ function liveCarry(oldRoot, newRoot) {
     var da = oldRoot.tagName === 'DETAILS' ? [oldRoot] : Array.prototype.slice.call(oldRoot.querySelectorAll('details'));
     var db = newRoot.tagName === 'DETAILS' ? [newRoot] : Array.prototype.slice.call(newRoot.querySelectorAll('details'));
     if (da.length && da.length === db.length) da.forEach(function (x, i) { if (db[i].open !== x.open) db[i].open = x.open; });
+    /* A long note opened by a click stays open too (1.9.9): a refresh shut it again. */
+    var pa = oldRoot.querySelectorAll('p.note, .ctl-lede'), pb = newRoot.querySelectorAll('p.note, .ctl-lede');
+    if (pa.length && pa.length === pb.length) Array.prototype.forEach.call(pa, function (x, i) {
+      if (x.classList.contains('open') && x.textContent === pb[i].textContent) pb[i].classList.add('open');
+    });
   }
   var a = liveControls(oldRoot), b = liveControls(newRoot);
   if (!a.length || a.length !== b.length) return;
@@ -2559,6 +2564,9 @@ function liveFill(host, build, live, after) {
     var inner = live ? scrollInner(host) : [];
     clear(host);
     while (box.firstChild) host.appendChild(box.firstChild);
+    /* Its long notes folded before the scroll is put back, not by the observer after it (1.9.9): drawn
+       whole for a moment, then folded, the page at its bottom on a phone crept up a line each refresh. */
+    longWordsFolded(host);
     scrollBack(held);
     scrollInnerBack(host, inner);
   } else {
