@@ -294,15 +294,40 @@ def copy_path(ctx, name):
 
 
 # ---- a database from somewhere else, read before anything is done ---------------------
+# A database put back is at most this big, unpacked (1.9.9): fake-igd's is a few MB (20 000 events at most) - a
+# gzip'd file of a few kB that unpacks to the whole disk is refused when it passes this, not when the disk is full.
+DB_MOST = 1 << 30
+
+
+def copy_most(a, b, most, what):
+    """a (an open file) into b, refused past `most` bytes."""
+    n = 0
+    while True:
+        chunk = a.read(1 << 20)
+        if not chunk:
+            return n
+        n += len(chunk)
+        if n > most:
+            raise ValueError("%s unpacks to more than %d MB - not a database of fake-igd; refused" % (
+                what, max(1, most >> 20)))
+        b.write(chunk)
+
+
 def unpack(src, dst):
-    """A copy (gzip'd or not) as a plain SQLite file in dst."""
+    """A copy (gzip'd or not) as a plain SQLite file in dst - DB_MOST at most."""
     with open(src, "rb") as f:
         head = f.read(2)
-    if head == b"\x1f\x8b":
-        with gzip.open(src, "rb") as a, open(dst, "wb") as b:
-            shutil.copyfileobj(a, b, 1 << 20)
-    else:
-        shutil.copyfile(src, dst)
+    try:
+        with (gzip.open(src, "rb") if head == b"\x1f\x8b" else open(src, "rb")) as a, open(dst, "wb") as b:
+            copy_most(a, b, DB_MOST, "that file")
+    except (OSError, EOFError) as e:
+        if isinstance(e, OSError) and e.errno is not None:
+            raise
+        os.unlink(dst)
+        raise ValueError("that file does not unpack: %s" % e)
+    except ValueError:
+        os.unlink(dst)
+        raise
     with open(dst, "rb") as f:
         if f.read(16) != b"SQLite format 3\x00":
             raise ValueError("that is not a SQLite database (nor a gzip'd one)")
@@ -327,6 +352,16 @@ def read_db(path):
     finally:
         conn.close()
     return {"bytes": file_size(path), "tables": len(t), "counts": counts, "admins": admins, "last_event": last}
+
+
+def strip_extras(conn):
+    """Every trigger and view of a database dropped - fake-igd's own schema has none (1.9.9). What was dropped."""
+    gone = []
+    for kind, name in conn.execute("SELECT type, name FROM sqlite_master WHERE type IN ('trigger', 'view') "
+                                   "AND name NOT LIKE 'sqlite_%'").fetchall():
+        conn.execute('DROP %s IF EXISTS "%s"' % ("TRIGGER" if kind == "trigger" else "VIEW", name.replace('"', '""')))
+        gone.append("%s %s" % (kind, name[:60]))
+    return gone
 
 
 def put_key(ctx, key_hex):
@@ -366,6 +401,9 @@ def restore_from(ctx, path, what, key_hex=None):
             # out) opened the pages again for whoever still had its cookie, within its idle time.
             live = [dict(r) for r in ctx.store.db.execute("SELECT * FROM sessions").fetchall()]
             src.backup(ctx.store.db)
+            # Nothing but tables comes with it (1.9.9): fake-igd makes no trigger and no view, and one in the file
+            # (a trigger on sessions making an account a full admin, say) stayed in the database and ran on.
+            stripped = strip_extras(ctx.store.db)
             # A database of an older version gets this version's columns at once (1.9.9).
             ctx.store.migrate()
             ctx.store.db.execute("DELETE FROM sessions")
@@ -376,6 +414,8 @@ def restore_from(ctx, path, what, key_hex=None):
     finally:
         src.close()
     key_said = put_key(ctx, key_hex) if key_hex else "the key in use stays (none came with it)"
+    if stripped:
+        key_said += "; left out of it, not fake-igd's: %s" % ", ".join(stripped[:20])
     who = (ctx.me or {}).get("name", "")
     ctx.event("%s put the database back from %s (%s account(s), %s event(s)); what it replaced is in %s; %s"
               % (who, what, says["counts"].get("users"), says["counts"].get("events"), safety, key_said), "warn")
@@ -437,7 +477,7 @@ def unbundle(path, work):
     dbf, locked = None, None
     with tarfile.open(path, "r:") as tf:
         for m in tf.getmembers():
-            if not m.isreg() or "/" in m.name or m.size > 2 * 1024 ** 3:
+            if not m.isreg() or "/" in m.name or m.size > DB_MOST:
                 continue
             if m.name == "secrets.key.locked" and m.size < 65536:
                 locked = json.loads(tf.extractfile(m).read().decode("utf-8"))

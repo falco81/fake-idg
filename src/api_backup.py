@@ -65,6 +65,8 @@ NAME_RE = re.compile(r"^fake-igd-backup-(?P<site>[A-Za-z0-9_.-]+?)-(?P<node>[A-Z
                      r"(?P<stamp>\d{8}-\d{6})\.tar\.gz(?P<enc>\.enc)?\Z")
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}\Z")
 UPLOAD_RE = re.compile(r"^upload-[0-9a-f]{16}\Z")
+OPEN_MOST_FILES = 200               # a backup opened: its files (and folders) at most (1.9.9)
+OPEN_MOST_OTHER = 16 * 1024 * 1024  # ... and each but the database at most (config.json, the system's files)
 HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d\Z")
 RUNS_KEEP = 60
 VERIFY_KEEP = 30
@@ -1210,9 +1212,10 @@ def open_file(ctx, path, pw, work):
     x = os.path.join(work, "x")
     os.makedirs(x, mode=0o700)
     top = None
+    count, total = 0, 0
     try:
         with tarfile.open(plain, "r:gz") as tf:
-            for mem in tf.getmembers():
+            for mem in tf:                  # one by one: refused at the first that is too much, not after all
                 parts = mem.name.split("/")
                 if mem.name.startswith("/") or ".." in parts or len(parts) < 2:
                     raise RbError("a name in it that does not belong there: %s" % mem.name[:80])
@@ -1220,10 +1223,20 @@ def open_file(ctx, path, pw, work):
                     top = parts[0]
                 if parts[0] != top or not top.startswith("fake-igd-backup-"):
                     raise RbError("that is not a backup of fake-igd")
+                count += 1
+                if count > OPEN_MOST_FILES:
+                    raise RbError("more than %d files in it - a backup of fake-igd has a dozen" % OPEN_MOST_FILES)
                 if mem.isdir():
                     continue
                 if not mem.isreg() or mem.size > 512 * 1024 * 1024:
                     raise RbError("something in it that is not a plain file: %s" % mem.name[:80])
+                # Bounded unpacked (1.9.9): a backup is the database (DB_MOST) and files of a few kB - a crafted
+                # one of a few MB filled the disk of the state folder as it was opened.
+                most = db_module().DB_MOST if parts[1:] == ["fake-igd.db"] else OPEN_MOST_OTHER
+                total += mem.size
+                if mem.size > most or total > db_module().DB_MOST + OPEN_MOST_OTHER * 4:
+                    raise RbError("%s is larger than a backup of fake-igd holds (%d MB) - refused"
+                                  % (mem.name[:80], max(1, most >> 20)))
                 dst = os.path.join(x, *parts[1:])
                 os.makedirs(os.path.dirname(dst), mode=0o700, exist_ok=True)
                 with tf.extractfile(mem) as a, open(dst, "wb") as b:
@@ -1235,8 +1248,17 @@ def open_file(ctx, path, pw, work):
             m = json.load(f)
     except (OSError, ValueError):
         raise RbError("there is no manifest.json in it - not a backup of fake-igd")
-    for rel, info in (m.get("files") or {}).items():
-        p = os.path.join(x, rel)
+    files = m.get("files") if isinstance(m, dict) else None
+    if not isinstance(files, dict):
+        raise RbError("its manifest.json lists no files - not a backup of fake-igd")
+    real = os.path.realpath(x)
+    for rel, info in files.items():
+        # A name of the manifest as the names in the file are checked (1.9.9): never a path of this machine.
+        parts = str(rel).split("/")
+        p = os.path.join(x, *parts) if parts else x
+        if not rel or str(rel).startswith("/") or "\x00" in str(rel) or any(q in ("", ".", "..") for q in parts) \
+                or not os.path.realpath(p).startswith(real + os.sep) or not isinstance(info, dict):
+            raise RbError("its manifest names a file that does not belong there: %s" % str(rel)[:80])
         if not os.path.isfile(p):
             raise RbError("%s is missing from it" % rel)
         if sha256_of(p) != info.get("sha256"):

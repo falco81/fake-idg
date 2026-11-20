@@ -1139,7 +1139,19 @@ def cmd_config(args, cfg):
         raw = load_config(path, strict=True)
         old = raw.get(args.key)
         raw[args.key] = coerce_value(args.key, args.value)
+        left = []
+        if args.key == "ntfy_url" and raw[args.key]:
+            # Another ntfy server: the token and password kept were given for the one before and are not
+            # sent to it (1.9.9, as on the pages) - taken away here, set again after this.
+            import igd_panes as PN
+            if PN.server_of(raw[args.key]) != PN.server_of(old):
+                left = [k for k in ("ntfy_token", "ntfy_password") if raw.get(k)]
+                for k in left:
+                    raw[k] = ""
         write_config(path, raw)
+        for k in left:
+            warn("%s taken away - it was given for the server before; set it again: sudo upnp config set %s ..."
+                 % (k, k))
         if args.key in SECRET_KEYS:
             ok("%s: %s" % (args.key, "set (hidden)" if raw[args.key] else "cleared"))
         else:

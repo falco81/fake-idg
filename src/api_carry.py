@@ -331,7 +331,19 @@ def import_conf(ctx, conf, replace):
     if main is None or not hasattr(main, "settings_save"):
         raise ValueError("the settings cannot be saved from here")
     who = (ctx.me or {}).get("name", "")
-    return main.settings_save(changes, who, ctx.addr)
+    # A server the file puts in place of this one's, without the secret given for it (an export without the
+    # secrets): the one kept here is not sent there (1.9.9) - it is taken away, and said.
+    cfg_now = main.load_cfg()
+
+    def now(k):
+        return pn.values(ctx.store).get(k, pn.SETTINGS[k].get("default")) if k in pn.SETTINGS else cfg_now.get(k)
+    left = pn.secrets_left_behind(changes, now)
+    for sk, _w, _hk in left:
+        changes[sk] = ""
+    got = main.settings_save(changes, who, ctx.addr)
+    got["cleared"] = ["%s taken away: the file names another server (%s) and not its secret - type it again"
+                      % (w, hk) for _sk, w, hk in left]
+    return got
 
 
 def import_system(ctx, conf):
@@ -422,7 +434,8 @@ def post_import(ctx):
     ctx.event("%s imported a configuration from %s (%s): %s" % (who, conf.get("from") or "?",
                                                                 "exactly the file" if replace else "added to what was here",
                                                                 words), "warn")
-    return {"message": "imported - " + words, "made": made, "said": usaid + sys_said, "restart": saved.get("restart")}
+    return {"message": "imported - " + words, "made": made, "said": usaid + (saved.get("cleared") or []) + sys_said,
+            "restart": saved.get("restart")}
 
 
 ROUTES = {("GET", "/api/carry"): get_carry, ("POST", "/api/carry"): post_carry,

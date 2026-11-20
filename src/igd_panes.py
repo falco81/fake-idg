@@ -213,6 +213,51 @@ def check(key, raw):
     return v, None
 
 
+# A secret goes only to the server it was typed for (1.9.9, as Backups' destinations since otp): the server
+# changed and the secret kept, the token or password went to whatever server was put in - a new one is typed
+# in the same save, or the save is refused. secret -> (the setting naming its server, what it is called).
+SECRET_SERVER = {"ntfy_token": ("ntfy_url", "the ntfy access token"),
+                 "ntfy_password": ("ntfy_url", "the ntfy password"),
+                 "smtp_password": ("smtp_host", "the mail server's password"),
+                 "proxy_password": ("proxy_url", "the proxy's password"),
+                 # 1.9.9: the MikroTik's account password, not sent to another router than the one it was given for
+                 "mikrotik_password": ("mikrotik_host", "the MikroTik account's password")}
+
+
+def server_of(v):
+    """Where a setting sends to: (scheme, host, port) of a URL, the host of a bare name - compared."""
+    v = str(v or "").strip().lower()
+    if "://" in v:
+        from urllib.parse import urlparse
+        try:
+            u = urlparse(v)
+            port = u.port
+        except ValueError:
+            return v
+        return (u.scheme, (u.hostname or "").rstrip("."), port or {"http": 80, "https": 443}.get(u.scheme))
+    return v.strip("[]").rstrip(".")
+
+
+def secrets_left_behind(changes, now):
+    """The secrets whose server `changes` moves while the secret itself is not typed again (absent, None or
+    the dots) and one is kept - [(secret key, its words, the server key)]. now(key): the value in use."""
+    out = []
+    for sk, (hk, words) in SECRET_SERVER.items():
+        if hk not in changes or (sk in changes and changes[sk] is not None and not masked(changes[sk])):
+            continue
+        if not str(changes[hk] or "").strip():
+            continue                        # emptied: it is sent nowhere
+        if server_of(changes[hk]) == server_of(now(hk)) or not now(sk):
+            continue
+        out.append((sk, words, hk))
+    return out
+
+
+def server_moved_words(left):
+    return "; ".join("the server changed (%s): type %s again in the same save - the one kept was given for the "
+                     "server before and is not sent to another" % (hk, words) for _sk, words, hk in left)
+
+
 # meta "settings" is read, changed and written back: one at a time (1.7.5) - two saves at once (two
 # browsers, a pane and the background's sealing) each wrote back what it had read, and one was lost.
 SAVE_LOCK = threading.RLock()

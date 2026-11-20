@@ -202,6 +202,15 @@ def settings_save(changes, who, addr, handler=None):
     if not isinstance(changes, dict) or not changes:
         raise ValueError("nothing to save")
     cfg = load_cfg()
+
+    def now(k):
+        if k in PN.SETTINGS:
+            return PN.values(STORE[0]).get(k, PN.SETTINGS[k].get("default"))
+        return cfg.get(k)
+    # The ntfy server, the mail server or the proxy changed: its token or password typed again (1.9.9).
+    left = PN.secrets_left_behind(changes, now)
+    if left:
+        raise ValueError(PN.server_moved_words(left))
     good = {}
     theirs = {k: changes.pop(k) for k in list(changes) if k in PN.SETTINGS}
     # Every value of config.json checked before anything is kept (1.7.4): one that is refused

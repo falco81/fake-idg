@@ -132,6 +132,173 @@ class Restore(Base):
         self.assertEqual([k["id"] for k in self.S.passkeys("admin")], ["k1"])
 
 
+class RestoreCrafted(Base):
+    """A file put back is fake-igd's tables and nothing more, of a sane size, its manifest naming its own files."""
+
+    def test_triggers_and_views_dropped(self):
+        p = os.path.join(self.dir, "crafted.db")
+        DB.snapshot(self.S, p)
+        db = sqlite3.connect(p)
+        db.execute("CREATE TRIGGER up AFTER INSERT ON sessions BEGIN UPDATE users SET role = 'fulladmin'; END")
+        db.execute("CREATE VIEW peek AS SELECT name, hash FROM users")
+        db.commit()
+        db.close()
+        got = DB.restore_from(self.ctx(), p, "a crafted copy")
+        self.assertIn("trigger up", got["key"])
+        left = self.S.rows("SELECT name FROM sqlite_master WHERE type IN ('trigger', 'view')")
+        self.assertEqual(left, [], "the file's trigger and view stayed in the database")
+        self.S.login("viewer", "secret123")
+        self.assertEqual(self.S.user("viewer")["role"], "readonly")
+
+    def test_gzip_bomb_refused(self):
+        import gzip
+        p = os.path.join(self.dir, "bomb.db.gz")
+        with gzip.open(p, "wb") as f:
+            f.write(b"SQLite format 3\x00")
+            for _ in range(40):
+                f.write(b"\x00" * (1 << 20))
+        was = DB.DB_MOST
+        DB.DB_MOST = 8 << 20
+        try:
+            with self.assertRaises(ValueError) as e:
+                DB.unpack(p, os.path.join(self.dir, "out.db"))
+        finally:
+            DB.DB_MOST = was
+        self.assertIn("refused", str(e.exception))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "out.db")))
+
+    def backup_file(self, files, manifest=None):
+        import io
+        import tarfile
+        top = "fake-igd-backup-lab-node-20261120-000000"
+        p = os.path.join(self.dir, "b-%d.tar.gz" % time.monotonic_ns())
+        with tarfile.open(p, "w:gz") as tf:
+            for name, data in list(files.items()) + [("manifest.json", json.dumps(manifest or {"files": {}}).encode())]:
+                ti = tarfile.TarInfo("%s/%s" % (top, name))
+                ti.size = len(data)
+                tf.addfile(ti, io.BytesIO(data))
+        return p
+
+    def open_it(self, p):
+        BK = sys.modules["api_backup"]
+        work = tempfile.mkdtemp(dir=self.dir)
+        return BK.open_file(None, p, "", work)
+
+    def test_backup_member_too_big(self):
+        BK = sys.modules["api_backup"]
+        was = BK.OPEN_MOST_OTHER
+        BK.OPEN_MOST_OTHER = 1024
+        try:
+            with self.assertRaises(BK.RbError) as e:
+                self.open_it(self.backup_file({"config.json": b" " * 4096}))
+        finally:
+            BK.OPEN_MOST_OTHER = was
+        self.assertIn("refused", str(e.exception))
+        with self.assertRaises(BK.RbError):
+            self.open_it(self.backup_file({"x%d" % i: b"" for i in range(BK.OPEN_MOST_FILES + 1)}))
+
+    def test_manifest_names_checked(self):
+        BK = sys.modules["api_backup"]
+        import hashlib
+        with open(self.victim_file(), "rb") as f:
+            sha = hashlib.sha256(f.read()).hexdigest()
+        for rel in (self.victim_file(), "../../../../" + self.victim_file().lstrip("/"), "a/../../x", ""):
+            with self.assertRaises(BK.RbError) as e:
+                self.open_it(self.backup_file({"config.json": b"{}"}, {"files": {rel: {"sha256": sha}}}))
+            self.assertIn("does not belong there", str(e.exception))
+        good = {"config.json": {"sha256": hashlib.sha256(b"{}").hexdigest()}}
+        m, _x = self.open_it(self.backup_file({"config.json": b"{}"}, {"files": good}))
+        self.assertIn("config.json", m["files"])
+
+    def victim_file(self):
+        p = os.path.join(self.dir, "victim")
+        if not os.path.exists(p):
+            with open(p, "w") as f:
+                f.write("a file of this machine\n")
+        return p
+
+
+class ServerMoved(Base):
+    """A token or password goes only to the server it was typed for: the server changed, it is typed again."""
+
+    def setUp(self):
+        Base.setUp(self)
+        import fake_igd_api as A
+        self.A = A
+        cfg = os.path.join(self.dir, "config.json")
+        with open(cfg, "w") as f:
+            json.dump({"state_dir": self.dir, "ntfy_url": "https://ntfy.example.com/ps5", "ntfy_token": "tk_kept_one"}, f)
+        A.CFG_PATH = cfg
+        A.STORE[0] = self.S
+        A.load_cfg(force=True)
+        A.settings_save({"smtp_host": "mail.example.com", "smtp_password": "kept-mail-pw",
+                         "proxy_url": "http://proxy.example.com:3128", "proxy_password": "kept-proxy-pw"}, "admin", "?")
+
+    def save(self, changes):
+        return self.A.settings_save(dict(changes), "admin", "?")
+
+    def test_mikrotik_unit(self):
+        # 1.9.9: the MikroTik's password stays with the router it was typed for
+        import igd_panes as P
+        now = {"mikrotik_host": "192.0.2.1", "mikrotik_password": "kept"}.get
+        self.assertEqual([x[0] for x in P.secrets_left_behind({"mikrotik_host": "192.0.2.99"}, now)], ["mikrotik_password"])
+        self.assertEqual(P.secrets_left_behind({"mikrotik_host": "192.0.2.99", "mikrotik_password": "typed"}, now), [])
+        self.assertEqual(P.secrets_left_behind({"mikrotik_host": "192.0.2.1"}, now), [])
+
+    def test_ntfy(self):
+        with self.assertRaises(ValueError) as e:
+            self.save({"ntfy_url": "https://evil.example.net/ps5", "ntfy_token": "•" * 8 + "ne"})
+        self.assertIn("ntfy access token again", str(e.exception))
+        with self.assertRaises(ValueError):
+            self.save({"ntfy_url": "http://ntfy.example.com/ps5"})            # https -> http: another server too
+        self.assertEqual(self.A.load_cfg(force=True)["ntfy_url"], "https://ntfy.example.com/ps5")
+        self.save({"ntfy_url": "https://ntfy.example.com/other-topic", "ntfy_token": "•" * 8 + "ne"})
+        self.save({"ntfy_url": "https://NTFY.example.com:443/ps5"})
+        self.save({"ntfy_url": ""})                                            # switched off: sent nowhere
+        self.save({"ntfy_url": "https://new.example.org/ps5", "ntfy_token": "tk_typed_again"})
+        self.assertEqual(self.A.load_cfg(force=True)["ntfy_token"], "tk_typed_again")
+
+    def test_mail_and_proxy(self):
+        with self.assertRaises(ValueError) as e:
+            self.save({"smtp_host": "smtp.evil.example.net", "smtp_password": "•" * 8 + "pw"})
+        self.assertIn("mail server's password", str(e.exception))
+        with self.assertRaises(ValueError) as e:
+            self.save({"proxy_url": "http://evil.example.net:3128"})
+        self.assertIn("proxy's password", str(e.exception))
+        self.save({"smtp_host": "MAIL.example.com", "smtp_port": 587})
+        self.save({"proxy_url": "http://proxy.example.com:3128/"})
+        self.save({"smtp_host": "smtp.new.example.org", "smtp_password": "a-new-one"})
+        self.save({"proxy_url": "http://other.example.org:8080", "proxy_password": ""})
+        self.assertEqual(PN.value(self.S, "smtp_password"), "a-new-one")
+
+    def test_import_takes_the_kept_one_away(self):
+        main = sys.modules["__main__"]
+        main.settings_save, main.load_cfg = self.A.settings_save, self.A.load_cfg
+        try:
+            got = CARRY.import_conf(self.ctx(), {"config": {"ntfy_url": "https://elsewhere.example.org/t"},
+                                                 "settings": {"smtp_host": "smtp.elsewhere.example.org"}}, False)
+        finally:
+            del main.settings_save, main.load_cfg
+        self.assertEqual(self.A.load_cfg(force=True)["ntfy_token"], "")
+        self.assertEqual(PN.value(self.S, "smtp_password"), "")
+        self.assertEqual(len(got["cleared"]), 2)
+
+    def test_command_line(self):
+        import argparse
+        import upnp as U
+        cfg = self.A.CFG_PATH
+        args = argparse.Namespace(config=cfg, config_cmd="set", key="ntfy_url", value="https://ntfy.example.com/x",
+                                  no_restart=True, json=False)
+        U.cmd_config(args, {})
+        with open(cfg) as f:
+            self.assertEqual(json.load(f)["ntfy_token"], "tk_kept_one")
+        args.value = "https://other.example.org/x"
+        U.cmd_config(args, {})
+        with open(cfg) as f:
+            got = json.load(f)
+        self.assertEqual((got["ntfy_url"], got["ntfy_token"]), ("https://other.example.org/x", ""))
+
+
 class Migrate(unittest.TestCase):
     def test_twice_and_at_the_same_moment(self):
         d = tempfile.mkdtemp(dir=TMP)
@@ -160,6 +327,8 @@ class Migrate(unittest.TestCase):
         b.migrate()                                      # "duplicate column name" is no error here
         cols = [r[1] for r in a.db.execute("PRAGMA table_info(users)").fetchall()]
         self.assertEqual(cols.count("passkeys"), 1)
+        a.close()
+        b.db._db.close()
 
 
 class Import(Base):
