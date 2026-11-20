@@ -63,7 +63,7 @@ if '; ' in line:                            # a batch (1.9.2): marks and prints,
     parts = line.split("; ")
     out = []
     for part in parts:
-        mk = re.match(r'^:put "(==fake-igd=[a-z0-9_]+==)"$', part)
+        mk = re.match(r'^:put "(==fake-igd(?:-[0-9a-f]+)?=[a-z0-9_]+==)"$', part)
         if mk:
             out.append(mk.group(1)); continue
         mp = re.match(PRINT, part)
@@ -75,6 +75,10 @@ if '; ' in line:                            # a batch (1.9.2): marks and prints,
         path = "/" + mp.group(1).strip("/").replace(" ", "/")
         if path not in fixture.ROUTER or path in os.environ.get("FAKE_SSH_UNKNOWN", "").split(","):
             sys.stdout.write("bad command name %s (line 1 column 9)\r\n" % path.rsplit("/", 1)[-1]); sys.exit(0)
+        if path in os.environ.get("FAKE_SSH_DENY", "").split(","):
+            # 1.9.9: refused while the line runs - RouterOS stops the whole line there
+            out.append("not enough permissions (9)")
+            break
         out.append(fixture.as_value(path).rstrip("\n"))
     sys.stdout.write("\r\n".join(out).replace("\n", "\r\n") + "\r\n"); sys.exit(0)
 m = re.match(PRINT, line)

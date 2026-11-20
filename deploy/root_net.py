@@ -154,24 +154,34 @@ def trial_write(d):
     d["at"] = time.time()
     try:
         os.makedirs(WEB_DIR, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix=".net-trial-", dir=WEB_DIR)
-        with os.fdopen(fd, "w") as f:
-            json.dump(d, f)
-            os.fchmod(f.fileno(), 0o640)
-            try:
-                import grp
-                os.fchown(f.fileno(), 0, grp.getgrnam("fake-igd").gr_gid)
-            except (KeyError, OSError):
-                pass
-        os.replace(tmp, TRIAL_FILE)
+        # In the folder as it is, never through a link (1.9.9): web/ is the fake-igd account's, which
+        # could put a link to a folder of root's in its place - root wrote net-trial.json there.
+        dfd = os.open(WEB_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            tmp = ".net-trial-%d-%s" % (os.getpid(), os.urandom(4).hex())
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640, dir_fd=dfd)
+            with os.fdopen(fd, "w") as f:
+                json.dump(d, f)
+                os.fchmod(f.fileno(), 0o640)
+                try:
+                    import grp
+                    os.fchown(f.fileno(), 0, grp.getgrnam("fake-igd").gr_gid)
+                except (KeyError, OSError):
+                    pass
+            os.replace(tmp, os.path.basename(TRIAL_FILE), src_dir_fd=dfd, dst_dir_fd=dfd)
+        finally:
+            os.close(dfd)
     except OSError:
         pass
 
 
 def trial_read():
     try:
-        with open(TRIAL_FILE) as f:
-            got = json.load(f)
+        fd = os.open(TRIAL_FILE, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd) as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return {}
+            got = json.loads(f.read(1 << 20) or "{}")
         return got if isinstance(got, dict) else {}
     except (OSError, ValueError):
         return {}

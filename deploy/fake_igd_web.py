@@ -1155,7 +1155,13 @@ def write_kind_result(kind, d):
 def serve_queue():
     """Every ask in web/ask/, oldest first: taken out of the folder, then done by its module."""
     try:
-        dfd = os.open(ASK_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        # web/ and web/ask/ each without following a link (1.9.9): web/ is the fake-igd account's, and
+        # through a link laid in its place root took (and unlinked) the files of another folder's ask/.
+        wfd = os.open(WEB_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            dfd = os.open(os.path.basename(ASK_DIR), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=wfd)
+        finally:
+            os.close(wfd)
     except OSError:
         return 0
     try:

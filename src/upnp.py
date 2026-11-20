@@ -455,7 +455,9 @@ def read_events(cfg, since=None, client=None, action=None):
                 e = json.loads(line)
             except ValueError:
                 continue
-            e["_t"] = parse_time(e.get("time"))
+            if not isinstance(e, dict):        # a line that is no request (1.9.9: a traceback)
+                continue
+            e["_t"] = parse_time(e.get("time") if isinstance(e.get("time"), str) else None)
             if since and (not e["_t"] or e["_t"] < since):
                 continue
             if client and e.get("client") != client and e.get("internal_client") != client:
@@ -540,6 +542,9 @@ def ptr(ip):
 
 
 def fmt_time(s):
+    if isinstance(s, (int, float)) and not isinstance(s, bool):
+        # seconds since 1970 (a mappings.json of another make): upnp mappings stopped with a traceback (1.9.9)
+        s = datetime.fromtimestamp(s).astimezone()
     t = parse_time(s) if isinstance(s, str) else s
     return t.strftime("%Y-%m-%d %H:%M:%S") if t else (s or "-")
 
@@ -1775,6 +1780,17 @@ colours: colorama (or raw ANSI); disable with --no-color or the NO_COLOR variabl
 read logs without sudo: sudo usermod -aG fake-igd $USER  (then log in again)
 """
 
+def count_arg(v):
+    """-n N: a whole number, 0 or more - a negative one showed all but the first N (1.9.9)."""
+    try:
+        n = int(v)
+    except ValueError:
+        raise argparse.ArgumentTypeError("invalid number: %r" % v)
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be 0 or more: %d" % n)
+    return n
+
+
 SINCE_HELP = "only entries newer than: 30m, 2h, 7d, 2w or a date '2026-11-16', '2026-11-16 18:00'"
 
 
@@ -1845,7 +1861,7 @@ def build_parser():
             "  upnp requests -n 0                     # all\n"
             "  upnp requests --action AddPortMapping --since 1d\n"
             "  upnp requests --json > export.jsonl", aliases=("req", "r"))
-    s.add_argument("-n", type=int, default=30, metavar="N", help="last N entries, 0 = all (default 30)")
+    s.add_argument("-n", type=count_arg, default=30, metavar="N", help="last N entries, 0 = all (default 30)")
     s.add_argument("--client", metavar="IP", help="filter by client")
     s.add_argument("--action", metavar="ACTION", help="filter by action: AddPortMapping, DeletePortMapping, Expired")
     s.add_argument("--since", metavar="TIME", help=SINCE_HELP)
@@ -1881,7 +1897,7 @@ def build_parser():
             "  upnp log --level WARNING     # warnings and errors only\n"
             "  upnp log --grep 3478 -n 0    # everything containing 3478\n"
             "  upnp log --since 30m", aliases=("l",))
-    s.add_argument("-n", type=int, default=50, metavar="N", help="last N lines, 0 = all (default 50)")
+    s.add_argument("-n", type=count_arg, default=50, metavar="N", help="last N lines, 0 = all (default 50)")
     s.add_argument("-f", "--follow", action="store_true", help="follow new lines (like tail -f)")
     s.add_argument("-e", "--events", action="store_true", help="events only (ports, searches, warnings) without SOAP details")
     s.add_argument("--level", choices=("DEBUG", "INFO", "WARNING", "ERROR"), type=str.upper, help="minimum level")

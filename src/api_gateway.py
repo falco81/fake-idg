@@ -559,7 +559,8 @@ def tab(ctx):
     mt = None
     try:
         mk = sys.modules.get("api_mikrotik")
-        if mk is not None and hasattr(mk, "checks"):
+        # 1.9.9: only while the MikroTik is read - switched off, its last read was still shown as its word
+        if mk is not None and hasattr(mk, "checks") and mk.conf(ctx)["on"]:
             got = mk.checks(ctx)
             mt = got.get("rows") if isinstance(got, dict) else None
     except Exception:                                   # noqa: BLE001 - no strip then

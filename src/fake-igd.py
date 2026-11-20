@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from email.utils import formatdate
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.etree import ElementTree as ET
+from xml.parsers import expat
 from xml.sax.saxutils import escape
 
 __version__ = '1.9.8'
@@ -644,7 +645,16 @@ def local_name(tag):
     return tag.rsplit("}", 1)[-1]
 
 
+def _no_dtd(*_a):
+    raise ValueError("a DOCTYPE or ENTITY is not allowed in SOAP")
+
+
 def parse_soap(body):
+    # A DOCTYPE (entities: XXE, "billion laughs" - one request of 300 KB of description and a log line
+    # as long) is refused, as SOAP 1.1 forbids it and miniupnpd never reads one (1.9.9)
+    pre = expat.ParserCreate()
+    pre.StartDoctypeDeclHandler = pre.EntityDeclHandler = _no_dtd
+    pre.Parse(body, True)
     root = ET.fromstring(body)
     for el in root:
         if local_name(el.tag) == "Body":
@@ -1007,8 +1017,11 @@ class Handler(BaseHTTPRequestHandler):
         # request log once a minute, so the Requests and Clients tabs see it.
         changes = action in MUTATING
         loud = changes or once(("soap", client, action))
+        # the arguments as the log says them: each cut as the description is, the whole at 1 KB - a request
+        # of 64 KB was one line of 64 KB in the log (1.9.9)
+        shown = json.dumps({k[:40]: v[:DESC_MOST] for k, v in args.items()}, ensure_ascii=False)[:1024]
         (log.info if loud else log.debug)("soap: %s -> %s %s(UA=%s)", client, action,
-                                          (json.dumps(args, ensure_ascii=False) + " ") if args else "", ua)
+                                          (shown + " ") if args else "", ua)
         try:
             out = handler(action, args, client)
             self._send(200, soap_response(service, action, out))
@@ -1183,7 +1196,8 @@ class SSDP:
                 (log.warning if once(("pkt", src)) else log.debug)("ssdp: a packet from %s failed: %s", src, e)
 
     def handle(self, data, src, sport, arrived=None):
-        lines = data.decode("utf-8", "ignore").split("\r\n")
+        # lines ended by CRLF, or by LF alone as some clients send them (1.9.9: such a search was never answered)
+        lines = re.split(r"\r?\n", data.decode("utf-8", "ignore"))
         if not lines or not lines[0].upper().startswith("M-SEARCH"):
             if lines and lines[0].upper().startswith("NOTIFY") and src not in self.joined.values():
                 nt = next((ln.split(":", 1)[1].strip() for ln in lines if ln.upper().startswith("NT:")), "")
@@ -1338,9 +1352,15 @@ def summary():
                     e = json.loads(line)
                 except ValueError:
                     continue
-                if e.get("action") != "AddPortMapping":
+                # a line that is not a request (cut by a full disk, a crash) is passed by - it stopped --summary
+                # with a traceback (1.9.9)
+                if not isinstance(e, dict) or e.get("action") != "AddPortMapping":
                     continue
-                k = (e["protocol"], e["external_port"], e.get("internal_client", ""))
+                try:
+                    k = (str(e["protocol"]), int(e["external_port"]), str(e.get("internal_client", "")))
+                    e["time"] = str(e.get("time") or "-")
+                except (KeyError, TypeError, ValueError):
+                    continue
                 p = ports.setdefault(k, {"count": 0, "first": e["time"], "last": e["time"], "desc": set()})
                 p["count"] += 1
                 p["last"] = e["time"]

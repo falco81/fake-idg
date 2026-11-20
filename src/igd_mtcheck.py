@@ -275,17 +275,25 @@ def wan_of(snap):
                   and str(r.get("dst") or "0.0.0.0/0") == "0.0.0.0/0"]
         main = [r for r in routes if str(r.get("table") or "main") == "main"] or routes
         for r in main:
-            im = str(r.get("immediate") or "")
-            gw = str(r.get("gateway") or "").split("%")[0].split(",")[0]
-            if "%" in im:
-                ifs.add(im.split("%", 1)[1].split(",")[0])
-            elif gw and not re.match(r"^[0-9.]+$", gw):
-                ifs.add(gw)
-            elif gw:
-                for a in addrs:
-                    x = _ip(a)
-                    if x and ipaddress.ip_address(gw) in x.network:
-                        ifs.add(a.get("interface"))
+            # 1.9.9: every gateway of an ECMP route (gateway=a,b), and "a%ether1" says its interface itself
+            im_ifs = {x.split("%", 1)[1].strip() for x in str(r.get("immediate") or "").split(",") if "%" in x}
+            if im_ifs:
+                ifs |= im_ifs
+                continue
+            for gw_ in [x.strip() for x in str(r.get("gateway") or "").split(",") if x.strip()]:
+                gw = gw_.split("%")[0]
+                if "%" in gw_:
+                    ifs.add(gw_.split("%", 1)[1])
+                elif not re.match(r"^[0-9.]+$", gw):
+                    ifs.add(gw)
+                else:
+                    for a in addrs:
+                        x = _ip(a)
+                        try:
+                            if x and ipaddress.ip_address(gw) in x.network:
+                                ifs.add(a.get("interface"))
+                        except ValueError:
+                            break
         how = "the interface of the default route"
     pub = str(snap.get("public_ip") or "")
     if not ifs and pub:
@@ -673,10 +681,23 @@ def log_epoch(text, ref=None):
         if m:
             return _d.datetime(*[int(x) for x in m.groups()]).timestamp()
         m = re.match(r"^([a-z]{3})/(\d{1,2})(?:/(\d{4}))? (\d{1,2}):(\d{2}):(\d{2})$", s)
-        if m and m.group(1) in MONTHS:
-            year = int(m.group(3) or _d.datetime.fromtimestamp(ref).year)
-            return _d.datetime(year, MONTHS[m.group(1)], int(m.group(2)), int(m.group(4)), int(m.group(5)),
-                               int(m.group(6))).timestamp()
+        # 1.9.9: and RouterOS 7's "11-17 16:36:44" (the day of an older line, without its year)
+        m2 = None if m else re.match(r"^(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{2}):(\d{2})$", s)
+        if m2:
+            m, month = m2, int(m2.group(1))
+            day, hms, year = int(m2.group(2)), [int(x) for x in m2.groups()[2:]], None
+        elif m and m.group(1) in MONTHS:
+            month, day, hms = MONTHS[m.group(1)], int(m.group(2)), [int(x) for x in m.groups()[3:]]
+            year = int(m.group(3)) if m.group(3) else None
+        else:
+            return None
+        this = _d.datetime.fromtimestamp(ref).year
+        at = _d.datetime(year or this, month, day, *hms).timestamp()
+        if year is None and at > ref + 2 * 86400:
+            # 1.9.9: a day without its year that would be ahead of the read is last year's ("dec/31" read on
+            # the 1st of January)
+            at = _d.datetime(this - 1, month, day, *hms).timestamp()
+        return at
     except ValueError:
         return None
     return None

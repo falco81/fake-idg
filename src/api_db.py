@@ -361,7 +361,18 @@ def restore_from(ctx, path, what, key_hex=None):
     src = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
     try:
         with ctx.store.lock:
+            # Who is signed in NOW stays so, and only they (1.9.9): the file's own sessions came back to
+            # life with it - a sign-in ended since (by its password changed, by Accounts → End, by signing
+            # out) opened the pages again for whoever still had its cookie, within its idle time.
+            live = [dict(r) for r in ctx.store.db.execute("SELECT * FROM sessions").fetchall()]
             src.backup(ctx.store.db)
+            # A database of an older version gets this version's columns at once (1.9.9).
+            ctx.store.migrate()
+            ctx.store.db.execute("DELETE FROM sessions")
+            ctx.store.db.execute("DELETE FROM challenges")
+            for r in live:
+                ctx.store.db.execute("INSERT OR REPLACE INTO sessions (%s) VALUES (%s)" % (
+                    ", ".join(r), ", ".join("?" * len(r))), tuple(r.values()))
     finally:
         src.close()
     key_said = put_key(ctx, key_hex) if key_hex else "the key in use stays (none came with it)"

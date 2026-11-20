@@ -272,12 +272,25 @@ class Store(object):
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.execute("PRAGMA foreign_keys=ON")
+        self._policy = (0.0, None)
+        self.migrate()
+
+    def migrate(self):
+        """The tables and columns of this version put into the database, and what an older version kept
+        moved - when it opens, and again after a database is put back in its place (1.9.9: one of an older
+        version, put back by Settings → Database or Backups, lacked the newer columns until the API was
+        restarted - signing in broke on "no such column"). Does nothing to a database that has them."""
         with self.lock:
             self.db.executescript(SCHEMA)
             for table, col, kind in COLUMNS:
                 have = [r[1] for r in self.db.execute("PRAGMA table_info(%s)" % table).fetchall()]
                 if col not in have:
-                    self.db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, kind))
+                    try:
+                        self.db.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, col, kind))
+                    except sqlite3.OperationalError as e:
+                        # Added a moment ago by the other one opening it (the API and `upnp user` at once).
+                        if "duplicate column" not in str(e):
+                            raise
         self._policy = (0.0, None)
         self._passkeys_moved()
 

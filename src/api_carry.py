@@ -238,11 +238,21 @@ def import_users(ctx, rows, replace, me):
         note = str(r.get("note") or "")[:200]
         h = r.get("hash")
         have = ctx.store.user(name)
+        if have and role != "fulladmin" and ctx.store._last_admin(have) and not have["disabled"]:
+            # The last full admin who can sign in stays one (1.9.9): written over by the file's role, an
+            # import from the command line (upnp carry import) could leave nobody to sign in and change
+            # anything.
+            said.append("%s stays a full admin - the last one who can sign in" % have["name"])
+            role = have["role"]
         if isinstance(h, str) and HASH_RE.match(h):
             now = time.time()
             if have:
                 ctx.store.run("UPDATE users SET role = ?, hash = ?, note = ?, must_change = ?, changed = ? "
                               "WHERE name = ?", (role, h, note, 1 if r.get("must_change") else 0, now, name))
+                if h != have["hash"]:
+                    # Another password: the sign-ins with the one before end, as everywhere a password is
+                    # set (1.9.9) - they stayed open after the import.
+                    ctx.store.end_sessions_of(have["name"])
             else:
                 ctx.store.run("INSERT INTO users (name, role, hash, note, must_change, created, changed) "
                               "VALUES (?, ?, ?, ?, ?, ?, ?)", (name, role, h, note, 1 if r.get("must_change") else 0,

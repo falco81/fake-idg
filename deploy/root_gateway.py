@@ -139,7 +139,9 @@ def device_checked(d, net):
             a6 = ipaddress.ip_address(x.split("/")[0])
         except ValueError:
             return None, "%s: %s is not an IPv6 address" % (name, x[:45])
-        if a6.version != 6 or a6.is_link_local or a6.is_multicast or a6.is_loopback or a6.is_unspecified:
+        # 1.9.9: not an IPv4 address written as IPv6 (::ffff:192.0.2.7) nor a reserved or site-local one either
+        if a6.version != 6 or a6.is_link_local or a6.is_multicast or a6.is_loopback or a6.is_unspecified or \
+                a6.ipv4_mapped is not None or a6.is_reserved or a6.is_site_local:
             return None, "%s: %s is not an IPv6 address of a device (global or ULA)" % (name, x[:45])
         if str(a6) not in ip6:
             ip6.append(str(a6))

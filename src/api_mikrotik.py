@@ -183,10 +183,13 @@ def read_now(ctx, by=""):
             return _meta_json(ctx.store, "mikrotik:state") or {}
         READING.update(busy=True, since=time.time())
     t0 = time.time()
-    c = conf(ctx)
-    was = _meta_json(ctx.store, "mikrotik:state") or {}
-    st = {"at": t0, "via": c["mode"], "host": c["host"]}
+    c, was = {"mode": "", "host": ""}, {}
+    st = {"at": t0}
     try:
+        # 1.9.9: in here - an exception reading the settings left READING busy for good (never read again)
+        c = conf(ctx)
+        was = _meta_json(ctx.store, "mikrotik:state") or {}
+        st.update(via=c["mode"], host=c["host"])
         sess = session_of(ctx, c)
         sess.connect()
         try:
@@ -196,6 +199,8 @@ def read_now(ctx, by=""):
         snap = M.snapshot(raw, missing, c["mode"])
         # the counters of the read before: what each rule counted since then (hits since the last read)
         old = _meta_json(ctx.store, "mikrotik:snap") or {}
+        if old.get("host") != c["host"]:
+            old = {}                                    # 1.9.9: another router's counters are not this one's
         before = {}
         for fam, tabs in (old.get("rules") or {}).items():
             for t, rows in tabs.items():
@@ -208,7 +213,7 @@ def read_now(ctx, by=""):
                     was_ = before.get("%s:%s:%s" % (fam, t, r.get(".id")))
                     if was_ is not None and (r.get("packets") or 0) >= was_[0]:
                         r["hits"] = (r.get("packets") or 0) - was_[0]
-        snap["prev_at"] = old.get("at") if old.get("host") == c["host"] else None
+        snap["prev_at"] = old.get("at")
         snap["host"] = c["host"]
         ctx.store.set_meta("mikrotik:snap", json.dumps(snap))
         st.update(ok=True, took=round(time.time() - t0, 2), identity=snap["identity"], version=snap["version"],
@@ -310,8 +315,19 @@ def _public_ip(ctx):
         return ""
 
 
+def _snap(ctx):
+    """The last read - None when it is of another router than the one set now (1.9.9: its address changed in
+    Settings → MikroTik: the old router's firewall is not checked as the new one's)."""
+    snap = _meta_json(ctx.store, "mikrotik:snap")
+    if not isinstance(snap, dict) or not snap:
+        return None
+    if snap.get("host") and snap.get("host") != conf(ctx)["host"]:
+        return None
+    return snap
+
+
 def checks(ctx, snap=None):
-    snap = snap or _meta_json(ctx.store, "mikrotik:snap")
+    snap = snap or _snap(ctx)
     if not snap:
         return None
     ws = wants(ctx)
@@ -323,11 +339,14 @@ def checks(ctx, snap=None):
     # 1.9.4: when a port turns open between two reads (a rule put right), the drops the router's log still holds
     # from before are history - counted only from that read on, and said as such
     seen = _meta_json(ctx.store, "mikrotik:opened") or {}
+    seen = seen if isinstance(seen, dict) else {}
     at = float(snap.get("at") or time.time())
     was = json.dumps(seen, sort_keys=True)
+    now_keys = set()
     for row in res["rows"]:
         for fam, ok, key in (("4", row.get("state") == "ok", "drops4"), ("6", row.get("v6") == "open", "drops6")):
             k = "%s/%s/%s/%s" % (row["device"], row["proto"], row["port"], fam)
+            now_keys.add(k)
             old = seen.get(k)
             if not ok:
                 seen[k] = {"ok": False, "since": 0}
@@ -342,9 +361,10 @@ def checks(ctx, snap=None):
                     if fam == "4" else (row.get("v6_addrs") or [])
                 row[key] = C.drops_of(snap, addrs, row["proto"], {row["port"], row["to_port"]}, since=since)
                 row[key]["opened_at"] = since
+    # 1.9.9: only the ports asked for now are remembered - each port ever asked for stayed in it (written on
+    # every GET), and past 2000 the oldest-INSERTED went, not the ones no longer asked for
+    seen = {k: v for k, v in seen.items() if k in now_keys}
     if json.dumps(seen, sort_keys=True) != was:
-        if len(seen) > 2000:
-            seen = dict(list(seen.items())[-2000:])
         ctx.store.set_meta("mikrotik:opened", json.dumps(seen))
     res["merged"] = C.merged_commands(res["rows"])
     return res
@@ -353,7 +373,7 @@ def checks(ctx, snap=None):
 def view(ctx, full=True):
     c = conf(ctx)
     st = _meta_json(ctx.store, "mikrotik:state") or {}
-    snap = _meta_json(ctx.store, "mikrotik:snap")
+    snap = _snap(ctx)
     pin = ctx.store.get_meta("mikrotik:pin") or ""
     out = {"on": c["on"], "conf": {k: c[k] for k in ("host", "mode", "tls", "port", "user", "auth", "every", "timeout",
                                                     "tls_name")},
@@ -391,7 +411,7 @@ def _this_address(host):
 
 
 def rules_view(ctx):
-    snap = _meta_json(ctx.store, "mikrotik:snap")
+    snap = _snap(ctx)
     if not snap:
         return {"snap": None}
     res = checks(ctx, snap) or {"rows": []}

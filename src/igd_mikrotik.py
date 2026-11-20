@@ -25,6 +25,7 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import select
 import shutil
 import signal
@@ -590,7 +591,7 @@ SSH_LINE = re.compile(r'^(?::put \[|:foreach r in=\[)(/[a-z0-9-]+(?: [a-z0-9-]+)
 def ssh_check(line):
     """Refuse any console line that is not one ssh_command() makes from READ - nothing with ; [ ] { } $ or
     a newline but the frame of a print, and its menu one of READ's."""
-    m = SSH_LINE.match(str(line or ""))
+    m = SSH_LINE.fullmatch(str(line or ""))        # 1.9.9: whole - `$` let a newline at its end through
     if not m:
         raise Refused("not a console line fake-igd sends: %s" % str(line)[:80])
     menu("/" + m.group(1).strip("/").replace(" ", "/"))
@@ -601,17 +602,22 @@ def ssh_check(line):
 
 
 BATCH_MARK = re.compile(r"^==fake-igd=([a-z0-9_]+)==$")
+NONCE_RE = re.compile(r"^[0-9a-f]{8,32}\Z")
 
 
-def ssh_batch(names):
+def ssh_batch(names, nonce=""):
     """One console line that prints every menu of `names` (READ's names) one after the other, each after a
     mark of its own (1.9.2): ONE ssh connection - one sign-in on the router - for a whole read, not one for
-    each menu. Each print is one ssh_command() would make, checked as such; the marks are fixed words."""
+    each menu. Each print is one ssh_command() would make, checked as such; the marks are fixed words - and
+    (1.9.9) a nonce of this read's own in them: a comment, a log line or a name on the router that holds a
+    line "==fake-igd=filter4==" cannot pass for a mark (it would have put what follows it in that menu's place)."""
+    if nonce and not NONCE_RE.match(nonce):
+        raise Refused("not a mark fake-igd puts in a batch")
     parts = []
     for name in names:
         if name not in READ or not re.match(r"^[a-z0-9_]+$", name):
             raise Refused("not something fake-igd reads from a router: %s" % str(name)[:40])
-        parts.append(':put "==fake-igd=%s=="' % name)
+        parts.append(':put "==fake-igd%s=%s=="' % (("-" + nonce) if nonce else "", name))
         parts.append(ssh_command(READ[name][0]))
     return "; ".join(parts)
 
@@ -619,17 +625,18 @@ def ssh_batch(names):
 def ssh_batch_check(line):
     """Refuse a batch line that is not ssh_batch()'s: marks and prints of READ, nothing else."""
     for part in str(line or "").split("; "):
-        if re.match(r'^:put "==fake-igd=[a-z0-9_]+=="$', part):
+        if re.fullmatch(r':put "==fake-igd(?:-[0-9a-f]{8,32})?=[a-z0-9_]+=="', part):
             continue
         ssh_check(part)
     return line
 
 
-def ssh_split(text):
-    """The answer of a batch: {name: its lines} by the marks."""
+def ssh_split(text, nonce=""):
+    """The answer of a batch: {name: its lines} by the marks - with a nonce, only the marks that carry it."""
     out, cur = {}, None
+    mark = re.compile(r"^==fake-igd-%s=([a-z0-9_]+)==$" % re.escape(nonce)) if nonce else BATCH_MARK
     for line in str(text or "").replace("\r\n", "\n").split("\n"):
-        m = BATCH_MARK.match(line.strip())
+        m = mark.match(line.strip())
         if m:
             cur = m.group(1)
             out[cur] = []
@@ -926,8 +933,9 @@ class RosSsh(object):
         whole line - then the ones it knows are read in one line again, and only the one it does not know is
         said missing."""
         names = list(names)
-        text = self.run(ssh_batch(names), batch=True)
-        parts = ssh_split(text)
+        nonce = secrets.token_hex(8)
+        text = self.run(ssh_batch(names, nonce), batch=True)
+        parts = ssh_split(text, nonce)
         if not parts:
             low = text.strip().lower()
             bad = re.search(r"bad command name (\S+)", low)
@@ -951,12 +959,22 @@ class RosSsh(object):
                 missing[n] = parts[n].strip().splitlines()[0][:200]
                 continue
             got[n] = self._answers(parts[n])
+        # 1.9.9: a print the router refuses while it runs the line (not enough permissions for /log or /user)
+        # ends the whole line there - the menus after it are read again, in a line of their own
+        rest = [n for n in names if missing.get(n) == "not answered"]
+        if rest and len(rest) < len(names) and not any(n in parts for n in names[names.index(rest[0]):]):
+            more, still = self.read_many(rest)
+            got.update(more)
+            for n in rest:
+                missing.pop(n, None)
+            missing.update(still)
         return got, missing
 
 
 def _ssh_env():
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C", "HOME": tempfile.gettempdir()}
-    for k in ("FAKE_SSH_LOG", "FAKE_SSH_HOSTKEY", "FAKE_ROUTER_WRITES", "FAKE_SSH_UNKNOWN"):    # the test's stand-in for ssh
+    for k in ("FAKE_SSH_LOG", "FAKE_SSH_HOSTKEY", "FAKE_ROUTER_WRITES", "FAKE_SSH_UNKNOWN",
+              "FAKE_SSH_DENY"):    # the test's stand-in for ssh
         if os.environ.get(k):
             env[k] = os.environ[k]
     return env
@@ -1132,33 +1150,49 @@ def read_all(sess, log=None):
             if needed and not ("no such command" in low or "404" in low or "bad command" in low):
                 if name in ("identity",):
                     raise
-            if "closed the connection" in low or "not connected" in low or "could not be reached" in low:
+            # 1.9.9: and a router that stopped answering (REST: each menu would wait the timeout twice, the
+            # read busy for many minutes)
+            if "closed the connection" in low or "not connected" in low or "could not be reached" in low \
+                    or "timed out" in low:
                 break
     return out, missing
 
 
+# 1.9.9: "in:(unknown 0)" (what the router sends itself, output / srcnat) and an IPv6 address without a port
+# (ICMPv6: no brackets) are lines of its firewall too
+_FW_ADDR = r"\[[0-9a-fA-F:.]+\]|[0-9.]+|[0-9a-fA-F]*:[0-9a-fA-F:.]+"
 FW_LINE = re.compile(
-    r"^(?P<prefix>.*?)\s*(?P<chain>[A-Za-z][\w-]*): in:(?P<inif>\S+) out:(?P<outif>[^,]+),.*?"
+    r"^(?P<prefix>.*?)\s*(?P<chain>[A-Za-z][\w-]*): in:(?P<inif>\(unknown \d+\)|\S+) out:(?P<outif>[^,]+),.*?"
     r"proto (?P<proto>[A-Za-z0-9-]+)(?: \([^)]*\))?, "
-    r"(?P<src>\[[0-9a-fA-F:.]+\]|[0-9.]+)(?::(?P<sport>\d+))?->(?P<dst>\[[0-9a-fA-F:.]+\]|[0-9.]+)(?::(?P<dport>\d+))?")
+    r"(?P<src>" + _FW_ADDR + r")(?::(?P<sport>\d+))?->(?P<dst>" + _FW_ADDR + r")(?::(?P<dport>\d+))?(?=[,\s]|$)")
+CHAINS = ("input", "forward", "output", "prerouting", "postrouting", "dstnat", "srcnat")
 
 
-def fw_log(entries, most=2000):
+def fw_log(entries, most=2000, chains=()):
     """The lines of the router's log its firewall wrote (a rule with log=yes, 1.9.2): who to whom, which
-    protocol and ports, in and out of which interface, under which prefix. Nothing else of the log is kept."""
+    protocol and ports, in and out of which interface, under which prefix. Nothing else of the log is kept.
+    `chains` (1.9.9): the chains its rules have - RouterOS writes a log-prefix right before the chain, without a
+    space ("DROPforward: in:..."): the prefix is told from the chain by them."""
+    known = sorted(set(CHAINS) | {str(c) for c in chains or () if c}, key=len, reverse=True)
     out = []
     for e in entries[-most:]:
         if "firewall" not in str(e.get("topics") or ""):
             continue
-        m = FW_LINE.match(str(e.get("message") or ""))
+        msg = str(e.get("message") or "")
+        m = FW_LINE.match(msg)
         if not m:
             continue
         g = m.groupdict()
-        out.append({"time": str(e.get("time") or ""), "prefix": g["prefix"].strip(), "chain": g["chain"],
+        prefix, chain = g["prefix"].strip(), g["chain"]
+        if chain not in known:
+            c = next((c for c in known if chain.endswith(c) and len(chain) > len(c)), None)
+            if c:
+                prefix, chain = (msg[:m.start("chain")] + chain[:-len(c)]).strip(), c
+        out.append({"time": str(e.get("time") or ""), "prefix": prefix, "chain": chain,
                     "in": g["inif"], "out": g["outif"].strip(), "proto": g["proto"].lower(),
                     "src": g["src"].strip("[]"), "sport": int(g["sport"]) if g["sport"] else None,
                     "dst": g["dst"].strip("[]"), "dport": int(g["dport"]) if g["dport"] else None,
-                    "family": "ipv6" if g["dst"].startswith("[") else "ip"})
+                    "family": "ipv6" if ":" in g["dst"] else "ip"})
     return out
 
 
@@ -1200,9 +1234,29 @@ def snapshot(raw, missing, via):
     names = [str(r.get("name") or "") for r in raw.get("interfaces") or []]
     members.setdefault("all", names)
     members.setdefault("none", [])
-    dyn = [n for n in names if any(n.startswith(p) for p in ("pppoe-", "l2tp-", "sstp-", "pptp-", "ovpn-", "<"))]
+    # 1.9.9: "dynamic" is what /interface flags D (a PPP/VPN server's <pppoe-user>), not a name's beginning - a
+    # pppoe-client is pppoe-out1 and an OpenVPN server ovpn-server1, both static
+    dyn = [str(r.get("name") or "") for r in raw.get("interfaces") or []
+           if _bool(r.get("dynamic")) or str(r.get("name") or "").startswith("<")]
     members.setdefault("dynamic", dyn)
     members.setdefault("static", [n for n in names if n not in dyn])
+    # 1.9.9: a list of /interface list may include other lists and exclude some (include=LAN,VPN exclude=...) -
+    # its members are its own, those of the lists it includes, less those of the lists it excludes
+    defs = {str(r.get("name") or ""): r for r in raw.get("iflists") or [] if r.get("name")}
+    for _round in range(4):                             # a list including a list that includes another
+        before = {k: list(v) for k, v in members.items()}
+        for name, r in defs.items():
+            inc = [x.strip() for x in str(r.get("include") or "").split(",") if x.strip()]
+            exc = [x.strip() for x in str(r.get("exclude") or "").split(",") if x.strip()]
+            if not inc and not exc:
+                continue
+            got = list(before.get(name) or [])
+            for x in inc:
+                got += [i for i in before.get(x) or [] if i not in got]
+            out_ = {i for x in exc for i in before.get(x) or []}
+            members[name] = [i for i in got if i not in out_]
+        if members == before:
+            break
     return {
         "at": time.time(), "via": via, "missing": missing,
         "identity": ident.get("name") or "", "version": res.get("version") or "",
@@ -1244,7 +1298,8 @@ def snapshot(raw, missing, via):
         "rules": {"ip": {t: rules(t + "4") for t in ("filter", "nat", "mangle", "raw")},
                   "ipv6": {t: rules(t + "6") for t in ("filter", "nat", "mangle", "raw")}},
         "lists": {"ip": lists("lists4"), "ipv6": lists("lists6")},
-        "fwlog": fw_log(raw.get("log") or []),
+        "fwlog": fw_log(raw.get("log") or [], chains={r.get("chain") for t in ("filter", "raw", "nat", "mangle")
+                                                       for f in ("4", "6") for r in raw.get(t + f) or []}),
         "upnp": {k: str(v) for k, v in one("upnp").items()},
         "upnp_ifs": [{k: str(v) for k, v in r.items() if not k.startswith(".")} for r in raw.get("upnp_ifs") or []],
         "tracking": {k: str(v) for k, v in one("tracking").items() if k in ("enabled", "total-entries", "max-entries")},

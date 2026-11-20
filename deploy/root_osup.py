@@ -25,6 +25,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -71,6 +72,19 @@ def write_here(name, text):
         os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
     finally:
         os.close(dfd)
+
+
+def read_here(name, most=1 << 20):
+    """WEB_DIR/name as JSON - a plain file only, never through a link the API could lay (1.9.9)."""
+    dfd = os.open(WEB_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dfd)
+    finally:
+        os.close(dfd)
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise ValueError("%s is not a plain file" % name)
+        return json.loads(f.read(most).decode("utf-8", "replace") or "{}")
 
 
 def dnf_there():
@@ -199,11 +213,10 @@ def stop(by=""):
     packages in, it finishes (stopped there the system would be left half updated - otp lets the node
     being updated finish too)."""
     try:
-        with open(os.path.join(WEB_DIR, OSUP_FILE), encoding="utf-8") as f:
-            st = json.load(f)
+        st = read_here(OSUP_FILE)
     except (OSError, ValueError):
         st = {}
-    if st.get("state") != "running" or not running():
+    if not isinstance(st, dict) or st.get("state") != "running" or not running():
         raise Refused("nothing is going on")
     if st.get("phase") == "whether a restart is needed":
         raise Refused("the packages are in already - it only asks whether a restart is needed")
@@ -218,8 +231,9 @@ def stop(by=""):
         raise Refused("the job is not found")
     if b"--job" not in cmd or not any(c.endswith(b"root_osup.py") for c in cmd):
         raise Refused("the job is not found")
-    with open(os.path.join(WEB_DIR, "osup.stop"), "w") as f:
-        f.write(json.dumps({"by": by[:80], "at": time.time()}))
+    # Written beside the API as root writes everything there (1.9.9): opened by its name, a link the
+    # fake-igd account laid there (osup.stop -> /etc/shadow) had root write over what it pointed to.
+    write_here("osup.stop", json.dumps({"by": by[:80], "at": time.time()}))
     os.kill(pid, signal.SIGTERM)
     return "dnf is asked to stop - nothing more is put in"
 
@@ -385,9 +399,8 @@ def job(ident, kind, security=False):
         if child["stopped"]:
             who = ""
             try:
-                with open(os.path.join(WEB_DIR, "osup.stop"), encoding="utf-8") as f:
-                    who = str(json.load(f).get("by") or "")
-            except (OSError, ValueError):
+                who = str(read_here("osup.stop", 4096).get("by") or "")
+            except (OSError, ValueError, AttributeError):
                 pass
             state.update(state="stopped", said="stopped" + (" by " + who if who else "") + " - nothing more was put in")
             say(state["said"])
