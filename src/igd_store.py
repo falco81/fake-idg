@@ -579,13 +579,32 @@ class Store(object):
         return None, None
 
     def passkeys_remove(self, name):
-        """Every passkey of an account taken away (Accounts, upnp user passkeys NAME --remove-all): how many."""
+        """Every passkey of an account taken away (Accounts, upnp user passkeys NAME --remove-all): how many.
+        The sign-ins they opened end with them (1.9.9): taken away for a lost phone, the phone stayed
+        signed in for the rest of the sign-in's hours."""
         u = self.user(name)
         if not u:
             raise StoreError("there is no account %s" % name)
         n = len(_jlist(u["passkeys"]))
         self.run("UPDATE users SET passkeys = '', changed = ? WHERE name = ?", (time.time(), name))
+        self.end_passkey_sessions(u["name"])
         return n
+
+    def end_passkey_sessions(self, name, key_id=None, but_token=None):
+        """The sign-ins of an account opened by a passkey - by that one (key_id), or by any - ended, but
+        but_token's (1.9.9). How many."""
+        but = _sid(but_token) if but_token else ""
+        gone = 0
+        with self.lock:
+            for s in self.rows("SELECT id, data FROM sessions WHERE name = ? AND mfa = ''", (str(name),)):
+                d = _jload(s["data"])
+                if d.get("by") != "passkey" or s["id"] == but:
+                    continue
+                # A sign-in of 1.9.7-1.9.8 does not say which key opened it: ended with any of them.
+                if key_id is not None and d.get("key") not in (None, key_id):
+                    continue
+                gone += self.run("DELETE FROM sessions WHERE id = ?", (s["id"],)).rowcount
+        return gone
 
     def challenge_put(self, addr, data):
         """A passkey's question asked before anybody is signed in (1.9.7), kept for its one answer:
@@ -634,7 +653,7 @@ class Store(object):
             self.run("INSERT INTO sessions (id, name, created, seen, addr, agent, mfa, data) "
                      "VALUES (?, ?, ?, ?, ?, ?, '', ?)",
                      (_sid(token), u["name"], now, now, str(addr or "")[:64], str(agent or "")[:200],
-                      json.dumps({"by": "passkey"})))
+                      json.dumps({"by": "passkey", "key": str(key["id"])})))
             self.run("UPDATE users SET last_login = ?, last_from = ? WHERE name = ?", (now, addr, u["name"]))
         self.tidy_sessions(idle_s)
         u = dict(u)

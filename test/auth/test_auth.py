@@ -185,6 +185,56 @@ class Import(Base):
         self.assertEqual(self.S.count_admins(), 1)
 
 
+class Hdr(object):
+    def __init__(self, token, body):
+        self.headers = {"X-IGD-Session": token, "X-IGD-Host": "fakeigd.test", "User-Agent": "test"}
+        self._b = body
+
+    def addr(self):
+        return "192.0.2.7"
+
+    def body(self, most=0):
+        return dict(self._b)
+
+
+class PasskeyGone(Base):
+    """A passkey taken away (a lost phone): the sign-ins it opened end with it."""
+
+    def setUp(self):
+        Base.setUp(self)
+        self.S.passkeys_put("admin", [{"id": "phone", "alg": -7, "pub": "x", "host": "fakeigd.test", "count": 0},
+                                      {"id": "laptop", "alg": -7, "pub": "y", "host": "fakeigd.test", "count": 0}])
+        self.phone, _u = self.S.passkey_login("admin", dict(self.S.passkeys("admin")[0], count=1))
+        self.laptop, _u = self.S.passkey_login("admin", dict(self.S.passkeys("admin")[1], count=1))
+        self.pw, _u = self.S.login("admin", "secret123")
+
+    def test_your_account_takes_one_away(self):
+        AP = sys.modules["api_people"]
+        me = self.S.session(self.laptop)
+        ctx = PN.Ctx(Hdr(self.laptop, {"action": "delete", "id": "phone"}), "POST", "/api/passkeys", {}, me, self.S,
+                     {}, AP, self.S.add_event)
+        AP.pk_do(ctx)
+        self.assertIsNone(self.S.session(self.phone), "the lost phone stayed signed in")
+        self.assertIsNotNone(self.S.session(self.laptop))
+        self.assertIsNotNone(self.S.session(self.pw))
+        # Its own key taken away from the device it signed in with: this sign-in stays (it asked).
+        ctx = PN.Ctx(Hdr(self.laptop, {"action": "delete", "id": "laptop"}), "POST", "/api/passkeys", {}, me, self.S,
+                     {}, AP, self.S.add_event)
+        AP.pk_do(ctx)
+        self.assertIsNotNone(self.S.session(self.laptop))
+
+    def test_accounts_take_every_one_away(self):
+        self.assertEqual(self.S.passkeys_remove("admin"), 2)
+        self.assertIsNone(self.S.session(self.phone))
+        self.assertIsNone(self.S.session(self.laptop))
+        self.assertIsNotNone(self.S.session(self.pw), "a sign-in with the password ended too")
+
+    def test_sign_in_of_1_9_8_without_its_key(self):
+        self.S.run("UPDATE sessions SET data = ? WHERE id = ?", (json.dumps({"by": "passkey"}), ST._sid(self.phone)))
+        self.S.end_passkey_sessions("admin", "laptop")
+        self.assertIsNone(self.S.session(self.phone))
+
+
 class RootLinks(unittest.TestCase):
     """What the fake-igd account owns (/var/lib/fake-igd, its web/) may hold its links: root never follows one."""
 

@@ -707,8 +707,10 @@ def cmd_user(M, args, cfg):
             elif what == "passkeys":
                 n = s.passkeys_remove(name)
                 if n:
-                    s.add_event("account", "%s took every passkey of %s away (%d)" % (by, name, n), "warn", by)
-                M.ok("the passkeys of %s are taken away (%d)" % (name, n) if n else "%s has no passkey" % name)
+                    s.add_event("account", "%s took every passkey of %s away (%d); the sign-ins they opened are "
+                                "ended" % (by, name, n), "warn", by)
+                M.ok("the passkeys of %s are taken away (%d), and the sign-ins they opened" % (name, n) if n
+                     else "%s has no passkey" % name)
             elif what == "del":
                 s.delete_user(name)
                 try:                          # its own layout of the tables goes with it (as on the pages)

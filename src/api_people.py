@@ -578,8 +578,9 @@ def users_post(ctx):
         n = S.passkeys_remove(name)
         if not n:
             return {"message": "%s has no passkey" % name}
-        _say(ctx, "account", "%s took every passkey of %s away (%d)" % (who, name, n), "warn")
-        return {"message": "the passkeys of %s are taken away (%d)" % (name, n)}
+        _say(ctx, "account", "%s took every passkey of %s away (%d); the sign-ins they opened are ended" % (
+            who, name, n), "warn")
+        return {"message": "the passkeys of %s are taken away (%d), and the sign-ins they opened" % (name, n)}
     if act == "mfa_reset":
         had = S.mfa_reset(name)
         # The app only (1.9.7): its passkeys stay - they sign in by themselves, not as the second step.
@@ -1025,6 +1026,8 @@ def pk_do(ctx):
                 raise ValueError("no such passkey of this account")
             keys = [k for k in keys if k.get("id") != ident]
             S.passkeys_put(name, keys)
+        # The sign-ins it opened end with it (1.9.9) - a lost phone's too; this one stays.
+        S.end_passkey_sessions(name, ident, but_token=tok)
         _say(ctx, "account", "%s took a passkey away (%s, for https://%s/)" % (
             name, hit.get("name") or "a device", hit.get("host") or "?"), "warn", name)
         return {"message": "taken away", "keys": [_pk_row(k) for k in keys]}
