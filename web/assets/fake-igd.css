@@ -4932,3 +4932,13 @@ td.gx-nw{white-space:nowrap !important}
 .gw-v6-temp{margin-top:12px}
 .gw-v6-temp > summary{cursor:pointer;margin:0 0 10px}
 @media (max-width:700px){.gw-v6-row{grid-template-columns:22px minmax(0,1fr) auto}.gw-v6-why{grid-column:2 / -1;white-space:normal}}
+
+/* 1.9.9: one port asked for by two or more clients - the Ports row's tag, the rules' warnings */
+#pt-table td .tag.clash-tag{margin-left:10px;vertical-align:1px}
+.dn-clash{margin-top:14px}
+.dn-clash:empty{display:none}
+.dn-clash .note.warn{margin:0;line-height:1.5}
+.dn-clash-list{display:grid;grid-template-columns:max-content 1fr;gap:4px 18px;margin-top:10px;
+  font-family:var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);font-size:12.5px}
+.dn-clash-port{font-weight:600;white-space:nowrap}
+.dn-clash-who{color:var(--tx);overflow-wrap:anywhere}

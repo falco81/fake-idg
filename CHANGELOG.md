@@ -2,6 +2,18 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.9.10 (2026-11-21)
+
+- **One external port asked for by two or more clients is said**, wherever rules for the router are made from it.
+  A router forwards an external port to one address only: of the DNAT rules for such a port the first in the chain
+  wins and the others never work - before, nothing said so. Now:
+  - **Ports**: the row's port carries a **clash** tag (its words name the other clients; a click shows every
+    client of that port), the line above the table counts such ports, the row's popup says it in full, and the
+    search takes `clash:*` (or `clash:192.168.1.20`).
+  - **Rules for the router**: one warning above the rules lists every such port and its clients.
+  - **`upnp dnat`** (and the text console's Rules for the router): `# WARNING` lines at the top and above each
+    client's rules; piped (`upnp dnat | sh`), the same is said on stderr, where it is seen.
+
 ## 1.9.9 (2026-11-20)
 
 A hunt for bugs across the whole application; every fix has a regression test (test/auth, test/mikrotik/test_fixes_199.py, test/upnp/test_daemon.py).

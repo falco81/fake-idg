@@ -38,7 +38,7 @@ from xml.etree import ElementTree as ET
 from xml.parsers import expat
 from xml.sax.saxutils import escape
 
-__version__ = '1.9.9'
+__version__ = '1.9.10'
 VERSION = __version__
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
 DEFAULTS = {

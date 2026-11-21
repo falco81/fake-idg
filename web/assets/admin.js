@@ -1309,7 +1309,7 @@ function loadPorts() {
     QS.ports.said(d.q_error || '');
     var c = d.counts || {};
     $('pt-said').textContent = num(c.ports) + ' port(s) · ' + num(c.udp) + ' UDP · ' + num(c.tcp) + ' TCP · '
-      + num(c.clients) + ' client(s)';
+      + num(c.clients) + ' client(s)' + (c.clashes ? ' · ' + num(c.clashes) + ' port(s) asked for by two or more clients' : '');
     var host = $('pt-table');
     var heads = ['Client', 'Protocol', {words: 'Port', cls: 'num'}, {words: 'Asked', cls: 'num'}, 'First', 'Last', 'Answered', 'What for', ''];
     if (MTC) heads.splice(7, 0, 'MikroTik');
@@ -1317,7 +1317,9 @@ function loadPorts() {
       var tr = el('tr');
       tr.appendChild(addrCell(r.client, r.name));
       var tp = el('td'); tp.appendChild(protoTag(r.proto)); tr.appendChild(tp);
-      tr.appendChild(noI18n(el('td', 'num mono', r.port + (r.internal_port && String(r.internal_port) !== String(r.port) ? ' → ' + r.internal_port : ''))));
+      var pc = noI18n(el('td', 'num mono', r.port + (r.internal_port && String(r.internal_port) !== String(r.port) ? ' → ' + r.internal_port : '')));
+      if (r.clash) pc.appendChild(clashTag(r));
+      tr.appendChild(pc);
       tr.appendChild(el('td', 'num', num(r.count)));
       tr.appendChild(stampCell(r.first));
       tr.appendChild(stampCell(r.last));
@@ -1338,6 +1340,24 @@ function loadPorts() {
 }
 $('pt-q').addEventListener('input', debounce(function () { PAGE.ports = 0; loadPorts(); }, 300));
 ['pt-proto', 'pt-result', 'pt-hours', 'pt-per'].forEach(function (id) { $(id).onchange = function () { PAGE.ports = 0; loadPorts(); }; });
+/* The same external port asked for by other clients too (1.9.9): a router forwards a port to one address -
+   of the DNAT rules made for it only the first works. A warning on the row; a click lists the others' ports. */
+function clashWords(r) {
+  return String(r.proto).toUpperCase() + ' ' + r.port + ' is asked for by ' + r.client + ' and by '
+    + r.clash.join(', ') + '. The router forwards one external port to one address only: of the DNAT rules made '
+    + 'for it the first wins and the others never work. Keep one device on it, or have the others use another port.';
+}
+function clashTag(r) {
+  var t = el('span', 'tag warn tappable clash-tag', 'clash');
+  explain(t, clashWords(r));
+  t.onclick = function (ev) {
+    ev.stopPropagation();
+    $('pt-q').value = 'port:' + r.port + ' proto:' + String(r.proto).toLowerCase();
+    if ($('pt-q')._sbPaint) $('pt-q')._sbPaint();
+    PAGE.ports = 0; loadPorts();
+  };
+  return t;
+}
 /* The MikroTik's state of each port (1.8.2), for the Ports tab and its popup: null while it is not read. */
 function mtKey(dev, proto, port) { return dev + '|' + String(proto).toLowerCase() + '|' + port; }
 function mtChecksMap(d) {
@@ -1372,6 +1392,7 @@ function portPeek(r) {
       ['To', r.internal_port || r.port], ['Asked', num(r.count) + ' time(s)'], ['Answered', res],
       ['First', stamp(r.first)], ['Last', stamp(r.last)]]));
     if (r.description) body.appendChild(noI18n(el('p', 'note', 'What it said it is for: ' + r.description)));
+    if (r.clash) body.appendChild(noI18n(el('p', 'note warn', clashWords(r))));
     if (typeof gatewayLinksFor === 'function') body.appendChild(gatewayLinksFor(r.client, r.port, r.proto));
     body.appendChild(el('h3', 'peek-h', 'On the real router'));
     var x = (mtChecksMap(window.MT_CACHE && window.MT_CACHE.d) || {})[mtKey(r.client, r.proto, r.port)];
@@ -1405,10 +1426,32 @@ $('dn-open').onclick = function () {
     var wan = textBox('', 'the WAN interface (eth0, ether1…)'); wan.id = 'dn-wan'; wan.style.maxWidth = '260px';
     row.appendChild(fmt); row.appendChild(wan);
     body.appendChild(row);
+    /* two clients asking for one port (1.9.9): said above the rules, not only in their comments */
+    var clash = el('div', 'dn-clash'); clash.id = 'dn-clash';
+    body.appendChild(clash);
     var out = noI18n(el('pre', 'lines', '…')); out.id = 'dn-out'; out.style.marginTop = '12px';
     body.appendChild(out);
     var make = function () {
       api('dnat&format=' + fmt.value + '&wan=' + encodeURIComponent(wan.value.trim())).then(function (d) {
+        clear(clash);
+        var cs = d.clashes || [];
+        if (cs.length) {
+          var box = el('div', 'note warn');
+          box.appendChild(el('b', '', cs.length === 1 ? 'One port is asked for by two or more clients'
+            : cs.length + ' ports are asked for by two or more clients'));
+          box.appendChild(el('span', 'dn-clash-why', ' - a router forwards an external port to one address only: of '
+            + 'the rules for such a port the first wins and the others never work. Keep one device on it, or have the '
+            + 'others use another port. The rules below say it again (# WARNING).'));
+          var list = el('div', 'dn-clash-list');
+          cs.forEach(function (x) {
+            var pp = noI18n(el('span', 'dn-clash-port', String(x.proto).toUpperCase() + ' ' + x.port));
+            var who = noI18n(el('span', 'dn-clash-who', x.clients.join(', ')));
+            explain(pp, x.words);
+            list.appendChild(pp); list.appendChild(who);
+          });
+          box.appendChild(list);
+          clash.appendChild(box);
+        }
         out.textContent = d.text || '(nothing)';
       }).catch(function (e) { out.textContent = e.message; });
     };

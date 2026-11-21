@@ -17,7 +17,7 @@ import urllib.request
 from datetime import datetime, timedelta
 from xml.etree import ElementTree as ET
 
-VERSION = "1.9.9"
+VERSION = "1.9.10"
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 APP = "fake-igd"
 DEFAULT_CONFIG = "/etc/fake-igd/config.json"
@@ -489,6 +489,22 @@ def aggregate_ports(events, proto=None, min_count=1, port=None):
         if e.get("description"):
             p["desc"].add(e["description"])
     return {k: v for k, v in ports.items() if v["count"] >= min_count}
+
+
+def port_clashes(ports):
+    """(proto, port) -> the clients asking for it, where more than one asks (1.9.9): a router forwards one
+    external port to one address - two DNAT rules for it, and only the first in the chain ever works."""
+    who = {}
+    for (cl, proto, port) in ports:
+        who.setdefault((proto.lower(), int(port)), set()).add(cl)
+    return {k: sorted(v, key=lambda a: [int(x) if x.isdigit() else x for x in re.split(r"[.:]", a)])
+            for k, v in who.items() if len(v) > 1}
+
+
+def clash_words(proto, port, clients):
+    return ("%s %d is asked for by %d clients (%s): the router forwards it to one only - the first rule wins, "
+            "the others never work. Keep one, or give the others another port."
+            % (proto.upper(), port, len(clients), ", ".join(clients)))
 
 
 LOG_RE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)(?:,\d+)?\s+(\w+)\s+(.*)$")
@@ -1026,17 +1042,26 @@ def cmd_dnat(args, cfg):
     groups = {}
     for (cl, proto, port) in ports:
         groups.setdefault((cl, proto.lower()), []).append(port)
+    clashes = port_clashes(ports)
     fmt = args.format
     wan = args.wan or {"iptables": "eth0", "nft": "eth0", "mikrotik": "WAN", "firewalld": "external"}[fmt]
     lines = []
     if not args.quiet:
         lines.append("# fake-igd %s - DNAT rules (%s), generated %s" % (VERSION, fmt, datetime.now().strftime("%Y-%m-%d %H:%M")))
         lines.append("# %d port(s), %d client(s); check the WAN interface/zone: %s" % (len(ports), len({g[0] for g in groups}), wan))
+        if clashes:
+            lines.append("# WARNING: %d port(s) asked for by two or more clients - a router forwards a port to one "
+                         "address: only the first rule for each works" % len(clashes))
+        for (pr, po), cls in sorted(clashes.items()):
+            lines.append("# WARNING:   %s %d: %s" % (pr.upper(), po, ", ".join(cls)))
     for (cl, proto), pl in sorted(groups.items()):
         ranges = compress_ranges(pl)
         if not args.quiet:
             lines.append("")
             lines.append("# %s %s: %s" % (cl, proto.upper(), ", ".join(str(a) if a == b else "%d-%d" % (a, b) for a, b in ranges)))
+            for po in sorted(p_ for p_ in pl if (proto, p_) in clashes):
+                lines.append("# WARNING: %s %d also asked for by %s - this rule and theirs clash"
+                             % (proto.upper(), po, ", ".join(c for c in clashes[(proto, po)] if c != cl)))
         if fmt == "iptables":
             for ch in chunk_ranges(ranges):
                 spec = ",".join(str(a) if a == b else "%d:%d" % (a, b) for a, b in ch)
@@ -1065,7 +1090,12 @@ def cmd_dnat(args, cfg):
     if fmt == "nft" and not args.quiet:
         lines.insert(2, "# assumes existing tables 'ip nat' (chain prerouting) and 'inet filter' (chain forward)")
     for l in lines:
-        print(col(l, C.dim) if l.startswith("#") else l)
+        print(col(l, C.yellow, C.bold) if l.startswith("# WARNING") else col(l, C.dim) if l.startswith("#") else l)
+    # piped (upnp dnat | sh), the comments are never read: said on stderr too - not by the pages, which show it
+    if clashes and not sys.stdout.isatty() and not getattr(args, "from_pages", False):
+        for (pr, po), cls in sorted(clashes.items()):
+            warn(clash_words(pr, po, cls))
+    return clashes
 
 
 def cmd_config(args, cfg):

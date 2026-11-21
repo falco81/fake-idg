@@ -295,5 +295,31 @@ class ApiWindow(unittest.TestCase):
         self.assertEqual((since.timestamp(), until.timestamp()), (1700000000, 1700003600))
 
 
+class DnatClash(Base):
+    """1.9.9: one external port asked for by two clients - upnp dnat says so (only the first rule works)."""
+    def test_clash(self):
+        import upnp
+        path = os.path.join(self.tmp, "clash.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            for cl, port in (("192.0.2.5", 3074), ("192.0.2.10", 3074), ("192.0.2.5", 9308)):
+                f.write(json.dumps({"action": "AddPortMapping", "client": cl, "internal_client": cl,
+                                    "protocol": "UDP", "external_port": port, "time": "2026-11-20T10:00:00"}) + "\n")
+        ev = upnp.read_events({"request_log": path})
+        ports = upnp.aggregate_ports(ev)
+        self.assertEqual(upnp.port_clashes(ports), {("udp", 3074): ["192.0.2.5", "192.0.2.10"]})
+        parser, _sp = upnp.build_parser()
+        args = parser.parse_args(["dnat", "--no-color", "--no-dns"])
+        args.from_pages = True
+        out, real = io.StringIO(), sys.stdout
+        sys.stdout = out
+        try:
+            got = upnp.cmd_dnat(args, dict(upnp.DEFAULTS, request_log=path))
+        finally:
+            sys.stdout = real
+        self.assertEqual(list(got), [("udp", 3074)])
+        self.assertIn("# WARNING:   UDP 3074: 192.0.2.5, 192.0.2.10", out.getvalue())
+        self.assertIn("# WARNING: UDP 3074 also asked for by 192.0.2.10", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -353,7 +353,8 @@ LIST_FIELDS = {
               ("port", "the port", "port:>49000"),
               ("asked", "how many times it was asked for", "asked:>5"),
               ("result", "what fake-igd answered", "result:rejected"),
-              ("desc", "what it said it was for", "desc~remote")],
+              ("desc", "what it said it was for", "desc~remote"),
+              ("clash", "another client asking for the same port", "clash:*")],
     "clients": [("client", "the address", "client:192.168.1.*"),
                 ("name", "its name (PTR)", "name:ps5*"),
                 ("agent", "what it says it is (SSDP's user agent)", "agent~PS5"),
@@ -510,7 +511,8 @@ GETTERS = {
                  "lease": lambda r: r.get("lease")},
     "ports": {"client": lambda r: r.get("client"), "name": lambda r: r.get("name"), "proto": _proto,
               "port": lambda r: r.get("port"), "asked": lambda r: r.get("count"),
-              "result": lambda r: list((r.get("results") or {}).keys()), "desc": lambda r: r.get("description")},
+              "result": lambda r: list((r.get("results") or {}).keys()), "desc": lambda r: r.get("description"),
+              "clash": lambda r: r.get("clash")},
     "clients": {"client": lambda r: r.get("client"), "name": lambda r: r.get("name"),
                 "agent": lambda r: r.get("user_agent"), "port": lambda r: [p.split("/")[0] for p in r.get("ports") or []],
                 "searches": lambda r: r.get("searches"), "requests": lambda r: r.get("requests")},
@@ -767,6 +769,13 @@ def get_ports(ctx):
                      "description": ", ".join(sorted(p["desc"])),
                      "internal_port": ", ".join(str(x) for x in sorted(p["internal_port"], key=str) if x),
                      "results": dict(p["results"]), "requested_by": sorted(x for x in p["requested_by"] if x)})
+    # the same external port asked for by more than one client (1.9.9): the router forwards it to one only -
+    # of the DNAT rules made for it only the first works; the row names the others
+    clashes = U.port_clashes(agg)
+    for r in rows:
+        others = [c for c in clashes.get((r["proto"].lower(), r["port"]), []) if c != r["client"]]
+        if others:
+            r["clash"] = others
     sort = ctx.arg("sort") or "client"
     if sort == "last":
         rows.sort(key=lambda r: -(r["last"] or 0))
@@ -782,7 +791,8 @@ def get_ports(ctx):
     rows, bad = run_query("ports", rows, ctx.arg("q"))
     counts = {"ports": len(rows), "clients": len({r["client"] for r in rows}),
               "udp": len([r for r in rows if r["proto"].upper() == "UDP"]),
-              "tcp": len([r for r in rows if r["proto"].upper() == "TCP"])}
+              "tcp": len([r for r in rows if r["proto"].upper() == "TCP"]),
+              "clashes": len({(r["proto"].lower(), r["port"]) for r in rows if r.get("clash")})}
     page, per = _page(ctx)
     return {"ports": _strip(rows[page * per:(page + 1) * per]), "total": len(rows), "page": page, "per": per,
             "counts": counts, "q_error": bad}

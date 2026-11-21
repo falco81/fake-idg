@@ -591,13 +591,18 @@ def dnat_view(q):
     argv = ["dnat", "--format", fmt, "--no-color", "--no-dns"] + (["--wan", wan] if wan else [])
     parser, _sp = U.build_parser()
     args = parser.parse_args(argv)
+    args.from_pages = True
     buf = io.StringIO()
+    clashes = {}
     with contextlib.redirect_stdout(buf):
         try:
-            U.cmd_dnat(args, cfg)
+            clashes = U.cmd_dnat(args, cfg) or {}
         except SystemExit:
             pass
-    return {"text": buf.getvalue(), "format": fmt}
+    # two clients asking for one port: two rules for it, only the first works on the router (1.9.9)
+    return {"text": buf.getvalue(), "format": fmt,
+            "clashes": [{"proto": pr, "port": po, "clients": cls, "words": U.clash_words(pr, po, cls)}
+                        for (pr, po), cls in sorted(clashes.items())]}
 
 
 def notify_test(who):
