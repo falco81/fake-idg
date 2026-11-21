@@ -2,6 +2,155 @@
 
 Every change of the application gets a version of its own (X.Y.Z), as otp's.
 
+## 1.9.11 (2026-11-21)
+
+The second round of the hunt for bugs; every fix has a regression test (test/system, test/ops, test/install, test/upnp/test_daemon.py).
+
+### Settings of the system (root's helpers)
+
+- **Security: root no longer takes away a file through a link laid in web/'s place.** Settings → Certificates
+  and TLS: when root's work on a certificate or the TLS settings ended, it removed progress-tls.json by its path
+  in web/ - the folder of the API's account - so a link put in web/'s place made root remove the file of that
+  name in another folder. It is now removed in web/ as it is, never through a link, as the progress itself is
+  written.
+- **Settings → Network: /etc/hosts keeps the lines of addresses the change leaves alone.** A new IPv4 address took
+  out the line of the interface's IPv6 address even with IPv6 left as it was, and turned the line of a second IPv4
+  address (kept in the connection) into one of the new address. Only the address that is replaced gets the new
+  one; the lines of addresses taken away (DHCP, IPv6 switched to automatic or off) go.
+- **Settings → Network: an interface whose IPv6 is set in a way the form does not offer (shared, say) can have its
+  IPv4 changed.** The form sent IPv6 "as it is" and the check refused it ("IPv6 is one of ..."), whatever was
+  changed; IPv6 left as it is is now taken.
+- **Settings → Disks and logs: a logrotate change refused by logrotate is no longer shown "as set".** Root put the
+  file back but answered ok, with the settings' mark - the card said the limits were in place; it now says it
+  failed, with logrotate's own line (not a Python list). A systemd-journald that did not restart is said the same.
+- **Settings → Restart and power off: an ask root never answers no longer greys the buttons out for half an
+  hour.** After five minutes it is marked failed ("root did not answer in 5 minutes - is fake-igd-web.path
+  running?"), as Settings → Network's change is, and Restart and Power off can be pressed again.
+- **Settings → Proxy: an IPv6 address in brackets under "Straight, not through the proxy" is reached straight.**
+  `[2001:db8::1]` - which the setting takes - was compared as a name and never matched: those connections went
+  through the proxy.
+- **Settings → Time: the words under "Serve the time to" no longer say the firewall opens UDP 123 by itself.** It
+  does not (fake-igd's chain has no rule for it); the pane now says, as the setting does, to open it in the
+  firewall too.
+- **Settings → Time and Disks and logs: an ask root never answers is said after five minutes** - "Step the clock
+  now" stayed "asked of root" for ever, and Disks and logs said "being put in" and asked again every 3 s while
+  the pane was open.
+- **Settings → Certificates and TLS: an export password with a carriage return or another control character is
+  refused**, as one with a line break was - openssl would have taken the file's password up to it.
+- **Settings → SSH: "At the console" says where the notice goes** - /etc/issue.d where the system has it, or
+  /etc/issue.
+
+### Mail, alerts, monitoring, backups, upgrades
+
+- **Mail no longer stops over a From name with a new line in it.** Settings → Mail took a From (name) with a line
+  break (pasted, or put in by an import), and from then on every mail (the alerts, the report, a test) failed
+  with "Header values may not contain linefeed or carriage return characters", so no alert went out at all.
+  The name and the subject are now sent as one line (what would break the header becomes a space, so nothing
+  can be slipped in as a header of its own), and a new From (name) with a control character in it is refused
+  when it is saved.
+- **Upgrades: a run that never ended no longer leaves the pages "busy" for good.** If the machine restarted (or
+  root's helper was killed) while an upgrade was being put in, the request.taken it left behind made Settings →
+  Upgrades say "an upgrade is going on already" forever, and the alert "fake-igd.service down" was held back the
+  whole time. Once the time root's helper and systemd allow for an upgrade has passed, it is reported as failed
+  ("the upgrade never said that it ended") and a new one can be asked for.
+- **Alert mails: "Over" says how long it lasted.** A problem over within a minute and a half was "(it lasted just
+  now)". It now says "(it lasted 40 s)", and "a while" when its start is not known (not "never").
+- **Monitoring: a Prometheus token /metrics can never take is refused when it is saved.** A typed token shorter than
+  24 characters, or one with a space or another character outside RFC 6750's set, was saved, but web/metrics.php
+  turns such a token away, so Prometheus got a 401 for ever with no reason given. The setting now says what it
+  must be. A token made with *Make a token* was never affected.
+- **Syslog and SIEM: the host name in each line is ASCII.** A name with a non-ASCII letter in "The name this
+  machine is written under" (Brno-sklep-č) went into the RFC 5424 HOSTNAME field, which allows printable US-ASCII
+  only, and syslog servers did not parse those lines. Such a letter is now written as `_`.
+- **SNMP: text values stay within 255 octets.** An alert's words (FAKE-IGD-MIB fakeIgdAlertTitle and
+  fakeIgdAlertSaid) were cut at 255 characters, but with an arrow or a Czech letter in them they were longer than
+  the 255 octets a DisplayString may have. They are now cut at 255 octets, between characters.
+
+- **Alert events are no longer lost.** "The pages' API was away", "a new port asked for" and "a change on trial
+  went back" were marked as seen before their mail went. If mail was held back after a failed one, or the send
+  failed, they were gone for good. They now wait for the next mail that does go (at most 50 events, kept up to
+  3 days). The "over" of a problem waits the same way: it was removed before the mail went and lost with it.
+- **One ongoing problem is one alert.** A failing backup and a newer release used to be keyed by the time of the
+  run and the version, so each failed run (and each retry), or each new release, gave a new alert plus an "over"
+  mail. They are now one alert, said once and over once. The run's time and error, or the version, stay in the
+  alert's words, and problems saved under the old keys carry over without a mail.
+- **A scheduled backup that stops before it begins is a failed run with its reason.** With no destination, no
+  password or no room on the disk, it left no row. The alert came only 36 hours later, as "No backup went in
+  time". It is now listed under the runs with its reason, and the alert "The backup failed" says why.
+- **A report that could not be made is tried again.** The report was marked sent before it was built, so one that
+  failed to build or to send never went. It is now marked sent only once it has gone, and is tried again every
+  10 minutes, five times at most.
+- **A weekly backup or report whose day passed while fake-igd-api was down is made once it is back,** instead of
+  waiting for the next week (the report of that week was lost outright when the week turned).
+- **ntfy waits for alerts_delay_min before saying "over"**, as the mail and the SNMP traps do. A problem missing
+  for one look gave an "over" and a new message a minute later.
+- **A test mail says what really happened to it.** It could be reported "sent" when another try (the minute's
+  background) had taken it, whatever became of it. The background now leaves a mail being waited for to its
+  sender, and one not tried there is reported as it stands.
+- **SNMP and Zabbix: each problem keeps its own row.** fakeIgdAlertTable was indexed by the row's number, so a new
+  problem sorted before the others moved every row, and Zabbix read a neighbour's level for a cycle. The index is
+  now made from the alert's key and stays the same while the problem lasts. The template's alert items are keyed
+  by that number (`fakeigd.alert.level[{#SNMPINDEX}]`) instead of the raw key, which a `,` or `]` would have
+  broken. **Monitoring that tracks fakeIgdAlertTable by row number must be updated:** after re-importing the
+  template, the alert items are discovered again under the new keys.
+- **Export and import: the message counts the accounts taken.** It counted every account in the file, including
+  the ones left out and your own.
+
+### The pages
+
+- **The search of Mappings and of Gateway → MikroTik's firewall reads the same language as the other lists**:
+  `port:>49000`, `<`, `>=`, `<=`, `field!=value`, `OR`, brackets, `NOT` / `!` / `-x`, `~`, quoted words and
+  wildcards (`client:192.0.2.1?`, `proto:t[cx]p`). Before, `port:>49000` found nothing, `a OR b` found nothing
+  and the suggestions offered operators the box did not read. A search that does not read (a bracket left open)
+  marks the box red and says why. On MikroTik, `port:` still counts a port inside a range (`49000-50000`), now
+  in any term (`port:22 OR port:3478`, `-port:49500`).
+- **The lists' search on the server takes `port>49000`, `port<=80`, `port=3074` and `port!=80`** (as `port:>49000`
+  and `-port:80`) - the form the suggestions offer; they were looked for as words and found nothing.
+- **A site name changed in Settings → About shows at once** in the header, the page's title and the home
+  screen's name - it needed a reload.
+- **The mDNS tab no longer makes the page jump on a phone**: its tiles and its table are redrawn without being
+  emptied first every 3 s, and when avahi-browse is asked again (it ended, or nobody looked for 90 s) the list
+  as it was stays for the few seconds it needs to find them again - it was empty for one refresh and the page
+  went back up to the top.
+- **On a phone the open tab is in sight in the tab strip** - and the open pane in Settings' strip of panes:
+  opened by a link or a reload, Settings, Log, Events (About, Upgrades...) stood cut off past the right edge.
+- **The Overview's chart is drawn again for a new width**: a phone turned on its side, or a window made narrower,
+  stretched the chart and its words until the next refresh.
+- **The lists' pagers keep the focus**: First / Back / Next / Last pressed from the keyboard left the focus on the
+  page's body (Tab started again from the top); it stays on the button, or on the nearest one still on.
+- **The Log's search marks what it found right**: a search with brackets of its own (`(looking|asked) by`) marked
+  the wrong parts, one that can match nothing (`x*`) put an empty mark between every two letters, and one that
+  is not a pattern (`(lease 3600`, found by the server as plain words) marked nothing.
+
+### The UPnP service
+
+- **A SOAP request sent with `Transfer-Encoding: chunked` is read** (64 KB at most, as with Content-Length) - it
+  was taken for an empty request and answered 402.
+- **A request that trickles in is let go after 30 s**, however slowly it comes (a byte every 14 s held a thread for
+  ever), and **at most 64 requests are answered at once, 8 of one address**: more are closed at once, without a
+  thread.
+
+### The text console
+
+- **F1-F12, Insert, Shift+Tab... are no longer typed into a field** as a letter (`ĉ`, `ŋ`...).
+- **Backspace after a refused Enter takes a character at once** - with spaces at the end of a field, the first
+  Backspaces took nothing.
+- **A setting whose value starts with a dash is saved** (`-=home=-`): it was read as an option and refused.
+- **Pages of output and the live views fit a small terminal** (under 40 columns or 8 lines) and lines of wide
+  characters (CJK names, emoji in a description) no longer wrap and push the frame off the screen.
+
+### Installing, upgrading, uninstalling
+
+- **`install.sh --upgrade` adds ACME's port-80 location to a kept nginx file with `listen 80 default_server;` or
+  `listen [::]:80;`** - it added none, without a word. Where the port-80 server answers with a `return` of its own
+  it adds none and says so (it put the location into the HTTPS server and said it was added on port 80); a file
+  indented with tabs gets `/metrics` (it was said to, and was not); `/metrics` goes above the "files" heading.
+- **`uninstall.sh` goes to the end when firewalld does not reload** (or systemd does not reload its units): it
+  stopped half way, the services stopped and the program, the units and the pages left in place.
+- **`install.sh` with an option missing its value** (`--server-name` at the end) says so - it stopped on
+  "unbound variable"; **`uninstall.sh` refuses an option it does not know** (`--purg`) before taking anything
+  away - it went on without `--purge`, keeping everything.
+
 ## 1.9.10 (2026-11-21)
 
 - **One external port asked for by two or more clients is said**, wherever rules for the router are made from it.

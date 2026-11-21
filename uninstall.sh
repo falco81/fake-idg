@@ -9,7 +9,14 @@ set -euo pipefail
 
 APP=fake-igd
 PURGE=0
-[[ "${1:-}" == "--purge" ]] && PURGE=1
+# an argument it does not know stops it before anything is taken away (1.9.11) - a typo of --purge kept everything
+for a in "$@"; do
+    case "$a" in
+        --purge) PURGE=1;;
+        -h|--help) sed -n '2,6p' "$0"; exit 0;;
+        *) echo "I do not know the option $a - sudo $0 [--purge]" >&2; exit 2;;
+    esac
+done
 [[ $EUID -eq 0 ]] || { echo "Run as root: sudo $0 $*" >&2; exit 1; }
 
 echo "==> Stopping the services"
@@ -31,8 +38,13 @@ if systemctl is-active --quiet firewalld; then
     firewall-cmd --quiet --permanent --zone="$z" --remove-port=1900/udp 2>/dev/null || true
     firewall-cmd --quiet --permanent --zone="$z" --remove-port="$port/tcp" 2>/dev/null || true
   done
-  firewall-cmd --quiet --reload
-  echo "    firewalld: 1900/udp and $port/tcp closed in every zone (http/https left as they are)"
+  # A reload that does not go (a zone file broken by hand) says so and the rest goes on (1.9.11): it stopped the
+  # whole uninstall here, the services stopped and everything else left in place.
+  if firewall-cmd --quiet --reload; then
+    echo "    firewalld: 1900/udp and $port/tcp closed in every zone (http/https left as they are)"
+  else
+    echo "    firewalld did not reload - the ports are closed in its permanent configuration; firewall-cmd --reload"
+  fi
 fi
 
 echo "==> The web pages"
@@ -51,7 +63,7 @@ rm -f /etc/systemd/system/$APP.service /etc/systemd/system/fake-igd-api.service 
 for b in /usr/bin/upnp /usr/bin/$APP-ports /usr/local/bin/$APP-ports; do
   if [[ -f "$b" ]] && grep -q "$APP" "$b" 2>/dev/null; then rm -f "$b"; fi
 done
-systemctl daemon-reload
+systemctl daemon-reload || true          # (1.9.11) not a reason to leave /opt/fake-igd behind
 rm -rf "/opt/${APP:?}"
 # SELinux (otp's): fake-igd's module (only labels) goes with it - and the local rule of before 1.7.7. The mode
 # SELinux is in, its booleans and the ports labelled are the machine's, left as they are.

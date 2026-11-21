@@ -175,13 +175,13 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --server-name)        SERVER_NAME="$2"; shift 2;;
-        --admin-allow)        ADMIN_ALLOW="$2"; shift 2;;
-        --admin-user)         ADMIN_USER="$2"; shift 2;;
-        --admin-password)     ADMIN_PASSWORD="$2"; shift 2;;
-        --cert)               CERT_FILE="$2"; shift 2;;
-        --key)                KEY_FILE="$2"; shift 2;;
-        --site-name)          SITE_NAME="$2"; shift 2;;
+        --server-name)        [[ $# -ge 2 ]] || fail "--server-name needs a value - try --help"; SERVER_NAME="$2"; shift 2;;
+        --admin-allow)        [[ $# -ge 2 ]] || fail "--admin-allow needs a value - try --help"; ADMIN_ALLOW="$2"; shift 2;;
+        --admin-user)         [[ $# -ge 2 ]] || fail "--admin-user needs a value - try --help"; ADMIN_USER="$2"; shift 2;;
+        --admin-password)     [[ $# -ge 2 ]] || fail "--admin-password needs a value - try --help"; ADMIN_PASSWORD="$2"; shift 2;;
+        --cert)               [[ $# -ge 2 ]] || fail "--cert needs a value - try --help"; CERT_FILE="$2"; shift 2;;
+        --key)                [[ $# -ge 2 ]] || fail "--key needs a value - try --help"; KEY_FILE="$2"; shift 2;;
+        --site-name)          [[ $# -ge 2 ]] || fail "--site-name needs a value - try --help"; SITE_NAME="$2"; shift 2;;
         --no-web)             WITH_WEB=""; shift;;
         --rewrite-nginx)      REWRITE_NGINX="yes"; shift;;
         --firewall)           FIREWALL="on"; shift;;

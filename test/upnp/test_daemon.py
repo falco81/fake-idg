@@ -17,12 +17,17 @@ What it proves:
   - mappings.json of another shape ({...}, [1, "x"]): upnp mappings and the pages' Mappings show none, not a
     traceback / a 500
   - upnp updates with no run yet: no "the last run None, None None%"
+  - 1.9.11: the lists' search reads field!=v, field=v, field>N .. field<=N (they were words, found nothing)
   - 1.9.11: a SOAP request with Transfer-Encoding: chunked is read (it was 402), a chunked one past 64 KB is 413;
     a request that trickles in a byte at a time is let go after HTTP_WHOLE_S; HTTP threads are capped (a
     request beyond HTTP_PER_CLIENT of one address is closed at once)
+  - 1.9.11, the text console: F1, Insert, Shift+Tab... are not typed into a field as a letter; Backspace after
+    an Enter that stripped spaces takes a character at once; the pages of output are the terminal's size; a
+    setting whose value starts with a dash is saved (it was read as an option)
   - the pages' API: a time picker's since/until/hours past what the clock can say (1e20, inf, nan, 1e300) is
     no end, not a 500 "the API broke on that"
 """
+import collections
 import importlib.util
 import io
 import json
@@ -232,6 +237,103 @@ class HttpRequests(Http):
             time.sleep(0.05)
         self.assertEqual(D._busy, {})
         self.assertIn("200 OK", self.raw(b"GET /rootDesc.xml HTTP/1.1\r\nHost: x\r\n\r\n"))
+
+
+class _Win(object):
+    """A curses window for the console's tests: the keys it is given, and nothing drawn."""
+    def __init__(self, keys, h=24, w=80):
+        self.keys, self.h, self.w = list(keys), h, w
+
+    def getch(self):
+        return self.keys.pop(0) if self.keys else 27         # out of keys: Esc
+
+    def getmaxyx(self):
+        return self.h, self.w
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+class ConsoleKeys(unittest.TestCase):
+    """1.9.11: the text console - a function key is not a letter typed into a field; after Enter with spaces at
+    the end of a field, Backspace takes a character at once; the pages of output are as large as the terminal."""
+
+    def console(self, keys, size=(24, 80)):
+        import curses
+        import upnp_console
+        con = upnp_console.Console.__new__(upnp_console.Console)
+        con.curses = curses
+        con.A = collections.defaultdict(int)
+        con.scr = _Win([], *size)
+        con.plain, con.backdrop = False, None
+        win = _Win(keys, *size)
+        con._window = lambda wh, ww: (win, min(wh, size[0] - 2), min(ww, size[1] - 2))
+        curses.curs_set = curses.doupdate = lambda *a: None
+        curses.ungetch = lambda k: win.keys.insert(0, k)
+        return con, win
+
+    def test_function_keys_not_typed(self):
+        import curses
+        con, win = self.console([curses.KEY_F1, curses.KEY_IC, curses.KEY_BTAB, ord("a"), 0xe9])
+        got = [con._getkey(win) for _n in range(5)]
+        self.assertEqual(got[:3], [None, None, None])
+        self.assertEqual(got[3], "a")
+        con, win = self.console([ord("x"), curses.KEY_F5, curses.KEY_IC, ord("y"), 10])
+        self.assertEqual(con.form("T", [{"key": "v", "label": "v"}]), {"v": "xy"})
+
+    def test_backspace_after_strip(self):
+        con, win = self.console([ord(c) for c in "ab  "] + [10] + [ord("!")] + [10] + [127] + [10])
+        # "ab  " is "ab" once Enter strips it; "!" is refused by the check; Backspace then takes the "!" at once
+        got = con.form("T", [{"key": "v", "label": "v", "check": lambda v, _a: "no !" if "!" in v else None}],
+                       check=lambda g: None if g["v"] == "ab" and win.keys == [] else ("go on", None))
+        self.assertEqual(got, {"v": "ab"})
+
+    def test_save_value_with_a_dash(self):
+        import upnp
+        import upnp_console
+        tmp = tempfile.mkdtemp()
+        conf = os.path.join(tmp, "config.json")
+        with open(conf, "w", encoding="utf-8") as f:
+            json.dump(dict(upnp.DEFAULTS, state_dir=tmp, log_file=os.path.join(tmp, "l.log"),
+                           request_log=os.path.join(tmp, "r.jsonl")), f)
+        con = upnp_console.Console(upnp, upnp.Palette(False), conf)
+        for v in ("--x", "-=home=-", "plain"):
+            words, bad = con._save("site_name", v, restart=False)
+            self.assertFalse(bad, words)
+            with open(conf, encoding="utf-8") as f:
+                self.assertEqual(json.load(f)["site_name"], v)
+
+    def test_page_size(self):
+        import upnp_console
+        real = os.get_terminal_size
+        try:
+            os.get_terminal_size = lambda *a: os.terminal_size((30, 6))
+            self.assertEqual(upnp_console.Console._size(), (30, 6))
+        finally:
+            os.get_terminal_size = real
+
+
+class ListQuery(unittest.TestCase):
+    """1.9.11: the lists' search (api_shell.run_query) reads field!=v, field=v and field>N .. field<=N as the
+    search box's suggestions offer them - they were looked for as words, and found nothing."""
+    def test_operators(self):
+        import api_shell
+        rows = [{"action": "AddPortMapping", "client": "192.0.2.%d" % i, "external_port": port, "protocol": "UDP"}
+                for i, port in enumerate((80, 3074, 49152, 50000))]
+
+        def ports(q):
+            got, err = api_shell.run_query("requests", [dict(r) for r in rows], q)
+            self.assertEqual(err, "", q)
+            return sorted(r["external_port"] for r in got)
+        self.assertEqual(ports("port>49152"), [50000])
+        self.assertEqual(ports("port>=49152"), [49152, 50000])
+        self.assertEqual(ports("port<3074"), [80])
+        self.assertEqual(ports("port<=3074"), [80, 3074])
+        self.assertEqual(ports("port:>49152"), [50000])
+        self.assertEqual(ports("port!=80"), [3074, 49152, 50000])
+        self.assertEqual(ports("-port!=80"), [80])
+        self.assertEqual(ports("port=3074"), [3074])
+        self.assertEqual(ports("port!=80 port<50000"), [3074, 49152])
 
 
 class AnyPort(Base):

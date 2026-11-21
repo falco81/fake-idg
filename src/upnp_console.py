@@ -493,6 +493,16 @@ class Console(object):
             return str(ex), 127
 
     @staticmethod
+    def _size():
+        """(columns, lines) of the terminal as they are (1.9.11): the pages drew 40 x 8 at least, and on a
+        smaller terminal every line wrapped and the frame ran off the screen."""
+        try:
+            sz = os.get_terminal_size(sys.__stdout__.fileno())
+            return max(1, sz.columns), max(3, sz.lines)
+        except (OSError, ValueError):
+            return 100, 30
+
+    @staticmethod
     def _cols():
         try:
             return os.get_terminal_size(sys.__stdout__.fileno()).columns
@@ -528,12 +538,8 @@ class Console(object):
         top, size = 0, None
         try:
             while True:
-                try:
-                    sz = os.get_terminal_size(sys.__stdout__.fileno())
-                    cols, rows = max(40, sz.columns), max(8, sz.lines)
-                except OSError:
-                    cols, rows = 100, 30
-                avail = max(3, rows - 2)
+                cols, rows = self._size()
+                avail = max(1, rows - 2)
                 top = max(0, min(top, max(0, len(lines) - avail)))
                 end = min(len(lines), top + avail)
                 head = " %s " % title
@@ -546,7 +552,9 @@ class Console(object):
                 frame = ["\x1b[7m" + bar + "\x1b[0m" if p.on else bar] + body + \
                     ["\x1b[7m" + foot + " " * max(0, cols - 1 - len(foot)) + "\x1b[0m"
                      if p.on else foot]
-                out.write("\x1b[H" + "\n".join(ln + "\x1b[K" for ln in frame) + "\x1b[J")
+                # no wrapping while it is drawn (1.9.11): a line of wide characters (CJK, emoji) is two
+                # columns a character and wrapped, and the frame ran off the screen
+                out.write("\x1b[?7l\x1b[H" + "\n".join(ln + "\x1b[K" for ln in frame) + "\x1b[J\x1b[?7h")
                 self._scrollbar(2, avail, len(lines), avail, top, cols)
                 out.flush()
                 size = (cols, rows)
@@ -554,12 +562,8 @@ class Console(object):
                     k = self.key(0.3)
                     if k is not None:
                         break
-                    try:
-                        sz = os.get_terminal_size(sys.__stdout__.fileno())
-                        if (max(40, sz.columns), max(8, sz.lines)) != size:
-                            break
-                    except OSError:
-                        pass
+                    if self._size() != size:
+                        break
                 if k in ("esc", "q", "enter", "ctrl-c", "ctrl-d"):
                     return
                 if k in ("up", "k"):
@@ -855,14 +859,10 @@ class Console(object):
                         hits = [i - cut for i in hits if i >= cut]
                         top = max(0, top - gone)
                     dirty = dirty or bool(got)
-                try:
-                    sz = os.get_terminal_size(sys.__stdout__.fileno())
-                    cols, rows = max(40, sz.columns), max(8, sz.lines)
-                except OSError:
-                    cols, rows = 100, 30
+                cols, rows = self._size()                    # as they are (1.9.11)
                 if (cols, rows) != size:
                     size, dirty = (cols, rows), True
-                avail = max(3, rows - 2)
+                avail = max(1, rows - 2)
                 last = max(0, len(hits) - avail)
                 if follow:
                     top = last
@@ -889,7 +889,7 @@ class Console(object):
                     tone = "\x1b[33m" if (not follow and p.on) else ""
                     frame = [tone + inv(bar[:cols])] + body[:avail] + \
                         [inv(foot + " " * max(0, cols - 1 - len(foot)))]
-                    out.write("\x1b[H" + "\n".join(ln + "\x1b[K" for ln in frame) + "\x1b[J")
+                    out.write("\x1b[?7l\x1b[H" + "\n".join(ln + "\x1b[K" for ln in frame) + "\x1b[J\x1b[?7h")   # (1.9.11)
                     self._scrollbar(2, avail, len(hits), avail, top, cols)
                     out.flush()
                     dirty = False
@@ -1009,11 +1009,10 @@ class Console(object):
                 return raw.decode("utf-8")
             except UnicodeDecodeError:
                 return None
-        if 32 <= k < 0x110000:
-            try:
-                return chr(k)
-            except ValueError:
-                return None
+        # getch gives a byte (0-255) or one of curses' KEY_ codes (256 and up): F1, Insert, Shift+Tab... were
+        # taken for a letter (chr(265) is "ĉ") and typed into the field (1.9.11)
+        if 32 <= k < 0x100:
+            return chr(k)
         return None
 
     def _line_in(self, y, prompt, text, secret=False, win=None, x=1, width=None):
@@ -1393,6 +1392,8 @@ class Console(object):
                         if x["kind"] != "choice":
                             v = v.strip() if x["kind"] != "secret" else v
                             vals[x["key"]] = v
+                            # the caret where the text now ends at most: past it, Backspace took nothing (1.9.11)
+                            pos[x["key"]] = min(pos[x["key"]], len(v))
                         bad = None
                         if x.get("need") and v == "":
                             bad = "%s - it is needed" % (x.get("label") or x["key"])
@@ -1894,10 +1895,12 @@ class Console(object):
         """`upnp config set KEY VALUE` - a secret by the environment, never on the command line.
         (words, bad)."""
         env = {"UPNP_VALUE": value} if secret else None
-        args = ["config", "set", key, "@env" if secret else value]
+        args = ["config", "set"]
         if not restart:
             args.append("--no-restart")
-        out, rc = self.capture(self.argv(*args) + ["--no-color"], env=env)
+        # the key and the value after "--" (1.9.11): a value that starts with a dash ("-=home=-", "--x") was read
+        # as an option, and "the following arguments are required: VALUE" was all that was said
+        out, rc = self.capture(self.argv(*args) + ["--no-color", "--", key, "@env" if secret else value], env=env)
         if rc != 0:
             return ((self._plain_text(out).strip().splitlines() or ["it was not saved"])[-1].lstrip("✘ "), True)
         self.st_now = True

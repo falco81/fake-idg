@@ -1083,6 +1083,10 @@ function listTable(headers, rows, cell, cls, opts) {
 /* ---- paging, once, for every table that needs it ------------------------- */
 function pager(id, page, per, total, go, capped) {
   var host = typeof id === 'string' ? $(id) : id;
+  /* The button pressed from the keyboard keeps the focus (1.9.11): drawn afresh, the pager lost it to the
+     page's body, and Tab started again from the top. Off now (Next at the last page): the nearest one on. */
+  var had = host.contains(document.activeElement) ? (document.activeElement._pgKey || 'next') : '';
+  var made = {};
   clear(host);
   var pages = Math.max(1, Math.ceil((total || 0) / per));
   /* A page past the end - the window rolled on, or rows were erased - is
@@ -1102,6 +1106,8 @@ function pager(id, page, per, total, go, capped) {
     b.disabled = !!off;
     explain(b, says);
     b.onclick = function () { go(to); };
+    b._pgKey = key;
+    made[key] = b;
     host.appendChild(b);
   }
   /* The same four buttons as every other list on the page (1.10.160): the
@@ -1123,6 +1129,12 @@ function pager(id, page, per, total, go, capped) {
     ? 'The list goes on past what was counted. To reach its other end, make the time window '
       + 'shorter or the search narrower - or, in a list whose headings sort, order it the other '
       + 'way round by its heading.' : pageSays('Last', page, pages));
+  if (had) {
+    var near = {first: ['first', 'prev', 'next', 'last'], prev: ['prev', 'first', 'next', 'last'],
+                next: ['next', 'last', 'prev', 'first'], last: ['last', 'next', 'prev', 'first']}[had] || ['next', 'prev'];
+    var to = near.map(function (k) { return made[k]; }).filter(function (x) { return x && !x.disabled; })[0];
+    if (to) to.focus({preventScroll: true});
+  }
 }
 
 function debounce(fn, ms) {

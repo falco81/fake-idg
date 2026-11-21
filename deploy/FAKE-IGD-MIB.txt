@@ -18,12 +18,14 @@ IMPORTS
         FROM NET-SNMP-MIB;
 
 fakeIgd MODULE-IDENTITY
-    LAST-UPDATED "202611160000Z"
+    LAST-UPDATED "202611210000Z"
     ORGANIZATION "fake-igd"
     CONTACT-INFO "The administrator of the fake-igd server - Settings, Monitoring."
     DESCRIPTION  "fake-igd: the services, the requests and the ports asked for, the
                   devices, the mappings, the mDNS reflector, the alerts, the
                   certificate, the machine, the mail and the logs of one server."
+    REVISION     "202611210000Z"
+    DESCRIPTION  "1.9.11: fakeIgdAlertTable indexed by its alert's key (stable while the problem lasts)."
     REVISION     "202611160000Z"
     DESCRIPTION  "First: 1.7.2."
     ::= { netSnmpPlaypen 8 }

@@ -60,10 +60,23 @@ window.optShowTab = function (name) {
     b.setAttribute('aria-selected', b.getAttribute('data-tab') === name ? 'true' : 'false');
   });
   TABS.forEach(function (one) { if ($('tab-' + one)) $('tab-' + one).hidden = one !== name; });
+  tabInSight(document.querySelector('.tabs button[data-tab="' + name + '"]'));
   writeHash();
   holdTheTallOnes();
   onTab(name);
 };
+/* On a phone the tab strip and Settings' strip of panes scroll sideways: the open one is put in sight in it
+   (1.9.11) - opened by a link or a reload, Settings, Log or Events (and About, Upgrades...) stood cut off past the
+   right edge of the screen. Only the strip moves, not the page. */
+function tabInSight(btn) {
+  var strip = btn && btn.parentElement;
+  while (strip && strip !== document.body && !(strip.scrollWidth > strip.clientWidth + 1
+         && /(auto|scroll)/.test(getComputedStyle(strip).overflowX))) strip = strip.parentElement;
+  if (!strip || strip === document.body) return;
+  var s = strip.getBoundingClientRect(), r = btn.getBoundingClientRect(), pad = 24;
+  if (r.left < s.left) strip.scrollLeft -= s.left - r.left + pad;
+  else if (r.right > s.right) strip.scrollLeft += r.right - s.right + pad;
+}
 document.querySelectorAll('.tabs button[data-tab]').forEach(function (b) {
   b.onclick = function () { showTab(b.getAttribute('data-tab')); };
 });
@@ -1158,9 +1171,18 @@ function facetInto(host, rows, tone, go) {
   host.appendChild(list);
 }
 
+/* Drawn again for a new width (1.9.11): the chart is drawn to the width it had (preserveAspectRatio none), and a
+   phone turned on its side or a window made narrower stretched it - its words too - until the next refresh. */
+window.addEventListener('resize', debounce(function () {
+  var host = $('ov-chart');
+  if (host && host._drawn && TAB === 'overview' && host.clientWidth && host.clientWidth !== host._drawn[2]) {
+    drawChart(host._drawn[0], host._drawn[1]);
+  }
+}, 150));
 function drawChart(d, hours) {
   var host = $('ov-chart');
   var tip = host.querySelector('.tip');
+  host._drawn = [d, hours, host.clientWidth];   /* (1.9.11) */
   clear(host);
   host.appendChild(tip);
   var series = d.series || [];
@@ -1870,10 +1892,18 @@ function logWords(host, text, tone, hit) {
   var put = function (t, cls) {
     if (!t) return;
     if (hit) {
-      t.split(hit).forEach(function (p, i) {
-        if (i % 2 === 1) host.appendChild(el('mark', '', p));
-        else if (p) host.appendChild(cls ? logSpan(cls, p) : document.createTextNode(p));
-      });
+      /* What it found, marked one by one (1.9.11): split() on '(' + q + ')' marked the wrong parts of a search
+         with brackets of its own - (soap|port): - and one that can find nothing (x*) put an empty mark
+         between every two letters of 600 lines. */
+      var re = new RegExp(hit.source, 'gi'), from = 0, f;
+      var plain = function (p) { if (p) host.appendChild(cls ? logSpan(cls, p) : document.createTextNode(p)); };
+      while ((f = re.exec(t))) {
+        if (!f[0]) { re.lastIndex += 1; continue; }
+        plain(t.slice(from, f.index));
+        host.appendChild(el('mark', '', f[0]));
+        from = f.index + f[0].length;
+      }
+      plain(t.slice(from));
       return;
     }
     host.appendChild(cls ? logSpan(cls, t) : document.createTextNode(t));
@@ -1891,7 +1921,13 @@ function drawLog(lines, q) {
   var atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
   clear(out);
   var hit = null;
-  if (q) { try { hit = new RegExp('(' + q + ')', 'i'); } catch (e) { hit = null; } }
+  /* As the server reads it (log_view): a pattern, or the plain words when it is not one or may take for ever (1.9.11) */
+  var words = function () { return new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'); };
+  if (q) {
+    try {
+      hit = /[+*}]\)?[+*{]|\)[+*{].*\)[+*{]|\([^)]*[+*][^)]*\)[+*{]/.test(q) ? words() : new RegExp(q, 'i');
+    } catch (e) { hit = words(); }
+  }
   lines.forEach(function (ln) {
     var m = /^(\S+ \S+) (\w+)(\s+)(.*)$/.exec(ln);
     if (!m) { logWords(out, ln + '\n', '', hit); return; }
@@ -2051,6 +2087,7 @@ function showPane(name) {
     b.classList.toggle('on', b.dataset.pane === name);
   });
   document.querySelectorAll('.ctl-pane').forEach(function (p) { p.hidden = p.id !== 'pane-' + name; });
+  if (TAB === 'settings') tabInSight(document.querySelector('#ctl-nav button[data-pane="' + name + '"]'));   /* (1.9.11) */
   writeHash();
   if (typeof PANE_LOAD[name] === 'function') {
     try { PANE_LOAD[name](); } catch (e) { oops(e); }

@@ -17,17 +17,55 @@ def block(rx):
     return b.replace('unix:/run/php-fpm/fake-igd.sock', sock.group(1)) if sock else b
 
 
-if 'location = /metrics' not in t and 'location /assets/' in t:
+
+
+def server_80(t):
+    """(start, end) of the server { } that listens on port 80 - `listen 80 default_server;` and `listen [::]:80;`
+    too (1.9.11) - or None."""
+    for m in re.finditer(r'(?m)^[ \t]*server\s*\{', t):
+        depth, i = 0, m.end() - 1
+        while i < len(t):
+            if t[i] == '{':
+                depth += 1
+            elif t[i] == '}':
+                depth -= 1
+                if not depth:
+                    break
+            elif t[i] == '#':
+                i = t.find('\n', i)
+                if i < 0:
+                    return None
+            i += 1
+        body = t[m.end():i]
+        if re.search(r'(?m)^\s*listen\s+(?:\S*:)?80(?:\s[^;]*)?;', body):
+            return m.end(), i
+    return None
+
+
+# The line where /assets/ starts, however indented (1.9.11: a file indented with tabs was said to have /metrics
+# added, and had not); the "# ---- files" heading above it stays above it.
+m = re.search(r'(?m)^(?:[ \t]*# ---- files.*\n)?[ \t]*location\s+/assets/', t)
+if 'location = /metrics' not in t and m:
     b = block(r'(?ms)^    # ---- Prometheus.*?^    \}\n\n')
     if b:
-        t = t.replace('    location /assets/', b + '    location /assets/', 1)
+        t = t[:m.start()] + b + t[m.start():]
         said.append('GET /metrics for Prometheus')
 if 'acme-challenge' not in t:
+    # In the port-80 server only (1.9.11): one that answered with `return 301` of its own, not in a location /, had
+    # the location put into the HTTPS server's, and one with `listen 80 default_server;` none at all - both
+    # without a word.
     b = block(r'(?ms)^    # A certificate by ACME.*?^    \}\n')
-    m = re.search(r'(?ms)^server\s*\{[^{}]*?^\s*listen\s+80;.*?^(\s*location\s+/\s*\{)', t)
-    if b and m:
-        t = t[:m.start(1)] + b + t[m.start(1):]
+    srv = server_80(t)
+    m = srv and re.compile(r'(?m)^[ \t]*location\s+/\s*\{').search(t, srv[0], srv[1])
+    if b and srv and not m and re.search(r'(?m)^\s*return\s', t[srv[0]:srv[1]]):
+        sys.stderr.write("nginx_additions: ACME's port-80 location is not added - the port-80 server answers with a "
+                         "return of its own; put a location / { return 301 ...; } around it and run this again\n")
+    elif b and srv:
+        at = m.start() if m else srv[1]
+        t = t[:at] + b + t[at:]
         said.append("ACME's HTTP-01 on port 80")
+    elif b:
+        sys.stderr.write("nginx_additions: ACME's port-80 location is not added - no server listens on port 80\n")
 if 'api=passkey-login' not in t:
     # 1.9.7: a passkey's sign-in counted with the password's (the same zone, by address)
     m = re.search(r'(?m)^(\s*)"~\(\^\|&\)api=login\(&\|\$\)"(\s+)\$binary_remote_addr;\n', t)

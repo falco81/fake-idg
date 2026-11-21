@@ -81,6 +81,12 @@ function msBrowse(fresh, quiet) {
   api('mdns-browse&after=' + AV.seq + (fresh ? '&fresh=1' : ''), undefined, 20).then(function (b) {
     if (b.seq < AV.seq) { AV.events = []; }               /* the API restarted: from the beginning */
     AV.seq = b.seq;
+    /* avahi-browse just asked again (it ended, or nobody looked for 90 s): for its first seconds it has found
+       few or none yet - the list as it was stays until then, not emptied for a refresh, the page jumping to
+       the top on a phone (1.9.11) */
+    var prev = AV.b;
+    if (!fresh && prev && b.started && prev.started && b.started !== prev.started && (b.at || 0) - b.started < 5
+        && (b.services || []).length < (prev.services || []).length) b.services = prev.services;
     AV.events = AV.events.concat(b.events || []).slice(-2000);
     AV.b = b;
     var here = $('tab-mdns');
