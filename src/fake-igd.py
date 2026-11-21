@@ -14,6 +14,7 @@ Python 3.9+ standard library only (Linux).
 """
 import argparse
 import fcntl
+import io
 import ipaddress
 import json
 import logging
@@ -84,6 +85,9 @@ DEFAULTS = {
 }
 
 SOAP_MOST = 64 * 1024            # a SOAP request larger than this is refused (413) - real ones are < 2 KB
+HTTP_WHOLE_S = 30                # a request not come whole in this long is let go, however it trickles in (1.9.11)
+HTTP_MOST = 64                   # HTTP requests answered at once (a thread each); more are closed at once (1.9.11)
+HTTP_PER_CLIENT = 8              # ... of them from one address (1.9.11)
 MAPPINGS_MOST = 1024             # port mappings held at most; more is answered 728 NoPortMapsAvailable
 DESC_MOST = 256                  # a description longer than this is cut (it goes to the log and the pages)
 SSDP_GROUP = "239.255.255.250"
@@ -911,11 +915,59 @@ def _int_or(v):
         return 0
 
 
+class _Deadline(io.RawIOBase):
+    """The socket read with a deadline for the whole request (1.9.11): `timeout` alone is per read, and a client
+    that sent a byte every 14 s held a thread for ever."""
+
+    def __init__(self, sock, per_read, whole):
+        super().__init__()
+        self.sock, self.per_read, self.end = sock, per_read, time.monotonic() + whole
+
+    def readable(self):
+        return True
+
+    def readinto(self, b):
+        left = self.end - time.monotonic()
+        if left <= 0:
+            raise socket.timeout("the request did not come whole in %d s" % HTTP_WHOLE_S)
+        self.sock.settimeout(min(self.per_read, left))
+        return self.sock.recv_into(b)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = SERVER_HDR
     sys_version = ""
     protocol_version = "HTTP/1.1"
     timeout = 15                       # a request that does not come whole in time is let go (no thread held)
+
+    def setup(self):
+        super().setup()
+        self.rfile = io.BufferedReader(_Deadline(self.connection, self.timeout, HTTP_WHOLE_S))   # (1.9.11)
+
+    def _chunked(self):
+        """A body sent with Transfer-Encoding: chunked (1.9.11; it was read as no body: 402), as miniupnpd reads
+        it: SOAP_MOST at most, ValueError when it does not read, None when it is larger."""
+        body = b""
+        while True:
+            line = self.rfile.readline(1026)
+            if not line.endswith(b"\n"):
+                raise ValueError("a chunk's size line cut short")
+            size = int(line.split(b";", 1)[0].strip() or b"x", 16)
+            if size < 0:
+                raise ValueError(size)
+            if size == 0:
+                break
+            if len(body) + size > SOAP_MOST:
+                return None
+            got = self.rfile.read(size)
+            if len(got) < size or self.rfile.readline(3).strip():
+                raise ValueError("a chunk cut short")
+            body += got
+        for _n in range(64):                       # trailers, if any, up to the empty line
+            line = self.rfile.readline(8192)
+            if not line.strip():
+                return body
+        raise ValueError("too many trailers")
 
     def version_string(self):
         return SERVER_HDR
@@ -981,6 +1033,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found", "text/plain")
             return
         service, handler = CONTROL[path]
+        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+            try:
+                body = self._chunked()
+            except (ValueError, OSError) as e:
+                log.warning("soap: invalid request from %s: a chunked body that does not read: %s", client, str(e)[:80])
+                self._send(400, "bad chunked body", "text/plain")
+                return
+            if body is None:
+                log.warning("soap: invalid request from %s: more than %d bytes (chunked)", client, SOAP_MOST)
+                self._send(413, "too large", "text/plain")
+                return
+            self._soap(client, service, handler, body)
+            return
         try:
             length = int(self.headers.get("Content-Length", "0") or 0)
             if length < 0:
@@ -1004,6 +1069,9 @@ class Handler(BaseHTTPRequestHandler):
             log.debug("http: the request of %s was cut short (%d of %d bytes)", client, len(body), length)
             self.close_connection = True
             return
+        self._soap(client, service, handler, body)
+
+    def _soap(self, client, service, handler, body):
         try:
             action, args = parse_soap(body)
         except Exception as e:  # noqa: BLE001
@@ -1058,6 +1126,43 @@ class Server(ThreadingHTTPServer):
     request_queue_size = 128
     daemon_threads = True
 
+    # A thread for each request, but not without end (1.9.11): HTTP_MOST at once, HTTP_PER_CLIENT of one address;
+    # one more is closed at once, without a thread, as miniupnpd closes what it has no room for.
+    def process_request(self, request, client_address):
+        ip = client_address[0]
+        with _busy_lock:
+            if sum(_busy.values()) >= HTTP_MOST or _busy.get(ip, 0) >= HTTP_PER_CLIENT:
+                full = True
+            else:
+                full = False
+                _busy[ip] = _busy.get(ip, 0) + 1
+        if full:
+            (log.warning if once(("http-full", ip), 600) else log.debug)(
+                "http: %s refused - %d requests are answered already (%d at most, %d of one address)",
+                ip, sum(_busy.values()), HTTP_MOST, HTTP_PER_CLIENT)
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._done(ip)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._done(client_address[0])
+
+    @staticmethod
+    def _done(ip):
+        with _busy_lock:
+            n = _busy.get(ip, 0) - 1
+            if n > 0:
+                _busy[ip] = n
+            else:
+                _busy.pop(ip, None)
+
     def handle_error(self, request, client_address):
         # a device that went away mid-answer is not a traceback on stderr (the journal); anything else is
         # said once, in the log
@@ -1066,6 +1171,10 @@ class Server(ThreadingHTTPServer):
             log.debug("http: %s went away: %s", client_address[0], e)
         else:
             log.warning("http: a request of %s failed: %s: %s", client_address[0], type(e).__name__, e)
+
+
+_busy = {}                       # requests being answered, by address (1.9.11)
+_busy_lock = threading.Lock()
 
 
 # ================================================================ SSDP

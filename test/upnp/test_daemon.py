@@ -17,6 +17,9 @@ What it proves:
   - mappings.json of another shape ({...}, [1, "x"]): upnp mappings and the pages' Mappings show none, not a
     traceback / a 500
   - upnp updates with no run yet: no "the last run None, None None%"
+  - 1.9.11: a SOAP request with Transfer-Encoding: chunked is read (it was 402), a chunked one past 64 KB is 413;
+    a request that trickles in a byte at a time is let go after HTTP_WHOLE_S; HTTP threads are capped (a
+    request beyond HTTP_PER_CLIENT of one address is closed at once)
   - the pages' API: a time picker's since/until/hours past what the clock can say (1e20, inf, nan, 1e300) is
     no end, not a 500 "the API broke on that"
 """
@@ -29,6 +32,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -129,6 +133,7 @@ class Http(Base):
         self.assertIn(("", 3002, "TCP"), D.mappings)
 
     def test_log_line_cut(self):
+        self.buf.seek(0)
         self.buf.truncate(0)
         r = self.post(envelope("AddPortMapping", add_args("3003", "x" * 60000)), "AddPortMapping")
         self.assertIn("200 OK", r)
@@ -138,6 +143,95 @@ class Http(Base):
         with open(D.CFG["request_log"], encoding="utf-8") as f:
             self.assertTrue(all(len(json.loads(ln)["description"]) <= D.DESC_MOST for ln in f
                                 if json.loads(ln).get("description")))
+
+
+class HttpRequests(Http):
+    """1.9.11: a chunked SOAP body is read (it was no body: 402); a request that trickles in is let go after
+    HTTP_WHOLE_S however it trickles; threads beyond HTTP_PER_CLIENT / HTTP_MOST are closed at once."""
+    test_billion_laughs_refused = test_log_line_cut = None     # Http's own, not run twice
+
+    def raw(self, data, timeout=10):
+        s = socket.create_connection(self.srv.server_address, timeout=timeout)
+        s.sendall(data)
+        out = b""
+        while True:
+            d = s.recv(65536)
+            if not d:
+                break
+            out += d
+        s.close()
+        return out.decode("utf-8", "replace")
+
+    def chunked(self, body, step=100, extra=""):
+        head = ("POST /ctl/IPConn HTTP/1.1\r\nHost: x\r\nSOAPAction: \"%s#AddPortMapping\"\r\n"
+                "Transfer-Encoding: chunked\r\n\r\n" % V1).encode()
+        parts = [b"%x;ext=1\r\n%s\r\n" % (len(body[i:i + step]), body[i:i + step]) for i in range(0, len(body), step)]
+        return head + b"".join(parts) + b"0\r\n" + extra.encode() + b"\r\n"
+
+    def test_chunked(self):
+        r = self.raw(self.chunked(envelope("AddPortMapping", add_args("3101"))))
+        self.assertIn("200 OK", r)
+        self.assertIn(("", 3101, "TCP"), D.mappings)
+        r = self.raw(self.chunked(envelope("AddPortMapping", add_args("3102")), 7, "X-Trailer: 1\r\n"))
+        self.assertIn("200 OK", r)
+        self.assertIn(("", 3102, "TCP"), D.mappings)
+
+    def test_chunked_too_large_or_bad(self):
+        r = self.raw(self.chunked(envelope("AddPortMapping", add_args("3103", "x" * (D.SOAP_MOST + 10))), 8000))
+        self.assertIn(" 413 ", r)
+        self.assertNotIn(("", 3103, "TCP"), D.mappings)
+        bad = ("POST /ctl/IPConn HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nabc\r\n0\r\n\r\n").encode()
+        self.assertIn(" 400 ", self.raw(bad))
+
+    def test_trickle_let_go(self):
+        was = D.HTTP_WHOLE_S
+        D.HTTP_WHOLE_S = 1.5
+        try:
+            s = socket.create_connection(self.srv.server_address, timeout=10)
+            t0 = time.monotonic()
+            closed = False
+            for ch in "POST /ctl/IPConn HTTP/1.1\r\nHost: x\r\nContent-Length: 400\r\n\r\n" + "x" * 400:
+                try:
+                    s.sendall(ch.encode())
+                    s.settimeout(0.3)
+                    if s.recv(100) == b"":
+                        closed = True
+                        break
+                except socket.timeout:
+                    pass
+                except OSError:
+                    closed = True
+                    break
+                if time.monotonic() - t0 > 6:
+                    break
+            s.close()
+            self.assertTrue(closed, "a request trickling in was held %.1f s" % (time.monotonic() - t0))
+            self.assertLess(time.monotonic() - t0, 4)
+        finally:
+            D.HTTP_WHOLE_S = was
+
+    def test_threads_capped(self):
+        held = []
+        try:
+            for _n in range(D.HTTP_PER_CLIENT):
+                s = socket.create_connection(self.srv.server_address, timeout=5)
+                s.sendall(b"POST /ctl/IPConn HTTP/1.1\r\n")
+                held.append(s)
+            deadline = time.time() + 3
+            while sum(D._busy.values()) < D.HTTP_PER_CLIENT and time.time() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(D._busy.get("127.0.0.1"), D.HTTP_PER_CLIENT)
+            # one more from the same address: closed at once, no answer, no thread
+            self.assertEqual(self.raw(b"GET /rootDesc.xml HTTP/1.1\r\nHost: x\r\n\r\n", 5), "")
+            self.assertEqual(D._busy.get("127.0.0.1"), D.HTTP_PER_CLIENT)
+        finally:
+            for s in held:
+                s.close()
+        deadline = time.time() + 3
+        while D._busy and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(D._busy, {})
+        self.assertIn("200 OK", self.raw(b"GET /rootDesc.xml HTTP/1.1\r\nHost: x\r\n\r\n"))
 
 
 class AnyPort(Base):
