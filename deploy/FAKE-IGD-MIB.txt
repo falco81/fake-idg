@@ -177,9 +177,10 @@ fakeIgdAlertEntry OBJECT-TYPE
     SYNTAX FakeIgdAlertEntry MAX-ACCESS not-accessible STATUS current
     DESCRIPTION "One thing wrong." INDEX { fakeIgdAlertIndex } ::= { fakeIgdAlertTable 1 }
 FakeIgdAlertEntry ::= SEQUENCE { fakeIgdAlertIndex Integer32, fakeIgdAlertKey DisplayString, fakeIgdAlertLevel DisplayString, fakeIgdAlertTitle DisplayString, fakeIgdAlertSaid DisplayString }
+-- 1.9.11: the index is made from the key (it was the row's number, which moved)
 fakeIgdAlertIndex OBJECT-TYPE
-    SYNTAX Integer32 (1..65535) MAX-ACCESS read-only STATUS current
-    DESCRIPTION "Its number now." ::= { fakeIgdAlertEntry 1 }
+    SYNTAX Integer32 (1..2147483647) MAX-ACCESS read-only STATUS current
+    DESCRIPTION "A number made from its key (CRC-32): the same while it lasts, and again when it comes back." ::= { fakeIgdAlertEntry 1 }
 fakeIgdAlertKey OBJECT-TYPE
     SYNTAX DisplayString MAX-ACCESS read-only STATUS current
     DESCRIPTION "What it is about, the same while it lasts." ::= { fakeIgdAlertEntry 2 }

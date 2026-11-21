@@ -21,6 +21,7 @@ fake-igd.service's (its log) - is written to Events as well.
 """
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -253,18 +254,29 @@ def _alerts(ctx, now):
     c = A.cfg_of(ctx.store)
     cur = A.problems(ctx, c)
     known = _meta(ctx.store, "ntfy:alerts", {})
+    for k in [k for k in known if re.match(r"^(newer:|backup:\d+\Z)", k)]:      # the keys before 1.9.11
+        known.setdefault("newer" if k.startswith("newer:") else "backup:failed", known[k])
+        known.pop(k)
     delay = 60 * int(c.get("alerts_delay_min") or 0)
     for k, p in cur.items():
         kk = str(k).split(":")[0]
         was = known.get(k) if isinstance(known.get(k), dict) else {"since": now, "sent": False}
         was.update(title=str(p.get("title") or k)[:160], said=str(p.get("said") or "")[:600],
                    level=p.get("level") or "warn")
+        was.pop("missing_since", None)                  # back before it was over (1.9.11)
         if not was.get("sent") and now - float(was.get("since") or now) >= delay:
             if on(cfg, "alert:" + kk):
                 NOTE.send("alerts", "fake-igd: " + was["title"], was["said"] or was["title"])
             was["sent"] = True                          # left out: not sent later either
         known[k] = was
     for k in [k for k in known if k not in cur]:
+        if isinstance(known[k], dict) and known[k].get("sent") and delay:
+            # Over only once it has been away as long as alerts_delay_min, as the mail and the SNMP traps wait
+            # (1.9.11): a problem missing for one look was "over" here, and new again a minute later.
+            gone_at = float(known[k].get("missing_since") or 0) or now
+            known[k]["missing_since"] = gone_at
+            if now - gone_at < delay:
+                continue
         p = known.pop(k)
         kk = str(k).split(":")[0]
         if isinstance(p, dict) and p.get("sent") and on(cfg, "alerts_over") and on(cfg, "alert:" + kk):

@@ -32,6 +32,7 @@ NAME = "alerts"
 STATE_KEY = "alerts:state"
 LOCK = threading.Lock()
 API_AWAY_S = 180
+EVENTS_KEPT, EVENTS_KEPT_S = 50, 3 * 86400       # events waiting for a mail that goes (1.9.11)
 AL_FONT = "font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;"
 AL_COLORS = {"bad": ("#dc2626", "#fef2f2", "#991b1b"), "warn": ("#d97706", "#fffbeb", "#92400e"),
              "good": ("#16a34a", "#f0fdf4", "#166534"), "info": ("#2563eb", "#eff6ff", "#1e3a8a")}
@@ -234,7 +235,9 @@ def problems(ctx, c=None):
             row = ON.view(ctx.store.meta_json("upgrade:online") or {}, U.VERSION)
             if row.get("newer"):
                 v = (row.get("newest") or {}).get("version")
-                out["newer:%s" % v] = {"level": "warn", "title": "fake-igd %s is out" % v, "pane": "upgrade",
+                # One key while a newer one is out, whichever it is (1.9.11): "newer:1.9.11" then "newer:1.9.12"
+                # was a new alert and an "over" mail at each release. The version is in the words.
+                out["newer"] = {"level": "warn", "title": "fake-igd %s is out" % v, "pane": "upgrade",
                                        "said": "This is %s; %s is at %s." % (U.VERSION, v, row.get("url"))}
         except Exception:                               # noqa: BLE001
             pass
@@ -444,9 +447,11 @@ def backup_problems(ctx):
         rows = bk.runs(ctx)
         on = [t for t in bk.targets(ctx) if t.get("enabled")]
         if rows and not rows[0].get("ok"):
-            out["backup:%s" % int(rows[0].get("at") or 0)] = {
+            # One key while the backups keep failing (1.9.11): "backup:<time of the run>" was a new alert and an
+            # "over" mail at each failed run (and each try again). The run's words are in the alert.
+            out["backup:failed"] = {
                 "level": "bad", "title": "The backup failed", "pane": "backup",
-                "said": str(rows[0].get("error") or "; ".join("%s: %s" % (x.get("name"), x.get("error"))
+                "said": ("%s: " % _when(rows[0].get("at"))) + str(rows[0].get("error") or "; ".join("%s: %s" % (x.get("name"), x.get("error"))
                                                                 for x in rows[0].get("targets") or []
                                                                 if not x.get("ok")))[:300]}
         every = 8 * 86400 if PN.value(ctx.store, "rbackup_every") == "weekly" else 36 * 3600
@@ -685,6 +690,11 @@ def evaluate(ctx, force=False):
         cur = problems(ctx, c)
         st = state(ctx.store)
         known = st["problems"]
+        # Kept by the keys before 1.9.11 ("newer:1.9.11", "backup:<time>"): the same problem under its one key
+        # now - not "over" and new again once after the upgrade (1.9.11).
+        for k in [k for k in known if re.match(r"^(newer:|backup:\d+\Z)", k)]:
+            known.setdefault("newer" if k.startswith("newer:") else "backup:failed", known[k])
+            known.pop(k)
         delay = 60 * int(c.get("alerts_delay_min") or 0)
         repeat = 3600 * int(c.get("alerts_repeat_h") or 0)
         new, still, gone = [], [], []
@@ -738,6 +748,14 @@ def evaluate(ctx, force=False):
             for p in gone:
                 known[p["key"]] = p
             gone = []
+        # Events not mailed yet - held back after a failed mail, or the mail failed - wait for the next one
+        # (1.9.11): they were marked seen before the mail went, and lost with it. 50 at most, 3 days at most.
+        if mailing:
+            for e in events:
+                e.setdefault("queued_at", now)
+            events = [e for e in (st.get("events_pending") or []) + events if isinstance(e, dict)
+                      and now - float(e.get("queued_at") or now) < EVENTS_KEPT_S][-EVENTS_KEPT:]
+        st["events_pending"] = events if mailing else []
         st["problems"] = known
         st["checked"] = now
         put_state(ctx.store, st)
@@ -748,14 +766,19 @@ def evaluate(ctx, force=False):
                                              left=len([p for p in cur.values() if p["sent"] or p["key"] in said]))
             entry = send(ctx, subject, text, page, to, "alert",
                          sorted(said) + ["over:" + str(p.get("key") or "") for p in gone])
+            st = state(ctx.store)
             if entry["ok"] or entry.get("queued") == "waiting":
-                st = state(ctx.store)
                 for k in said | {p["key"] for p in others}:
                     if k in st["problems"]:
                         one = st["problems"][k]
                         one.update(sent=True, sent_at=now,
                                    mailed="bad" if "bad" in (one.get("mailed"), one.get("level")) else one.get("level"))
-                put_state(ctx.store, st)
+                st["events_pending"] = []                       # (1.9.11)
+            else:
+                # Not sent: what was over is said by the next mail - it was taken out before and lost (1.9.11).
+                for p in gone:
+                    st["problems"].setdefault(p["key"], dict(p, missing_since=float(p.get("missing_since") or now)))
+            put_state(ctx.store, st)
         return cur
 
 
@@ -879,18 +902,51 @@ def report_build(ctx, since, until):
     return subject, "\n".join(text), _page(title, "fake-igd · " + site, AL_COLORS["info"][0], "".join(body), foot, 760)
 
 
+REPORT_TRIES, REPORT_AGAIN_S = 5, 600
+
+
+def report_due(c, sent, now=None):
+    """(since, until, id) of the report to send now, or None. A weekly one whose day went by while the API was
+    away is sent once it is back, not lost when the next week begins (1.9.11)."""
+    now = now or time.time()
+    if due(c, now):
+        got = period(c, now)
+        return got if got[2] != sent else None
+    if (c.get("report_every") or "weekly") == "weekly" and sent and str(sent).startswith("weekly:"):
+        got = period(c, now - 7 * 86400)                  # the one due on its day of last week
+        if sent < got[2]:
+            return got
+    return None
+
+
 def report_tick(ctx, c):
-    if not c.get("report") or not due(c):
+    if not c.get("report"):
         return
-    since, until, pid = period(c)
-    if ctx.store.get_meta("report:sent") == pid:
+    got = report_due(c, ctx.store.get_meta("report:sent"))
+    if not got:
         return
+    since, until, pid = got
     to = _to(c, "report_to")
     if not to:
         return
-    ctx.store.set_meta("report:sent", pid)
-    subject, text, page = report_build(ctx, since, until)
-    send(ctx, subject, text, page, to, "report", [pid])
+    # Marked sent once it went (1.9.11): it was marked before it was made, and a report that failed to be made
+    # or sent was never tried again. Now again every 10 minutes, five times at most.
+    tries = ctx.store.meta_json("report:tries") or {}
+    if tries.get("pid") != pid:
+        tries = {"pid": pid, "n": 0, "at": 0}
+    if tries["n"] >= REPORT_TRIES or time.time() - float(tries.get("at") or 0) < REPORT_AGAIN_S:
+        return
+    tries.update(n=tries["n"] + 1, at=time.time())
+    ctx.store.set_meta("report:tries", json.dumps(tries))
+    try:
+        subject, text, page = report_build(ctx, since, until)
+    except Exception as e:                              # noqa: BLE001 - tried again on a later tick
+        ctx.event("the report of %s could not be made (try %d of %d): %s" % (pid, tries["n"], REPORT_TRIES,
+                                                                              str(e)[:200]), "warn")
+        return
+    entry = send(ctx, subject, text, page, to, "report", [pid])
+    if entry["ok"] or entry.get("queued") == "waiting":
+        ctx.store.set_meta("report:sent", pid)
 
 
 # ---- the routes ----------------------------------------------------------------------------

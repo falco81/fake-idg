@@ -220,8 +220,10 @@ def plain_of(conf, passphrase):
     return conf
 
 
-def import_users(ctx, rows, replace, me):
+def import_users(ctx, rows, replace, me, done=None):
+    """(said, made, gone); `done`, a list, gets the name of each account taken from the file (1.9.11)."""
     import igd_store as ST
+    done = [] if done is None else done
     said, made = [], []
     names = set()
     for r in rows if isinstance(rows, list) else []:
@@ -235,6 +237,7 @@ def import_users(ctx, rows, replace, me):
         names.add(name.lower())
         if name.lower() == me.lower():
             continue
+        done.append(name)
         note = str(r.get("note") or "")[:200]
         h = r.get("hash")
         have = ctx.store.user(name)
@@ -425,11 +428,13 @@ def post_import(ctx):
                          "backup_targets": len(conf.get("backup_targets") or []), "avahi": bool(conf.get("avahi")),
                          "tls": bool(conf.get("tls"))}}
     saved = import_conf(ctx, conf, replace)
-    usaid, made, gone = import_users(ctx, conf.get("users"), replace, who)
+    taken = []
+    usaid, made, gone = import_users(ctx, conf.get("users"), replace, who, taken)
     n_t = import_targets(ctx, conf.get("backup_targets"), replace)
     sys_said = import_system(ctx, conf)
     words = "%d setting(s) changed, %d account(s), %d destination(s) of the backups%s" % (
-        len(saved.get("saved") or []), len(conf.get("users") or []), n_t,
+        # the accounts taken - not every one in the file, left out or your own among them (1.9.11)
+        len(saved.get("saved") or []), len({n.lower() for n in taken}), n_t,
         (", %d account(s) taken away" % len(gone)) if gone else "")
     ctx.event("%s imported a configuration from %s (%s): %s" % (who, conf.get("from") or "?",
                                                                 "exactly the file" if replace else "added to what was here",

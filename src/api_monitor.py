@@ -33,6 +33,7 @@ import socket
 import ssl
 import sys
 import time
+import zlib
 
 NAME = "monitor"
 CERT_FILE = os.environ.get("FAKE_IGD_NGINX_CERT", "/etc/nginx/certs/fake-igd.pem")
@@ -579,12 +580,30 @@ def _mib_mdns(ctx, B):
     return rows
 
 
+def alert_index(key):
+    """The row of an alert in fakeIgdAlertTable, from its key: the same while it lasts (1.9.11) - the row's number
+    in the sorted list moved when another came or went, and the monitoring's items read their neighbour's."""
+    return zlib.crc32(str(key).encode("utf-8")) % 2147483646 + 1
+
+
+def alert_indexes(probs):
+    """[(index, (key, problem))] - each key its own index (the next free one, were two to meet)."""
+    out, taken = [], set()
+    for k, p in sorted(probs.items()):
+        i = alert_index(k)
+        while i in taken:
+            i = i % 2147483646 + 1
+        taken.add(i)
+        out.append((i, (k, p)))
+    return out
+
+
 def _mib_alerts(ctx, B):
     """.5: what the alerts see wrong now (as otp's otpAlerts)."""
     probs = _problems(ctx)
     rows = [(B + (5, 1, 0), "gauge", sum(1 for p in probs.values() if p.get("level") == "bad")),
             (B + (5, 2, 0), "gauge", sum(1 for p in probs.values() if p.get("level") != "bad"))]
-    for i, (k, p) in enumerate(sorted(probs.items()), 1):
+    for i, (k, p) in alert_indexes(probs):
         rows += [(B + (5, 3, 1, 1, i), "int", i), (B + (5, 3, 1, 2, i), "str", k[:255]),
                  (B + (5, 3, 1, 3, i), "str", p.get("level") or ""),
                  (B + (5, 3, 1, 4, i), "str", str(p.get("title") or "")[:255]),
@@ -710,6 +729,9 @@ def snmp_tick(ctx):
         return
     S = ctx.store
     known = {k: v for k, v in (S.meta_json("snmp:trapped") or {}).items() if isinstance(v, dict)}
+    for k in [k for k in known if re.match(r"^(newer:|backup:\d+\Z)", k)]:      # the keys before 1.9.11
+        known.setdefault("newer" if k.startswith("newer:") else "backup:failed", known[k])
+        known.pop(k)
     delay = 60 * int(_pn_value(S, "alerts_delay_min") or 0)
     now = time.time()
     changed = False

@@ -680,7 +680,8 @@ def send(store, to, subject, text, html=None, kind="other", by="", now=True):
     store.run("INSERT INTO mailq (qid, created, kind, by_, rcpt, subject, size, state, tries, next_at, expires, body) "
               "VALUES (?, ?, ?, ?, ?, ?, ?, 'waiting', 0, ?, ?, ?)",
               (qid, t, str(kind or "other")[:20], str(by or "")[:80], json.dumps(to), str(subject or "")[:300],
-               len(data), t, t + 3600 * int(c.get("mail_retry_hours") or 24), data))
+               # tried here at once (now=False: by the caller) - not by the minute's tick in the meantime (1.9.11)
+               len(data), t if now else t + 120, t + 3600 * int(c.get("mail_retry_hours") or 24), data))
     if now:
         threading.Thread(target=_quiet_attempt, args=(store, qid), name="mail-now", daemon=True).start()
     return qid
@@ -693,6 +694,20 @@ def send_and_wait(store, to, subject, text, html=None, kind="other", by=""):
     try:
         steps = attempt(store, qid, raise_err=True)
         r = one(store, qid) or {}
+        if steps is None:
+            # Not tried here - taken by another try (sent again by hand) or taken out meanwhile: what became of
+            # it said as it is, never "sent" (1.9.11).
+            for _ in range(int(4 * float(settings(store).get("smtp_timeout_s") or 20))):
+                if r.get("state") != "sending":
+                    break
+                time.sleep(0.5)
+                r = one(store, qid) or {}
+            if r.get("state") != "sent":
+                return {"qid": qid, "sent": False, "state": r.get("state") or "gone", "queued": r.get("state") or "",
+                        "said": r.get("said") or ("it is being sent" if r.get("state") == "sending"
+                                                  else "it is no longer in the outgoing mail"),
+                        "steps": r.get("steps") or []}
+            steps = r.get("steps") or []
         return {"qid": qid, "sent": True, "state": "sent", "said": r.get("said") or "sent", "steps": steps or []}
     except MailError as e:
         return {"qid": qid, "sent": False, "state": e.queued, "said": str(e), "steps": e.steps,

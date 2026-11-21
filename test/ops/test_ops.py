@@ -25,8 +25,11 @@ os.environ.setdefault("FAKE_IGD_STATE", TMP)
 os.environ.setdefault("FAKE_IGD_LIB", os.path.join(TMP, "lib"))
 
 import api_alerts as AL       # noqa: E402
+import api_backup as BK       # noqa: E402
+import api_carry as CARRY     # noqa: E402
 import api_mail as AM         # noqa: E402
 import api_monitor as MON     # noqa: E402
+import api_ntfy as NT         # noqa: E402
 import api_siem as SI         # noqa: E402
 import igd_mail as M          # noqa: E402
 import igd_online as ON       # noqa: E402
@@ -193,6 +196,273 @@ class SnmpDisplayString(unittest.TestCase):
         self.assertLessEqual(end - start, 255)
         raw[start:end].decode("utf-8")                              # cut between characters, never in one
         self.assertEqual(SN.snmp_value("str", b"\x80" * 300)[-300:], b"\x80" * 300)     # bytes: as they are
+
+
+# ---- round 2 (1.9.11): what the coordinator asked to be put right as well -------------------------
+class FakeStore(object):
+    def __init__(self):
+        self.meta, self.events = {}, []
+
+    def get_meta(self, k):
+        return self.meta.get(k)
+
+    def set_meta(self, k, v):
+        self.meta[k] = v
+
+    def meta_json(self, k):
+        try:
+            got = json.loads(self.meta.get(k) or "null")
+        except ValueError:
+            return None
+        return got if isinstance(got, dict) else None
+
+    def add_event(self, *a, **k):
+        self.events.append(a)
+
+
+class FakeCtx(object):
+    def __init__(self, settings=None, cfg=None, body=None, store=None):
+        self.store = store or FakeStore()
+        self.settings, self.cfg, self._body = dict(settings or {}), dict(cfg or {}), dict(body or {})
+        self.me, self.addr, self.q, self.events = {"name": "admin", "role": "fulladmin"}, "192.0.2.50", {}, []
+
+    def setting(self, k):
+        return self.settings.get(k)
+
+    def event(self, words, level="info", kind=None):
+        self.events.append((words, level))
+
+    def body(self, most=0):
+        return self._body
+
+    def need(self, role="fulladmin"):
+        return self.me
+
+
+ALERTS_ON = {"alerts": True, "alerts_to": "admin@example.com", "alerts_delay_min": 0, "alerts_repeat_h": 0,
+             "alerts_resolved": True, "alerts_api": True, "alerts_new_port": False, "alerts_trial": False}
+
+
+class AlertsNotLost(unittest.TestCase):
+    """Events (the API away ...) were marked seen before the mail went, and the "over" taken out: a mail that
+    failed, or was held back, lost them for good."""
+
+    def run_with(self, ctx, problems, ok):
+        sent = []
+
+        def send(ctx_, subject, text, page, to, kind, keys):
+            sent.append(text)
+            return {"ok": ok}
+        with mock.patch.object(AL, "cfg_of", lambda store: dict(ALERTS_ON)), \
+                mock.patch.object(AL, "problems", lambda ctx_, c=None: dict(problems)), \
+                mock.patch.object(AL, "admin_url", lambda ctx_: "https://igd.example.com/admin/"), \
+                mock.patch.object(AL, "send", send):
+            AL.evaluate(ctx)
+        return sent
+
+    def test_an_event_waits_for_a_mail_that_goes(self):
+        ctx = FakeCtx(cfg={"site_name": "lab"})
+        AL.put_state(ctx.store, {"problems": {}, "log": [], "beat": time.time() - 3600})
+        self.assertEqual(len(self.run_with(ctx, {}, ok=False)), 1)          # the mail with it fails
+        sent = self.run_with(ctx, {}, ok=True)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("The pages' API was away", sent[0])
+        self.assertEqual(self.run_with(ctx, {}, ok=True), [])               # and once only
+
+    def test_over_waits_for_a_mail_that_goes(self):
+        ctx = FakeCtx(cfg={"site_name": "lab"})
+        AL.put_state(ctx.store, {"problems": {"disk:/": {"key": "disk:/", "level": "warn", "title": "/ is filling up",
+                                                         "said": "90 % full.", "pane": "disks", "sent": True,
+                                                         "since": time.time() - 600}},
+                                 "log": [], "beat": time.time()})
+        self.run_with(ctx, {}, ok=False)
+        sent = self.run_with(ctx, {}, ok=True)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("/ is filling up", sent[0])
+
+
+class OneAlertForOneProblem(unittest.TestCase):
+    """backup:<time of the run> and newer:<version>: a new alert and an "over" mail every time the value changed."""
+
+    def test_failed_backups_are_one_alert(self):
+        ctx = FakeCtx()
+        values = {"db_copy_daily": False, "rbackup": True, "rbackup_every": "daily"}
+        keys = []
+        for at, why in ((time.time() - 7200, "no room"), (time.time() - 60, "the server did not answer")):
+            with mock.patch("igd_panes.value", lambda store, k: values.get(k)), \
+                    mock.patch.object(BK, "runs", lambda ctx_: [{"at": at, "ok": False, "error": why}]), \
+                    mock.patch.object(BK, "targets", lambda ctx_: []):
+                got = AL.backup_problems(ctx)
+            keys.append(sorted(got))
+            self.assertIn(why, got["backup:failed"]["said"])
+        self.assertEqual(keys[0], keys[1])
+
+    def test_a_key_kept_from_before_is_the_same_problem(self):
+        ctx = FakeCtx(cfg={"site_name": "lab"})
+        AL.put_state(ctx.store, {"problems": {"newer:1.9.11": {"key": "newer:1.9.11", "level": "warn", "sent": True,
+                                                               "title": "fake-igd 1.9.11 is out", "said": "",
+                                                               "since": time.time() - 86400}},
+                                 "log": [], "beat": time.time()})
+        sent = AlertsNotLost.run_with(None, ctx, {"newer": {"level": "warn", "title": "fake-igd 1.9.12 is out",
+                                                            "said": "", "pane": "upgrade"}}, ok=True)
+        self.assertEqual(sent, [])                                          # not "over" + new again
+        self.assertTrue(AL.state(ctx.store)["problems"]["newer"]["sent"])
+
+
+class ScheduledBackupStopped(unittest.TestCase):
+    """A scheduled backup that stopped before it began (no destination, no password, no room) left no run:
+    the alert said only, 36 hours later, that none went in time."""
+
+    def test_it_is_a_failed_run_with_its_reason(self):
+        ctx = FakeCtx(settings={"rbackup": True})
+        with self.assertRaises(BK.RbError):
+            BK.run(ctx, "")
+        rows = BK.runs(ctx)
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["ok"])
+        self.assertIn("no destination", rows[0]["error"])
+
+
+class WeeklyCaughtUp(unittest.TestCase):
+    """A weekly backup or report whose day went by while the API was away waited for the next week."""
+
+    def test_the_backup(self):
+        now = time.time()
+        today = time.localtime(now).tm_wday + 1
+        ctx = FakeCtx(settings={"rbackup": True, "rbackup_at": "00:00", "rbackup_every": "weekly",
+                                "rbackup_day": today % 7 + 1})                 # tomorrow: not today
+        ctx.store.set_meta("backup:day", time.strftime("%Y-%m-%d", time.localtime(now - 10 * 86400)))
+        started = []
+        with mock.patch.object(BK, "seal_old", lambda ctx_: None), \
+                mock.patch.object(BK, "start_job", lambda *a: started.append(a)):
+            BK.background(ctx)
+        self.assertEqual(len(started), 1)
+        ctx.store.set_meta("backup:day", time.strftime("%Y-%m-%d", time.localtime(now - 86400)))
+        started[:] = []
+        with mock.patch.object(BK, "seal_old", lambda ctx_: None), \
+                mock.patch.object(BK, "start_job", lambda *a: started.append(a)):
+            BK.background(ctx)
+        self.assertEqual(started, [])                                       # made on its day: nothing to catch up
+
+    def test_the_report(self):
+        c = {"report": True, "report_every": "weekly", "report_day": "5", "report_at": "07:30"}
+        wed = time.mktime((2026, 11, 18, 12, 0, 0, 0, 0, -1))                # a Wednesday; its day is Friday
+        last_week = AL.period(c, wed - 7 * 86400)
+        self.assertEqual(AL.report_due(c, AL.period(c, wed - 14 * 86400)[2], wed), last_week)
+        self.assertIsNone(AL.report_due(c, last_week[2], wed))
+
+
+class ReportTriedAgain(unittest.TestCase):
+    """report:sent was set before the report was made: one that failed to be made was never tried again."""
+
+    def test_marked_sent_once_it_went(self):
+        ctx = FakeCtx(cfg={"site_name": "lab"})
+        c = {"report": True, "report_to": "admin@example.com", "report_every": "daily", "report_at": "00:00"}
+        calls = []
+
+        def build(ctx_, since, until):
+            calls.append(since)
+            if len(calls) == 1:
+                raise OSError("the request log cannot be read")
+            return "subject", "text", "<p>page</p>"
+        with mock.patch.object(AL, "report_build", build), \
+                mock.patch.object(AL, "send", lambda *a: {"ok": True}):
+            try:
+                AL.report_tick(ctx, c)
+            except OSError:
+                pass
+            self.assertNotEqual(ctx.store.get_meta("report:sent"), AL.period(c)[2])
+            tries = ctx.store.meta_json("report:tries") or {}
+            tries["at"] = time.time() - 3600
+            ctx.store.set_meta("report:tries", json.dumps(tries))
+            AL.report_tick(ctx, c)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(ctx.store.get_meta("report:sent"), AL.period(c)[2])
+
+
+class NtfyOverWaits(unittest.TestCase):
+    """ntfy said "over" the first minute a problem was missing; the mail and the traps wait alerts_delay_min."""
+
+    def test_over_waits_as_the_mail_does(self):
+        ctx = FakeCtx(cfg={"ntfy_url": "https://ntfy.example.com/igd",
+                           "ntfy_events": {"alerts": {"on": True}, "alerts_over": {"on": True}}})
+        ctx.store.set_meta("ntfy:alerts", json.dumps({"disk:/": {"since": time.time() - 3600, "sent": True,
+                                                                "title": "/ is filling up", "said": "90 %"}}))
+        said = []
+        with mock.patch.object(AL, "cfg_of", lambda store: {"alerts_delay_min": 5}), \
+                mock.patch.object(AL, "problems", lambda ctx_, c=None: {}), \
+                mock.patch.object(NT.NOTE, "send", lambda kind, *a, **k: said.append(kind)):
+            NT._alerts(ctx, time.time())
+            self.assertEqual(said, [])
+            self.assertIn("disk:/", json.loads(ctx.store.get_meta("ntfy:alerts")))
+            NT._alerts(ctx, time.time() + 6 * 60)
+        self.assertEqual(said, ["alerts_over"])
+
+
+class TestMailOutcome(MailHeaders):
+    """A mail sent and waited for (the test mail, the alerts) was "sent" whenever another try had it."""
+    test_a_name_with_a_new_line_still_sends = test_the_setting_refuses_a_new_line = None     # MailHeaders' own
+
+    def test_the_tick_leaves_it_to_its_sender(self):
+        qid = M.send(self.S, ["admin@example.com"], "a test", "text", kind="test", now=False)
+        M.tick(self.S)
+        self.assertEqual(M.one(self.S, qid)["state"], "waiting")
+        self.assertEqual(self.sink.mails, [])
+
+    def test_not_tried_here_is_not_sent(self):
+        def taken(store, qid, raise_err=False):
+            store.run("UPDATE mailq SET state = 'failed', said = 'refused for good' WHERE qid = ?", (qid,))
+            return None
+        with mock.patch.object(M, "attempt", taken):
+            got = M.send_and_wait(self.S, ["admin@example.com"], "a test", "text", kind="test")
+        self.assertFalse(got["sent"])
+        self.assertEqual(got["said"], "refused for good")
+
+
+class SnmpAlertRows(unittest.TestCase):
+    """fakeIgdAlertTable was indexed by the row's number: another alert sorted before it moved every row, and
+    Zabbix read a neighbour's level; its item keys held the raw key (a , or ] breaks one)."""
+
+    def rows(self, probs):
+        MON.AGENT["problems"], MON.AGENT["problems_at"] = probs, time.time()
+        got = {}
+        for oid, kind, v in MON._mib_alerts(FakeCtx(), MON.SNMP_BASE):
+            if oid[len(MON.SNMP_BASE):len(MON.SNMP_BASE) + 4] == (5, 3, 1, 2):
+                got[v] = oid[-1]
+        return got
+
+    def test_the_index_stays(self):
+        one = {"service": {"level": "bad", "title": "t", "said": ""}}
+        before = self.rows(one)["service"]
+        after = self.rows(dict(one, **{"disk:/": {"level": "warn", "title": "d", "said": ""}}))
+        self.assertEqual(after["service"], before)
+        self.assertNotEqual(after["disk:/"], before)
+
+    def test_zabbix_items_keyed_by_the_index(self):
+        with open(os.path.join(ROOT, "deploy", "zabbix", "fake_igd_by_snmp_zabbix7.yaml"), encoding="utf-8") as f:
+            text = f.read()
+        self.assertNotRegex(text, r"(key: |/)fakeigd\.alert\.\w+\[\{#KEY\}\]")
+        self.assertIn("key: fakeigd.alert.level[{#SNMPINDEX}]", text)
+        self.assertIn("1.3.6.1.4.1.8072.9999.9999.8.5.3.1.3.{#SNMPINDEX}", text)
+        self.assertEqual(".".join(str(x) for x in MON.SNMP_BASE), "1.3.6.1.4.1.8072.9999.9999.8")
+
+
+class ImportCount(unittest.TestCase):
+    """The import said "3 account(s)" for a file with your own account and one left out in it."""
+
+    def test_only_the_accounts_taken(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        store = ST.Store(os.path.join(d, "fake-igd.db"))
+        store.add_user("admin", "a long password 1", "fulladmin")
+        conf = {"kind": CARRY.KIND, "users": [{"name": "admin", "role": "fulladmin"},
+                                              {"name": "not a name!", "role": "readonly"},
+                                              {"name": "bob", "role": "readonly"}]}
+        ctx = FakeCtx(store=store, body={"config": conf})
+        with mock.patch.object(CARRY, "import_conf", lambda *a: {"saved": []}), \
+                mock.patch.object(CARRY, "import_targets", lambda *a: 0), \
+                mock.patch.object(CARRY, "import_system", lambda *a: []):
+            got = CARRY.post_import(ctx)
+        self.assertIn("1 account(s)", got["message"])
 
 
 if __name__ == "__main__":

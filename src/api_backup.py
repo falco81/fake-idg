@@ -1087,11 +1087,20 @@ def run(ctx, by, only=None, progress=None):
     """Made once, sent to every destination switched on (or the ones asked)."""
     progress = progress or (lambda n, w: None)
     ts = [t for t in targets(ctx) if (only and t["id"] in only) or (not only and t.get("enabled"))]
-    if not ts:
-        raise RbError("no destination is switched on")
-    if not password(ctx):
-        raise RbError("the backups have no password - nothing is sent (set The password of the backups)")
-    room(ctx)
+    try:
+        if not ts:
+            raise RbError("no destination is switched on")
+        if not password(ctx):
+            raise RbError("the backups have no password - nothing is sent (set The password of the backups)")
+        room(ctx)
+    except RbError as e:
+        if by in ("", AGAIN_BY):
+            # The schedule's backup that stopped before it began is a failed run with its reason (1.9.11): it left
+            # no row, and the alert said only "No backup went in time", a day and a half later.
+            runs_put(ctx, [{"at": time.time(), "node": node_name(), "by": by, "targets": [], "ok": False,
+                            "error": said(e)}] + runs(ctx))
+            ctx.event("the schedule: no backup - %s" % said(e), "warn")
+        raise
     work = tempfile.mkdtemp(prefix="run-", dir=sub(ctx, "work"))
     collected, root_said = collect(ctx, progress)
     row = {"at": time.time(), "node": node_name(), "by": by, "targets": [], "ok": False}
@@ -1895,6 +1904,22 @@ def seal_old(ctx):
 AGAIN_BY = "the schedule, again"
 
 
+def weekly_slot(at, day, now=None):
+    """The date (YYYY-MM-DD) of the last time a weekly job on `day` (1 Monday - 7 Sunday) at `at` (HH:MM) was due,
+    at `now` or before (1.9.11)."""
+    try:
+        h, mi = int(at[:2]), int(at[3:5])
+    except ValueError:
+        return None
+    now = now or time.time()
+    lt = time.localtime(now)
+    for d in range(0, 8):
+        t = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday - d, h, mi, 0, 0, 0, -1))
+        if t <= now and time.localtime(t).tm_wday + 1 == day:
+            return time.strftime("%Y-%m-%d", time.localtime(t))
+    return None
+
+
 def again_due(ctx, today):
     """otp's rb_tick_again (1.0.278): today's scheduled backup failed - tried again an hour later, three
     times at most the same day. One failure (the destination down at 04:15) left a weekly schedule a week
@@ -1920,9 +1945,13 @@ def background(ctx):
         return
     today = time.strftime("%Y-%m-%d")
     lt = time.localtime()
-    due = time.strftime("%H:%M") >= at and ctx.store.get_meta("backup:day") != today
+    last_day = ctx.store.get_meta("backup:day")
+    due = time.strftime("%H:%M") >= at and last_day != today
     if ctx.setting("rbackup_every") == "weekly" and lt.tm_wday + 1 != int(ctx.setting("rbackup_day") or 7):
-        due = False
+        # Its day gone by while the API was away: made once now, not a week later (1.9.11) - when the last
+        # scheduled one is older than the day it should have been made on.
+        slot = weekly_slot(at, int(ctx.setting("rbackup_day") or 7))
+        due = bool(last_day) and slot is not None and last_day < slot
     if due and not job_view()["running"]:
         ctx.store.set_meta("backup:day", today)
         try:

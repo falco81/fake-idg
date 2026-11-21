@@ -916,10 +916,12 @@ zabbix_export:
         - '0'
         error_handler: DISCARD_VALUE
       item_prototypes:
+      # Keyed by {#SNMPINDEX}, a number made from the alert's key (1.9.11): stable while it lasts, and safe in an
+      # item key - the raw key could hold , or ] and the row's number moved when another alert came or went.
       - uuid: 479ddfa387744a34857eb555265be8ab
         name: 'Problem [{#KEY}]: level'
         type: DEPENDENT
-        key: fakeigd.alert.level[{#KEY}]
+        key: fakeigd.alert.level[{#SNMPINDEX}]
         delay: '0'
         value_type: CHAR
         trends: '0'
@@ -936,7 +938,7 @@ zabbix_export:
           value: alerts
         trigger_prototypes:
         - uuid: 92dbc77567494c2ba02a0182873f4ff7
-          expression: find(/fake-igd by SNMP/fakeigd.alert.level[{#KEY}],,"like","bad")=1
+          expression: find(/fake-igd by SNMP/fakeigd.alert.level[{#SNMPINDEX}],,"like","bad")=1
           name: 'fake-igd: {#TITLE}'
           priority: HIGH
           description: 'fake-igd sees it (Settings - Alerts): {#KEY}.'
@@ -944,7 +946,7 @@ zabbix_export:
           - tag: scope
             value: notice
         - uuid: 271aee1a2cd94232a2bcf923adca09f1
-          expression: find(/fake-igd by SNMP/fakeigd.alert.level[{#KEY}],,"like","warn")=1
+          expression: find(/fake-igd by SNMP/fakeigd.alert.level[{#SNMPINDEX}],,"like","warn")=1
           name: 'fake-igd: {#TITLE} (warning)'
           priority: WARNING
           description: 'fake-igd sees it (Settings - Alerts): {#KEY}.'
@@ -954,7 +956,7 @@ zabbix_export:
       - uuid: 7dc461c45e844d9a9b3ea1956ff2c8ee
         name: 'Problem [{#KEY}]: said'
         type: DEPENDENT
-        key: fakeigd.alert.said[{#KEY}]
+        key: fakeigd.alert.said[{#SNMPINDEX}]
         delay: '0'
         value_type: TEXT
         trends: '0'
