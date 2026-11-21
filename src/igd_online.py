@@ -530,7 +530,7 @@ def cancel(by=""):
     p = _read_json("plan.json")
     req = os.path.join(UPGRADE_DIR, "request.json")
     if not p or not os.path.exists(req):
-        if os.path.exists(os.path.join(UPGRADE_DIR, "request.taken")) or status().get("state") == "running":
+        if _taken() or status().get("state") == "running":                 # (1.9.11)
             raise ValueError("root is putting it in right now - that is finished, not stopped")
         raise ValueError("no upgrade is waiting to be stopped")
     try:
@@ -559,11 +559,23 @@ def log_lines(most=400):
         return []
 
 
+def _taken():
+    """Root has taken the request and is at it: request.taken there - and not left from a run that never ended
+    (the machine restarted, the helper killed), which kept the pages "busy" for good: no upgrade could be asked
+    for again, and the alert of fake-igd.service down was held back for ever (1.9.11). Root's helper gives up
+    after 20 min, systemd after 25: older than UPGRADE_TIMEOUT_S, it is left over."""
+    try:
+        st = os.stat(os.path.join(UPGRADE_DIR, "request.taken"))
+        return time.time() - max(st.st_mtime, st.st_ctime) <= UPGRADE_TIMEOUT_S     # ctime: when root renamed it
+    except OSError:
+        return False
+
+
 def status():
     """Where an upgrade asked for stands: {'state', 'id', 'version', 'said', 'at', 'asked', 'busy'}."""
     st = _read_json("status.json")
     asked = os.path.exists(os.path.join(UPGRADE_DIR, "request.json"))
-    taken = os.path.exists(os.path.join(UPGRADE_DIR, "request.taken"))
+    taken = _taken()                                    # (1.9.11)
     req = _read_json("request.json") if asked else {}
     out = dict(st)
     out["asked"] = asked
@@ -642,7 +654,7 @@ def plan(here, node=""):
     at = float(p.get("at") or 0)
     step = {"name": node or socket.gethostname().split(".")[0], "asked": at, "at": at}
     mine = st.get("id") == p.get("id")
-    taken = os.path.exists(os.path.join(UPGRADE_DIR, "request.taken"))
+    taken = _taken()                                    # (1.9.11)
     lines = log_lines(400)
     if p.get("cancelled"):
         c = p["cancelled"]

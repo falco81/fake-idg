@@ -482,6 +482,15 @@ def _ago(t):
     return "%d days ago" % (s // 86400)
 
 
+def _lasted(t):
+    """How long since `t`, as a duration: _ago() less its " ago" said "it lasted just now" for a short one, and
+    "it lasted never" with no start known (1.9.11)."""
+    if not t:
+        return "a while"
+    s = max(0, int(time.time() - float(t)))
+    return "%d s" % s if s < 90 else _ago(t).replace(" ago", "")
+
+
 def _when(t):
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(t or 0)))
 
@@ -613,7 +622,7 @@ def alert_mail(ctx, new, still, gone, events, test=False, left=0):
                             ("over", str(len(gone)), "good")]))
         section("New", new)
         section("Still so", still)
-        section("Over", [dict(p, said=p["said"] + " (it lasted %s)" % _ago(p.get("since")).replace(" ago", ""))
+        section("Over", [dict(p, said=p["said"] + " (it lasted %s)" % _lasted(p.get("since")))          # (1.9.11)
                          for p in gone], "good")
         section("Events", events, "info")
     foot = _h("Sent by fake-igd on %s, %s. Settings → Alerts and reports." % (socket.gethostname(), _when(time.time())))
@@ -708,7 +717,7 @@ def evaluate(ctx, force=False):
         if c.get("alerts_api") and beat and now - beat > API_AWAY_S:
             events.append({"level": "bad", "title": "The pages' API was away", "pane": "service", "since": beat,
                            "said": "fake-igd-api did not run from %s to %s (%s)." % (
-                               _when(beat), _when(now), _ago(beat).replace(" ago", ""))})
+                               _when(beat), _when(now), _lasted(beat))})                # (1.9.11)
         st["beat"] = now
         if c.get("alerts_new_port"):
             for t, e, k in _new_ports(ctx, st)[:20]:

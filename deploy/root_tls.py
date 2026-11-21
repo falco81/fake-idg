@@ -130,10 +130,18 @@ def progress(words, step=None, expect=None):
 
 
 def progress_done():
+    # In web/ as it is, never through a link laid in its place (1.9.11): web/ is the API account's, and
+    # root took away a progress-tls.json of the folder the link led to - as _web_write writes it.
     try:
-        os.unlink(os.path.join(WEB_DIR, "progress-tls.json"))
+        dfd = os.open(WEB_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return
+    try:
+        os.unlink("progress-tls.json", dir_fd=dfd)
     except OSError:
         pass
+    finally:
+        os.close(dfd)
 
 
 def openssl(args, what, data=None):
@@ -644,7 +652,9 @@ def do_export(payload, said, ident=""):
         raise Refused("the kind is pfx or pemkey")
     if which not in ("rsa", "ec"):
         raise Refused("which is rsa or ec")
-    if not isinstance(pw, str) or not 10 <= len(pw) <= 200 or "\n" in pw:
+    # a carriage return or another control character refused as a line break is (1.9.11): openssl reads the
+    # password up to the line's end, so the file's password would not be the one typed
+    if not isinstance(pw, str) or not 10 <= len(pw) <= 200 or any(ord(c) < 32 or ord(c) == 127 for c in pw):
         raise Refused("the password is 10 to 200 characters on one line")
     cp, kp = (path("cert"), path("key")) if which == "rsa" else (path("cert2"), path("key2"))
     try:

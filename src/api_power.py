@@ -80,6 +80,14 @@ def plan(ctx):
             ctx.store.set_meta("power:plan", json.dumps(p))
             if not r.get("ok"):
                 ctx.event("%s was not done: %s" % (p.get("words"), "; ".join(p["said"])), "warn")
+        elif time.time() - float(p.get("at") or 0) > 300:
+            # Root never answered (fake-igd-web.path down, the ask lost): failed, as the network's change
+            # is - not "asked of root" with Restart and Power off greyed out for half an hour (1.9.11).
+            p["state"] = "failed"
+            p["said"] = ["root did not answer in 5 minutes (is fake-igd-web.path running?)"]
+            p["answered"] = time.time()
+            ctx.store.set_meta("power:plan", json.dumps(p))
+            ctx.event("%s was not done: root did not answer in 5 minutes" % p.get("words"), "warn")
     return p
 
 

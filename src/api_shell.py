@@ -334,8 +334,9 @@ get_health.PUBLIC = True
 
 
 # ---- the search language (otp's ListQuery, over rows) -----------------------------------
-LIST_TOKEN = re.compile(r'\s*((?:[-!]?[A-Za-z_]+(?::|~)(?:"[^"]*"?|[^\s()]*))|"[^"]*"?|\(|\)|[^\s()]+)')
-LIST_TERM = re.compile(r'^([-!]?)([A-Za-z_]+)(:|~)(.*)$', re.S)
+# field!=v (-field:v), field=v, field>N .. field<=N (field:>N ..) as the search box's suggestions offer them (1.9.11)
+LIST_TOKEN = re.compile(r'\s*((?:[-!]?[A-Za-z_]+(?:!=|>=|<=|[:~=<>])(?:"[^"]*"?|[^\s()]*))|"[^"]*"?|\(|\)|[^\s()]+)')
+LIST_TERM = re.compile(r'^([-!]?)([A-Za-z_]+)(!=|>=|<=|[:~=<>])(.*)$', re.S)
 
 LIST_FIELDS = {
     "requests": [("client", "the address that asked", "client:192.168.1.*"),
@@ -451,6 +452,10 @@ class Query(object):
             fn = self.get[name.lower()]
             value = value.strip('"')
             neg = bool(lead)
+            if op == "!=":                                                         # (1.9.11)
+                neg, op = not neg, ":"
+            elif op not in (":", "~"):
+                value, op = (value if op == "=" else op + value), ":"
             if value == "":
                 return lambda r: True
             if op == "~":

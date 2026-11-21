@@ -26,6 +26,11 @@ def _addr(v):
     return M.address_problem(v)
 
 
+def _one_line(v):
+    # A new line in the name broke every mail (the email package refuses the header) (1.9.11)
+    return "one line - no new line or other control character" if M.HEADER_BREAK_RE.search(v) else ""
+
+
 def _dns(v):
     for w in re.split(r"[\s,;]+", v):
         if w and not re.match(r"^[0-9A-Fa-f:.]{2,45}\Z", w):
@@ -96,7 +101,7 @@ SETTINGS = [
      "only_when": ("mail_mode", "off-not"),
      "says": "The sender’s address. Your mail server may allow only its own addresses; going direct, the "
              "domain should have this machine in its SPF. Empty: fake-igd@ this machine’s full name."},
-    {"key": "mail_from_name", "name": "From (name)", "kind": "text", "default": "", "most": 120,
+    {"key": "mail_from_name", "name": "From (name)", "kind": "text", "default": "", "most": 120, "check": _one_line,
      "only_when": ("mail_mode", "off-not"),
      "says": "The name beside it, as the recipient sees it. Empty: fake-igd."},
     {"key": "mail_reply_to", "name": "Replies to", "kind": "text", "default": "", "check": _addr,

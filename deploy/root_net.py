@@ -280,14 +280,13 @@ def checked(r):
 
 def hosts_lines(text, n, old_ips, old_host):
     """/etc/hosts after the change: a line of this connection's old address gets the new one (or
-    goes, when the new one is not known - DHCP), the machine's old name becomes the new one where
+    goes, when the new one is not known - DHCP; old_ips is hosts_moves()), the machine's old name becomes the new one where
     it stands; localhost lines are kept as they are. The machine's name gets a line of the new
     address when it has none (otp's hosts_lines, for a machine of several interfaces)."""
     name = n["hostname"] or old_host
     short = name.split(".")[0] if name else ""
     olds = set(x for x in (old_host, old_host.split(".")[0] if old_host else "") if x)
     new4 = n["addr4"].split("/")[0] if n["addr4"] else ""
-    new6 = n["addr6"].split("/")[0] if n.get("addr6") else ""
     # The names are rewritten only when the name changes (a short static name: "vm vm" never).
     rename = bool(n["hostname"]) and n["hostname"] != old_host
     mine = [x for i, x in enumerate((name, short)) if x and x not in (name, short)[:i]]
@@ -299,8 +298,8 @@ def hosts_lines(text, n, old_ips, old_host):
             out.append(line)
             continue
         ip, names = f[0], f[1:]
-        if ip in old_ips:
-            ip = (new6 if ":" in ip else new4)
+        if norm_ip(ip) in old_ips:
+            ip = old_ips[norm_ip(ip)]
             if not ip:
                 continue
         if rename and any(x.lower() in olds for x in names):
@@ -316,6 +315,38 @@ def hosts_lines(text, n, old_ips, old_host):
     if name and not named and new4:
         out.append("%s %s    # this machine - written by fake-igd" % (new4, " ".join(mine)))
     return "\n".join(out) + "\n"
+
+
+def norm_ip(text):
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        return text
+
+
+def hosts_moves(before, n):
+    """{old address: its new one, or "" where it goes} for /etc/hosts (1.9.11): only the address the
+    change replaces, and those it takes away. 1.9.10 took every address the connection had: a line of
+    its IPv6 address went from /etc/hosts while IPv6 was left as it was, and a second IPv4 address,
+    kept in the connection, had its line turned into the new first one."""
+    out = {}
+    for fam, key, method, new in (("4", "ipv4.addresses", "ipv4.method", n["addr4"]),
+                                  ("6", "ipv6.addresses", "ipv6.method", n.get("addr6") or "")):
+        mode = n["method4"] if fam == "4" else n["mode6"]
+        if fam == "6" and mode in ("keep", "ignore"):
+            continue                        # ipv6.addresses as they are
+        olds = [norm_ip(a.split("/")[0]) for a in nm_list(before.get(key))]
+        if mode == "manual":
+            ip = norm_ip(new.split("/")[0])
+            if olds and olds[0] != ip:
+                out[olds[0]] = ip
+            if str(before.get(method) or "") != "manual":   # the others are not kept (addrs_after)
+                for a in olds[1:]:
+                    out.setdefault(a, "")
+        else:
+            for a in olds:
+                out[a] = ""
+    return out
 
 
 def addrs_after(before, key, method_key, new):
@@ -421,7 +452,7 @@ def apply(n):
         raise Refused("a change is on trial already: keep it or put it back first")
     said = []
     before = nm_fields(n["con"], FIELDS)
-    old_ips = [a.split("/")[0] for k in ("ipv4.addresses", "ipv6.addresses") for a in nm_list(before.get(k))]
+    old_ips = hosts_moves(before, n)
     host_was = static_hostname()
     if n["trial_min"]:
         said.append(snapshot(n["con"], n["snapshot"]))

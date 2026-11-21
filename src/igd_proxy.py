@@ -115,7 +115,9 @@ def skips(c, host):
     for one in no_list(c):
         if one == "*":
             return True
-        if ip is not None and ("/" in one or re.match(r"^[0-9a-f.:]+\Z", one)):
+        # An address in brackets ([2001:db8::1], as the setting takes it) is an address too (1.9.11): it was
+        # compared as a name, and never matched.
+        if ip is not None and ("/" in one or re.match(r"^\[?[0-9a-f.:]+\]?\Z", one)):
             try:
                 if ip in ipaddress.ip_network(one.strip("[]"), strict=False):
                     return True

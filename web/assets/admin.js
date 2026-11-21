@@ -101,6 +101,17 @@ function paintHeader(s) {
     hs.textContent = hs._base + ' · ' + s.node;
     hs.title = 'this page is answered by ' + s.node + ' · fake-igd ' + (s.version || '');
   }
+  /* Settings → About's name of the site, in the header and the page's title at once - not after a reload (1.9.11) */
+  if (s && typeof s.site === 'string') {
+    var h1t = document.querySelector('header h1');
+    h1t = h1t && h1t.firstChild;
+    if (h1t && h1t.nodeType === 3 && h1t.nodeValue !== (s.site || 'fake-igd') + ' ') h1t.nodeValue = (s.site || 'fake-igd') + ' ';
+    var tt = s.site ? s.site + ' · fake-igd' : 'fake-igd';
+    if (document.title !== tt) document.title = tt;
+    var am = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+    var short = Array.from(s.site || 'fake-igd').slice(0, 24).join('');   /* as igd_head cuts it */
+    if (am && am.content !== short) am.content = short;
+  }
   upgradeFromStatus(s);
   var upOn = upgradeExpected();
   /* While an upgrade goes on, the service restarting is what it does (fake-igd 1.7.2): not a
@@ -1817,6 +1828,7 @@ function drawMappings() {
   var d = MAPS || {mappings: []};
   var q = $('mp-q').value.trim(), pr = $('mp-proto').value;
   var rows = d.mappings.filter(function (m) { return (!pr || String(m.protocol).toUpperCase() === pr) && localMatches(m, q, MP_FIELDS); });
+  if ($('mp-q')._qs) $('mp-q')._qs.said(localQuery(q, MP_FIELDS).error);   /* a search that does not read says why (1.9.11) */
   $('mp-said').textContent = num(rows.length) + ' held';
   var host = $('mp-table');
   liveFill(host, function (box) { box.appendChild(mappingsTable(rows, d.now)); });

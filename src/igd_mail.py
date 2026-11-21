@@ -149,12 +149,22 @@ def addresses(text):
     return out
 
 
+# A line break (or another control character, or U+2028/2029) in a header: the email package refuses the
+# whole mail - every alert and report failed over a From name saved with a new line in it (1.9.11).
+HEADER_BREAK_RE = re.compile(r"[\x00-\x1f\x7f\u0085\u2028\u2029]+")
+
+
+def one_line(text):
+    """`text` as one line of a header: what would break it said as a space (1.9.11)."""
+    return re.sub(r"\s{2,}", " ", HEADER_BREAK_RE.sub(" ", str(text or ""))).strip()
+
+
 def sender(c):
     addr = str(c.get("mail_from") or "").strip()
     if not addr:
         host = socket.getfqdn() or socket.gethostname() or "localhost"
         addr = "fake-igd@%s" % (host if "." in host else host + ".localdomain")
-    name = str(c.get("mail_from_name") or "").strip() or "fake-igd"
+    name = one_line(c.get("mail_from_name")) or "fake-igd"                 # (1.9.11)
     return email.utils.formataddr((name, addr)), addr
 
 
@@ -615,7 +625,7 @@ def message(store, to, subject, text, html=None, c=None):
     shown, addr = sender(c)
     msg["From"] = shown
     msg["To"] = ", ".join(to)
-    msg["Subject"] = str(subject or "")[:300]
+    msg["Subject"] = one_line(subject)[:300]                                # (1.9.11)
     msg["Date"] = email.utils.formatdate(localtime=True)
     msg["Message-ID"] = email.utils.make_msgid(domain=addr.rsplit("@", 1)[-1])
     msg["Auto-Submitted"] = "auto-generated"

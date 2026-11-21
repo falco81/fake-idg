@@ -283,7 +283,9 @@ def check(ctx, now, want, trial_min):
     v6 = want.get("ipv6") if isinstance(want.get("ipv6"), dict) else {}
     # Every ipv6.method NetworkManager has; the switch off is "disabled" (or "ignore", as found).
     mode6 = str(v6.get("method") or conf.get("ipv6_method") or "auto")
-    if mode6 not in V6_METHODS:
+    # The method as found (shared, say - the form offers it "as it is") is taken when IPv6 is left as it
+    # is (1.9.11): before, nothing of IPv4 could be changed on such an interface.
+    if mode6 not in V6_METHODS and mode6 != (conf.get("ipv6_method") or ""):
         raise ValueError("IPv6 is one of: %s" % ", ".join(V6_METHODS))
     a6, g6 = None, ""
     if mode6 == "manual":
@@ -308,6 +310,8 @@ def check(ctx, now, want, trial_min):
     was_m = conf.get("ipv6_method") or ""
     keep6 = mode6 == was_m and (not on6 or dns6 == (conf.get("ipv6_dns") or [])) and (
         mode6 != "manual" or (str(a6) == ((conf.get("ipv6_addresses") or [""])[0]) and g6 == (conf.get("ipv6_gateway") or "")))
+    if not keep6 and mode6 not in V6_METHODS:
+        raise ValueError("IPv6 is one of: %s - or left as it is (%s)" % (", ".join(V6_METHODS), mode6))
     host = str(want.get("hostname") or "").strip().rstrip(".").lower()
     host_old = str(now.get("hostname") or "").strip().rstrip(".").lower()
     same = host == host_old

@@ -129,6 +129,7 @@ def apply(r, said):
     every = r.get("every")
     if every not in PERIODS:
         raise Refused("every: daily, weekly or monthly")
+    ok = True
     before = _read_or(DROPIN)
     if mb or days:
         text = journal_text(mb, days)
@@ -143,22 +144,26 @@ def apply(r, said):
         rc, _o, err = _run(["systemctl", "restart", "systemd-journald"], 60)
         if rc != 0:
             said.append("systemd-journald did not restart: %s" % err.strip()[-200:])
+            ok = False
     text = _read_or(LOGROTATE)
     if text is None:
         said.append("%s is not there - fake-igd's logs are not rotated" % LOGROTATE)
-        return
+        return ok
     new = rotate_text(text, keep, every, max_mb)
     if new == text:
-        return
+        return ok
     _put_file(LOGROTATE, new)
     if shutil.which(LOGROTATE_BIN):
         rc, out, err = _run([LOGROTATE_BIN, "-d", LOGROTATE], 60)
         if rc != 0:
             _put_file(LOGROTATE, text)
+            # Said as the line itself, not as a list - and not ok: the limits asked are not in place, so
+            # the pages do not show them "as set" (1.9.11).
             said.append("logrotate did not take the change, %s is as it was: %s"
-                        % (LOGROTATE, (err or out).strip().splitlines()[-1:] or "?"))
-            return
+                        % (LOGROTATE, ((err or out).strip().splitlines() or ["?"])[-1]))
+            return False
     said.append("fake-igd's logs: %d kept, %s%s" % (keep, every, ", %d MB each at most" % max_mb if max_mb else ""))
+    return ok
 
 
 def rotate(said):
@@ -194,18 +199,19 @@ def serve(payload, ask):
     if do not in ("apply", "rotate", "vacuum", "look"):
         raise Refused("apply, rotate, vacuum or look only")
     said = []
+    ok = True
     if do == "apply":
-        apply(payload, said)
+        ok = apply(payload, said) is not False
     elif do == "rotate":
         rotate(said)
     elif do == "vacuum":
         vacuum(payload, said)
     h = payload.get("hash")
-    out = {"ok": True, "do": do, "said": said, "journal_use": journal_use(),
+    out = {"ok": ok, "do": do, "said": said, "journal_use": journal_use(),
            "journal_conf": _read_or(DROPIN) or "", "rotate_conf": rotate_lines(_read_or(LOGROTATE)),
            "dropin": DROPIN, "logrotate": LOGROTATE}
     # The settings it was asked with (their hash) - only once they are in place.
-    if do == "apply" and isinstance(h, str) and HASH_RE.match(h):
+    if do == "apply" and ok and isinstance(h, str) and HASH_RE.match(h):
         out["hash"] = h
     elif do != "apply":
         out["hash"] = h if isinstance(h, str) and HASH_RE.match(h) and _in_force(payload) else ""

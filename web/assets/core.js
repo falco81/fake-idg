@@ -1979,7 +1979,8 @@ function localSuggest(input, fields, rows, words) {
   fields.forEach(function (f) { known[f[0]] = f; });
   var foot = function () {
     var f = el('div', 't-sug-foot');
-    (fields.length ? [['field:a,b', 'any of them'], ['-field:value', 'not'], ['field~part', 'contains']] : []).forEach(function (p) {
+    (fields.length ? [['field:a,b', 'any of them'], ['-field:value', 'not'], ['field~part', 'contains'], ['field:>N', 'more than'],
+                      ['(a OR b)', 'either']] : []).forEach(function (p) {
       f.appendChild(noI18n(el('code', 'qs-syn', p[0])));
       f.appendChild(el('span', 'qs-syn-says', p[1]));
     });
@@ -1990,6 +1991,7 @@ function localSuggest(input, fields, rows, words) {
     var where = qCaret(input, known);
     if (where.field) {
       st.typed = true;
+      if (/^[<>]/.test(where.op) || /^[<>]/.test(where.typed || '')) return null;   /* a number to compare: nothing to offer (1.9.11) */
       var got = {}, typed = (where.typed || '').toLowerCase();
       (rows() || []).forEach(function (r) {
         var v = known[where.field][3](r);
@@ -2027,33 +2029,149 @@ function localSuggest(input, fields, rows, words) {
   }, foot);
   return me;
 }
-/** A row against `field:value` terms (local lists, 1.9.2): field:a,b any of them, field~part contains,
-    -term not, a bare word anywhere in the row. */
+/** A row against the search language of the daemon's lists (run_query in api_shell.py), for lists the page
+    already holds (1.9.2; the whole of that language (1.9.11)): field:a,b any of them (* ? [..] wildcards),
+    field~part contains, field:>N  field:<=N  numbers, field:* anything there, -term or !term or NOT term not,
+    AND (or nothing) / OR / brackets, "quoted words", a bare word anywhere in the row. field!=v is -field:v,
+    field>N is field:>N. fields = [[name, about, example, function (row) -> value(s), match?]] - match(row, value),
+    where given, answers `field:value` itself (true/false) or leaves it (undefined). */
+var LQ_TOKEN = /\s*((?:[-!]?[A-Za-z_][\w.-]*(?:!=|>=|<=|[:~=<>])(?:"[^"]*"?|[^\s()]*))|"[^"]*"?|\(|\)|[^\s()]+)/g;
+var LQ_TERM = /^([-!]?)([A-Za-z_][\w.-]*)(!=|>=|<=|[:~=<>])([\s\S]*)$/;
+function lqVals(row, f) {
+  var v = f[3](row);
+  return (Array.isArray(v) ? v : [v]).filter(function (x) { return x !== null && x !== undefined && String(x) !== ''; })
+    .map(function (x) { return String(x); });
+}
+function lqGlob(p) {
+  var out = '', i = 0;
+  while (i < p.length) {
+    var c = p.charAt(i);
+    i += 1;
+    if (c === '*') out += '[\\s\\S]*';
+    else if (c === '?') out += '[\\s\\S]';
+    else if (c === '[') {
+      var j = i;
+      if (p.charAt(j) === '!') j += 1;
+      if (p.charAt(j) === ']') j += 1;
+      while (j < p.length && p.charAt(j) !== ']') j += 1;
+      if (j >= p.length) { out += '\\['; continue; }
+      var set = p.slice(i, j).replace(/\\/g, '\\\\').replace(/\]/g, '\\]');
+      i = j + 1;
+      out += '[' + (set.charAt(0) === '!' ? '^' + set.slice(1) : (set.charAt(0) === '^' ? '\\' + set : set)) + ']';
+    } else out += c.replace(/[.*+?^${}()|[\]\\\/-]/g, '\\$&');
+  }
+  return new RegExp('^' + out + '$');
+}
+function localQuery(q, fields) {
+  var known = {};
+  (fields || []).forEach(function (f) { known[f[0].toLowerCase()] = f; });
+  var text = String(q || '').trim(), toks = [], m;
+  if (text.length > 2000) return {error: 'that search is too long - 2000 characters at most'};
+  LQ_TOKEN.lastIndex = 0;
+  while ((m = LQ_TOKEN.exec(text)) !== null) { if (m[1]) toks.push(m[1]); }
+  if (toks.length > 300) return {error: 'that search has too many parts'};
+  var at = 0;
+  var peek = function () { return at < toks.length ? toks[at] : null; };
+  var bad = function (w) { throw new Error(w); };
+  var leaf = function (token) {
+    var t = token.match(LQ_TERM);
+    if (t && known[t[2].toLowerCase()]) {
+      var f = known[t[2].toLowerCase()], op = t[3], value = t[4].replace(/^"+|"+$/g, '');
+      var neg = !!t[1];
+      if (op === '!=') { neg = !neg; op = ':'; }
+      else if (op !== ':' && op !== '~') { if (op !== '=') value = op + value; op = ':'; }
+      if (value === '') return function () { return true; };
+      var test, cmp = value.match(/^(>=|<=|>|<)\s*(-?\d+(?:\.\d+)?)$/);
+      if (op === '~') {
+        var want = value.toLowerCase().replace(/\*/g, '');
+        test = function (r) { return lqVals(r, f).some(function (v) { return v.toLowerCase().indexOf(want) >= 0; }); };
+      } else if (cmp) {
+        var num = parseFloat(cmp[2]);
+        test = function (r) {
+          return lqVals(r, f).some(function (v) {
+            if (!/^\s*[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?\s*$/.test(v)) return false;
+            var x = parseFloat(v);
+            return (cmp[1] === '>' && x > num) || (cmp[1] === '<' && x < num) || (cmp[1] === '>=' && x >= num) || (cmp[1] === '<=' && x <= num);
+          });
+        };
+      } else if (value === '*') {
+        test = function (r) { return lqVals(r, f).length > 0; };
+      } else {
+        var pats = value.split(',').map(function (p) { return p.trim().toLowerCase(); }).filter(Boolean);
+        var res = pats.map(lqGlob);
+        test = function (r) {
+          if (f[4]) {
+            var own = pats.map(function (p) { return f[4](r, p); });
+            if (own.some(function (x) { return x === true; })) return true;
+            if (own.every(function (x) { return x === false; })) return false;
+          }
+          var vs = lqVals(r, f).map(function (v) { return v.toLowerCase(); });
+          return vs.some(function (v) { return res.some(function (re) { return re.test(v); }); });
+        };
+      }
+      return neg ? function (r) { return !test(r); } : test;
+    }
+    var lead = /^[-!]/.test(token) && token.length > 1 ? token.charAt(0) : '';
+    var word = token.slice(lead.length).replace(/^"+|"+$/g, '').toLowerCase();
+    if (!word) return function () { return true; };
+    var hit = function (r, x) { return x.text().indexOf(word) >= 0; };
+    return lead ? function (r, x) { return !hit(r, x); } : hit;
+  };
+  var orP, notP;
+  var andP = function () {
+    var parts = [notP()];
+    while ([null, ')', 'OR', '|', '||'].indexOf(peek()) < 0) {
+      if (['AND', '&', '&&'].indexOf(peek()) >= 0) { at += 1; continue; }
+      parts.push(notP());
+    }
+    return parts.length === 1 ? parts[0] : function (r, x) { return parts.every(function (p) { return p(r, x); }); };
+  };
+  orP = function () {
+    var parts = [andP()];
+    while (['OR', '|', '||'].indexOf(peek()) >= 0) {
+      at += 1;
+      if (peek() === null || peek() === ')') bad('OR with nothing after it');
+      parts.push(andP());
+    }
+    return parts.length === 1 ? parts[0] : function (r, x) { return parts.some(function (p) { return p(r, x); }); };
+  };
+  notP = function () {
+    var t = peek();
+    if (t === 'NOT' || t === '!') {
+      at += 1;
+      if (peek() === null) bad('NOT, ! or a bracket with nothing after it');
+      var inner = notP();
+      return function (r, x) { return !inner(r, x); };
+    }
+    if (t === '(') {
+      at += 1;
+      if (peek() === null) bad('NOT, ! or a bracket with nothing after it');
+      var sub = orP();
+      if (peek() !== ')') bad('a bracket opened and never closed');
+      at += 1;
+      return sub;
+    }
+    if (t === ')') bad('a closing bracket with nothing open before it');
+    at += 1;
+    return leaf(t);
+  };
+  try {
+    var pred = toks.length ? orP() : function () { return true; };
+    if (at < toks.length) bad('a closing bracket with nothing open before it');
+    return {error: '', test: function (row) {
+      var t = null;
+      return pred(row, {text: function () { if (t === null) t = JSON.stringify(row).toLowerCase(); return t; }});
+    }};
+  } catch (e) {
+    return {error: e.message};
+  }
+}
+var LQ_LAST = {q: null, fields: null, made: null};
 function localMatches(row, q, fields) {
   q = String(q || '').trim();
   if (!q) return true;
-  var known = {};
-  (fields || []).forEach(function (f) { known[f[0]] = f; });
-  var terms = q.match(/-?[\w.-]+(?:[:~]|!=)(?:"[^"]*"|\S*)|-?"[^"]*"|\S+/g) || [];
-  var whole = JSON.stringify(row).toLowerCase();
-  return terms.every(function (term) {
-    var not = term.charAt(0) === '-' && term.length > 1;
-    if (not) term = term.slice(1);
-    var m = term.match(/^([\w.-]+)([:~])(.*)$/);
-    var ok;
-    if (m && known[m[1].toLowerCase()]) {
-      var v = known[m[1].toLowerCase()][3](row);
-      var have = (Array.isArray(v) ? v : [v]).map(function (x) { return String(x === null || x === undefined ? '' : x).toLowerCase(); });
-      var wants = m[3].replace(/^"|"$/g, '').toLowerCase().split(',').filter(Boolean);
-      ok = !wants.length || wants.some(function (w) {
-        if (w === '*') return have.some(function (h) { return h !== ''; });
-        return have.some(function (h) { return m[2] === '~' ? h.indexOf(w) >= 0 : (h === w || (w.slice(-1) === '*' && h.indexOf(w.slice(0, -1)) === 0)); });
-      });
-    } else {
-      ok = whole.indexOf(term.replace(/^"|"$/g, '').toLowerCase()) >= 0;
-    }
-    return not ? !ok : ok;
-  });
+  if (LQ_LAST.q !== q || LQ_LAST.fields !== fields) LQ_LAST = {q: q, fields: fields, made: localQuery(q, fields)};
+  return LQ_LAST.made.error ? false : LQ_LAST.made.test(row);
 }
 
 /** A box for a person's name: the realms after an @, and while a name is

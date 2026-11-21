@@ -662,7 +662,8 @@
   /* what the search box understands - offered by its suggestions (localSuggest), matched by localMatches;
      port: is matched apart, a port in a range counts */
   var FIELDS = [
-    ['port', 'a port: in dst-port, src-port, to-ports or a range of them', 'port:9308', function (r) { return PORT_F.map(function (f) { return r[f]; }).filter(Boolean).join(',').replace(/!/g, '').split(','); }],
+    ['port', 'a port: in dst-port, src-port, to-ports or a range of them', 'port:9308', function (r) { return PORT_F.map(function (f) { return r[f]; }).filter(Boolean).join(',').replace(/!/g, '').split(','); },
+     function (r, p) { return /^\d+$/.test(p) ? portHit(r, parseInt(p, 10)) : undefined; }],   /* a port in a range counts, in any term (1.9.11) */
     ['action', 'what the rule does', 'action:drop', function (r) { return r.action || 'accept'; }],
     ['chain', 'its chain', 'chain:forward', function (r) { return r.chain; }],
     ['proto', 'its protocol', 'proto:udp', function (r) { return String(r.protocol || '').replace(/^!/, ''); }],
@@ -707,16 +708,7 @@
     });
   }
   function matches(r, q) {
-    q = String(q || '').trim();
-    if (!q) return true;
-    var fail = false;
-    var rest = q.replace(/(^|\s)(-?)port:([\d,]+)(?=\s|$)/gi, function (all, lead, not, ports) {
-      var hit = ports.split(',').filter(Boolean).some(function (p) { return portHit(r, parseInt(p, 10)); });
-      if (not ? hit : !hit) fail = true;
-      return lead;
-    });
-    if (fail) return false;
-    return localMatches(r, rest, FIELDS);
+    return localMatches(r, q, FIELDS);   /* port: is FIELDS' own match now, so OR, brackets and -port: read as the server's lists (1.9.11) */
   }
   function searchBox() {
     if (MV.qInput) return MV.qInput;
@@ -827,6 +819,7 @@
       return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || (a < b ? -1 : 1);
     });
     var lanes = el('div', 'mt-lanes');
+    if (MV.qInput && MV.qInput._qs) MV.qInput._qs.said(localQuery(MV.q, FIELDS).error);   /* (1.9.11) */
     chains.forEach(function (ch) {
       var all = rules.filter(function (r) { return r.chain === ch; });
       var total = all.reduce(function (a, r) { return a + (r.bytes || 0); }, 0) || 1;

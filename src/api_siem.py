@@ -145,7 +145,9 @@ def frame(c, kind, severity, fields, words, at=None):
     fac = c.get("siem_facility")
     pri = (int(fac) if fac not in (None, "") else 13) * 8 + severity
     host = str(c.get("siem_hostname") or "").strip() or node
-    host = re.sub(r"\s", "_", host)[:255] or "-"
+    # RFC 5424's HOSTNAME is printable US-ASCII alone: "Brno-sklep-č" made a line rsyslog and Graylog do not
+    # parse (1.9.11)
+    host = re.sub(r"[^\x21-\x7e]", "_", host)[:255] or "-"
     return CTRL.sub(" ", "<%d>1 %s %s fake-igd %d %s %s \ufeff%s" % (pri, when, host, os.getpid(), kind, sd, body))
 
 

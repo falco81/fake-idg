@@ -243,7 +243,8 @@
               time_step_s: 'Further off than this, the clock jumps to the right time instead of being slowed or sped up gently.',
               time_step_n: 'How many updates after chronyd starts may step it: 3 is after a boot; -1 any time.',
               time_minsources: 'The clock is set only when at least this many sources agree. 1 with one server; 2 or 3 with several.',
-              time_allow: 'Networks that may ask this machine for the time (UDP 123) - the PS5 and the rest of the home network, say. Empty: nobody. The firewall opens it by itself.',
+              /* (1.9.11) fake-igd's firewall does not open UDP 123 by itself: said as the setting says it. */
+              time_allow: 'Networks that may ask this machine for the time (UDP 123) - the PS5 and the rest of the home network, say. Empty: nobody. Open UDP 123 in the firewall for them too.',
               time_zone: 'Of the machine: the logs and the times on these pages.'};
   function plain(item) {
     if (!item) return null;

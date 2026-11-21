@@ -50,7 +50,7 @@
      work as everywhere - and they are laid out as otp's form, each box still the setting's own. */
   var FORM_KEYS = ['sshd_permit_root', 'sshd_password', 'sshd_port', 'sshd_tries', 'sshd_allow_users', 'sshd_trial_min'];
   var WHERE = [['sshd_notice_ssh', 'Before signing in over SSH', 'sshd\'s Banner - needs fake-igd to set the SSH server'],
-               ['sshd_notice_console', 'At the console', '/etc/issue'],
+               ['sshd_notice_console', 'At the console', 'the console\'s sign-in screen (/etc/issue.d, or /etc/issue)'],
                ['sshd_notice_motd', 'After signing in', 'the message of the day']];
   function plain(item) {
     if (!item) return null;

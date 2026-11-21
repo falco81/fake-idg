@@ -152,7 +152,12 @@ def view(ctx):
         pct = 85
     return {"disks": filesystems(), "disk_pct": pct, "want": want, "hash": want_hash(want), "result": r,
             "current": r.get("hash") == want_hash(want) and bool(r.get("ok")),
-            "waiting": bool(asked.get("id")) and asked.get("id") != r.get("id"),
+            # root not answering for 5 minutes (fake-igd-web.path down, the ask lost): no longer "being put in"
+            # with the pane asking every 3 s for ever, but said (1.9.11)
+            "waiting": bool(asked.get("id")) and asked.get("id") != r.get("id")
+            and time.time() - float(asked.get("at") or 0) < 300,
+            "unanswered": bool(asked.get("id")) and asked.get("id") != r.get("id")
+            and time.time() - float(asked.get("at") or 0) >= 300,
             "asked": asked, "logdir": folder, "logs": log_files(folder), "logdir_bytes": dir_size(folder),
             "state": state, "state_bytes": dir_size(state), "now": time.time()}
 

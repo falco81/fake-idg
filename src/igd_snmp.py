@@ -146,6 +146,10 @@ def snmp_value(kind, v):
     if kind == "int":
         return ber_int(max(-2 ** 31, min(int(v), 2 ** 31 - 1)))
     if kind == "str":
+        if not isinstance(v, bytes):
+            # A DisplayString is 255 octets at most (RFC 2579, FAKE-IGD-MIB): cut at 255 characters, the words
+            # of an alert with an arrow or a Czech letter in them went past it (1.9.11).
+            v = str(v).encode("utf-8")[:255].decode("utf-8", "ignore")
         return ber_str(v)
     if kind == "oid":
         return ber_oid(v)

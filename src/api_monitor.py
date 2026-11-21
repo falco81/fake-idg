@@ -65,6 +65,13 @@ def _phrase(v):
     return "" if 12 <= len(v) <= 128 else "12 to 128 characters"
 
 
+def _token(v):
+    # What web/metrics.php hands on (RFC 6750's b64token, 24 to 200 characters): a token typed shorter or with
+    # a space in it was saved, and Prometheus got a 401 with it for ever (1.9.11).
+    return "" if re.match(r"^[A-Za-z0-9_.~+/=-]{24,200}\Z", v) else \
+        "24 to 200 letters, digits and - . _ ~ + / = (Make a token below makes one)"
+
+
 def _traps_to(v):
     import igd_snmp as SN
     try:
@@ -121,7 +128,7 @@ SETTINGS = [
      "says": "This machine answers <code>https://SERVER/metrics</code> in Prometheus’ format - the requests and "
              "the ports asked for, the clients, the mappings, the mDNS services, the services, the disks, the "
              "mail, the alerts. Asked with the token below."},
-    {"key": "metrics_token", "name": "Its token (Bearer)", "kind": "secret", "default": "", "most": 200,
+    {"key": "metrics_token", "name": "Its token (Bearer)", "kind": "secret", "default": "", "most": 200, "check": _token,
      "only_when": ("metrics", True),
      "says": "What Prometheus sends as <code>Authorization: Bearer ...</code>. Kept sealed; <i>Make a "
              "token</i> below makes one and shows it once."},

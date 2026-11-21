@@ -22,8 +22,11 @@ var MS_EVENT = {'new': ['came', 'ok'], gone: ['went', 'crit'], resolved: ['chang
    The tab
    ========================================================================== */
 function msTiles() {
-  var host = $('ms-tiles'), d = AV.d, b = AV.b;
-  clear(host);
+  /* liveFill, not clear()+append (1.9.11): redrawn every 3 s, the tiles made the page jump on a phone */
+  liveFill($('ms-tiles'), function (host) { msTilesInto(host); });
+}
+function msTilesInto(host) {
+  var d = AV.d, b = AV.b;
   if (d && !d.installed) {
     [['avahi-daemon', 'not installed', 'bad'], ['What to do', 'dnf install avahi avahi-tools', '']].forEach(function (t) {
       var f = el('div', 'fact');
@@ -81,8 +84,8 @@ function msBrowse(fresh, quiet) {
     AV.events = AV.events.concat(b.events || []).slice(-2000);
     AV.b = b;
     var here = $('tab-mdns');
-    if (quiet && (document.querySelector('.modal:not([hidden])') || userHolds(here) || pointerBusy(here))) { AV.owed = true; msTiles(); return; }
-    msDraw();
+    if (quiet && (document.querySelector('.modal:not([hidden])') || userHolds(here) || pointerBusy(here))) { AV.owed = true; liveRun(msTiles); return; }
+    if (quiet) liveRun(msDraw); else msDraw();   /* followed: a refresh, drawn as one (1.9.11) */
   }).catch(function (e) {
     $('ms-said').textContent = '';
     AV.b = AV.b || null;
@@ -148,8 +151,7 @@ function msDraw() {
   if (!live) {
     var rows = all.filter(function (s) { return msMatch(s, q, ty, ifc, pr); });
     $('ms-said').textContent = num(rows.length) + ' of ' + num(all.length) + ' · ' + state;
-    clear(host);
-    host.appendChild(listTable(['Type', 'Name', 'Interface', 'Protocol', 'Host', 'Address', 'Seen', 'TXT'], rows, function (s) {
+    liveFill(host, function (box) { box.appendChild(listTable(['Type', 'Name', 'Interface', 'Protocol', 'Host', 'Address', 'Seen', 'TXT'], rows, function (s) {
       var tr = el('tr', 'tappable');
       tr.appendChild(noI18n(el('td', 'mono', s.type)));
       var n = noI18n(el('td', '', s.name));
@@ -163,12 +165,11 @@ function msDraw() {
       tr.appendChild(noI18n(el('td', 'muted small', msTxt(s.txt).join(' · ').slice(0, 120))));
       tr.onclick = function () { msPeek(s); };
       return tr;
-    }, 'plain|' + (b.error || b.hint || (all.length ? 'Nothing matches' : 'Nothing is shown on mDNS now - or avahi-daemon is not running')), {own: true}));
+    }, 'plain|' + (b.error || b.hint || (all.length ? 'Nothing matches' : 'Nothing is shown on mDNS now - or avahi-daemon is not running')), {own: true})); });
   } else {
     var evs = AV.events.filter(function (e) { return e.event === 'start' || (!e.before && msMatch(e, q, ty, ifc, pr)); }).slice().reverse();
     $('ms-said').textContent = num(evs.filter(function (e) { return e.event !== 'start'; }).length) + ' change(s) · ' + state;
-    clear(host);
-    host.appendChild(listTable(['When', 'What', 'Type', 'Name', 'Interface', 'Protocol', 'Address'], evs, function (e) {
+    liveFill(host, function (box) { box.appendChild(listTable(['When', 'What', 'Type', 'Name', 'Interface', 'Protocol', 'Address'], evs, function (e) {
       var tr = el('tr', e.event === 'start' ? '' : 'tappable');
       tr.appendChild(stampCell(e.at));
       var w = MS_EVENT[e.event] || [e.event, 'dim'];
@@ -186,7 +187,7 @@ function msDraw() {
       tr.appendChild(noI18n(el('td', 'mono', e.address ? e.address + (e.port ? ':' + e.port : '') : '')));
       tr.onclick = function () { msPeek(e); };
       return tr;
-    }, 'plain|' + (b.error || 'Nothing has come or gone since this page has been open') + (b.running ? ' - it is followed, new ones show here as they come' : ''), {own: true}));
+    }, 'plain|' + (b.error || 'Nothing has come or gone since this page has been open') + (b.running ? ' - it is followed, new ones show here as they come' : ''), {own: true})); });
   }
   explainWhatWasDrawn(host);
 }
@@ -203,7 +204,7 @@ document.addEventListener('DOMContentLoaded', function () {
   /* What waited while a row was pointed at, drawn once it is let go. */
   setInterval(function () {
     var here = $('tab-mdns');
-    if (AV.owed && TAB === 'mdns' && !document.querySelector('.modal:not([hidden])') && !userHolds(here) && !pointerBusy(here)) msDraw();
+    if (AV.owed && TAB === 'mdns' && !document.querySelector('.modal:not([hidden])') && !userHolds(here) && !pointerBusy(here)) liveRun(msDraw);   /* (1.9.11) */
   }, 1000);
 });
 

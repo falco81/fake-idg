@@ -70,7 +70,7 @@
       var d = LG.d, r = d.result || {};
       var grid = nodeGrid();
       var n = {node: (STATUS && STATUS.node) || 'this machine', me: true};
-      var state = !r.at ? (d.waiting ? ['warn', 'being put in', 'warn'] : ['dim', 'not asked yet', 'dim'])
+      var state = d.unanswered ? ['bad', 'root did not answer', 'crit'] : !r.at ? (d.waiting ? ['warn', 'being put in', 'warn'] : ['dim', 'not asked yet', 'dim'])
         : (r.ok && d.current ? ['ok', 'as set', 'ok'] : (r.ok || d.waiting ? ['warn', 'being put in', 'warn'] : ['bad', 'failed', 'crit']));
       var c = nodeCard(n, state[0], state[1], state[2]);
       var lim = d.disk_pct || 85;

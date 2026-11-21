@@ -308,6 +308,10 @@ def view(ctx):
         if r.get("id") == sync["ask"]:
             sync.update({"done": True, "ok": bool(r.get("ok")), "said": "; ".join(str(x) for x in r.get("said") or [])})
             ctx.store.set_meta("time:sync", json.dumps(sync))
+        elif time.time() - float(sync.get("at") or 0) > 300:
+            # root never answered: failed, not "asked of root" for ever (1.9.11)
+            sync.update({"done": True, "ok": False, "said": "root did not answer in 5 minutes (is fake-igd-web.path running?)"})
+            ctx.store.set_meta("time:sync", json.dumps(sync))
     return {"now": read(), "applied": applied(ctx), "sync": sync, "server_now": time.time()}
 
 
